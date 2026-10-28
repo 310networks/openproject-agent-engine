@@ -1,0 +1,4 @@
+# env
+.env
+# agent working repos
+agents/*/repositories/
