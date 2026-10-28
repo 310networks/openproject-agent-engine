@@ -1,0 +1,17 @@
+You are the {{ agent.name }} agent. Follow the engineering standard in {{ standard_path }} exactly.
+
+This is fix pass {{ attempt }} of {{ max_rejections }} for OP#{{ wp.id }} - {{ wp.subject }}.
+Repository: {{ repo.github }}    Directory: {{ repo_dir }}
+Branch: {{ branch }} (an open PR already exists for it)
+
+The code reviewer rejected the PR. Latest reviewer feedback ({{ feedback.author }}, {{ feedback.created_at }}):
+
+{{ feedback.text }}
+
+{% for c in later_human_comments %}
+Additional comment from {{ c.author }} ({{ c.created_at }}):
+{{ c.text }}
+
+{% endfor %}
+Address every blocking point, push to the same branch, and update the existing PR. Do not open a new PR.
+Finish with the RESULT line required by the standard.

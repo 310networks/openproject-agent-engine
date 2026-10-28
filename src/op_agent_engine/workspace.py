@@ -1,0 +1,195 @@
+"""Workspace preparation (PLAN section 11).
+
+Each agent has a workspace under ``WORKSPACE_ROOT``:
+
+    <WORKSPACE_ROOT>/<agent>/
+        AGENTS.md              the engineering standard (required)
+        repositories/<dir>/    the repository clone
+
+Branch naming: ``op-<projectId>-<workPackageId>``.
+
+Checkout rules:
+
+* implementer: if ``origin/<branch>`` exists, check it out (``git checkout
+  -B <branch> origin/<branch>``); otherwise create it from
+  ``origin/<default_branch>``.
+* reviewer: check out ``origin/<branch>`` read-only; if it does not exist
+  the run cannot start (no PR to review).
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+from dataclasses import dataclass
+from pathlib import Path
+
+from op_agent_engine.logging import get_logger
+
+logger = get_logger(__name__)
+
+#: Timeout for a single git command (clone of a large repo included).
+GIT_TIMEOUT_SECONDS = 300.0
+
+
+class WorkspaceError(Exception):
+    """Workspace preparation failed; the run cannot start."""
+
+
+class GitError(WorkspaceError):
+    """A git command exited non-zero (or timed out)."""
+
+    def __init__(self, args: list[str], returncode: int, stderr: str) -> None:
+        self.git_args = args
+        self.returncode = returncode
+        self.stderr = stderr
+        detail = stderr.strip()[:500] or "(no stderr)"
+        super().__init__(f"git {' '.join(args)} failed ({returncode}): {detail}")
+
+
+@dataclass(frozen=True)
+class Workspace:
+    """A prepared workspace: repository checked out on the run branch."""
+
+    repo_dir: Path
+    branch: str
+    standard_path: Path
+
+
+def clone_url_for(github_repo: str, gh_token: str | None = None) -> str:
+    """HTTPS clone URL for *github_repo*.
+
+    With ``gh_token`` the token is embedded (``x-access-token``); without it
+    the host's existing ``gh``/git authentication is used.
+    """
+    if gh_token:
+        return f"https://x-access-token:{gh_token}@github.com/{github_repo}.git"
+    return f"https://github.com/{github_repo}.git"
+
+
+async def run_git(
+    args: list[str],
+    *,
+    cwd: Path | None = None,
+) -> str:
+    """Run one git command and return its stdout; raise :class:`GitError`."""
+    process = await asyncio.create_subprocess_exec(
+        "git",
+        *args,
+        cwd=str(cwd) if cwd is not None else None,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        _stdout, stderr = await asyncio.wait_for(
+            process.communicate(), timeout=GIT_TIMEOUT_SECONDS
+        )
+    except TimeoutError as error:
+        process.kill()
+        with contextlib.suppress(BaseException):
+            await process.wait()
+        raise GitError(args, -1, "timed out") from error
+    returncode = process.returncode
+    if returncode is None or returncode != 0:
+        raise GitError(
+            args,
+            returncode if returncode is not None else -1,
+            stderr.decode("utf-8", errors="replace"),
+        )
+    return _stdout.decode("utf-8", errors="replace")
+
+
+async def _remote_branch_exists(repo_dir: Path, branch: str) -> bool:
+    try:
+        await run_git(
+            ["show-ref", "--verify", "--quiet", f"refs/remotes/origin/{branch}"],
+            cwd=repo_dir,
+        )
+        return True
+    except GitError:
+        return False
+
+
+async def prepare_workspace(
+    *,
+    root: Path,
+    agent_workspace: str,
+    github_repo: str,
+    clone_dir: str,
+    default_branch: str,
+    project_id: int,
+    work_package_id: int,
+    role: str,
+    gh_token: str | None = None,
+    clone_url: str | None = None,
+) -> Workspace:
+    """Clone/fetch the repository and check out the run branch.
+
+    ``clone_url`` overrides the derived GitHub URL (tests use ``file://``
+    URLs for local bare repositories).
+
+    Raises :class:`WorkspaceError` (or :class:`GitError`) when the workspace
+    cannot be prepared; the caller records the run as failed.
+    """
+    workspace_dir = root / agent_workspace
+    standard_path = workspace_dir / "AGENTS.md"
+    if not standard_path.is_file():
+        raise WorkspaceError(
+            f"no engineering standard at {standard_path}; the agent workspace "
+            "must contain an AGENTS.md"
+        )
+
+    repo_dir = workspace_dir / "repositories" / clone_dir
+    branch = f"op-{project_id}-{work_package_id}"
+
+    if not (repo_dir / ".git").exists():
+        repo_dir.parent.mkdir(parents=True, exist_ok=True)
+        logger.info(
+            "cloning %s into %s",
+            github_repo,
+            repo_dir,
+            extra={"github_repo": github_repo, "repo_dir": str(repo_dir)},
+        )
+        await run_git(
+            [
+                "clone",
+                "--quiet",
+                clone_url or clone_url_for(github_repo, gh_token),
+                str(repo_dir),
+            ]
+        )
+    else:
+        await run_git(["fetch", "--quiet", "origin"], cwd=repo_dir)
+
+    remote_branch_exists = await _remote_branch_exists(repo_dir, branch)
+
+    if role == "implementer":
+        if remote_branch_exists:
+            base = f"origin/{branch}"
+        else:
+            if not await _remote_branch_exists(repo_dir, default_branch):
+                raise WorkspaceError(
+                    f"origin/{default_branch} not found after fetch "
+                    f"(repository {github_repo})"
+                )
+            base = f"origin/{default_branch}"
+        await run_git(["checkout", "--quiet", "-B", branch, base], cwd=repo_dir)
+    elif role == "reviewer":
+        if not remote_branch_exists:
+            raise WorkspaceError(
+                f"no remote branch origin/{branch} to review (repository "
+                f"{github_repo})"
+            )
+        await run_git(
+            ["checkout", "--quiet", "-B", branch, f"origin/{branch}"], cwd=repo_dir
+        )
+    else:
+        raise WorkspaceError(f"unknown agent kind {role!r}")
+
+    logger.info(
+        "workspace ready: %s on branch %s",
+        repo_dir,
+        branch,
+        extra={"repo_dir": str(repo_dir), "branch": branch},
+    )
+    return Workspace(repo_dir=repo_dir, branch=branch, standard_path=standard_path)

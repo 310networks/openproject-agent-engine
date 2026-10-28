@@ -32,6 +32,8 @@ class WorkPackage:
     # Optimistic-locking version; required in the PATCH body when claiming
     # (verified live: omitting it yields HTTP 409 UpdateConflict).
     lock_version: int | None = None
+    # Ticket description (rendered into the prompt; may be empty).
+    description: str = ""
 
 
 def _id_from_href(href: Any) -> int | None:
@@ -117,4 +119,5 @@ def parse_work_package(
             if isinstance(raw_lock, int) and not isinstance(raw_lock, bool)
             else None
         ),
+        description=str(entry.get("description") or ""),
     )

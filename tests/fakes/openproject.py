@@ -33,6 +33,7 @@ _PROJECT = re.compile(r"^/api/v3/projects/(?P<identifier>[^/]+)$")
 _PROJECT_TYPES = re.compile(r"^/api/v3/projects/(?P<project_id>[^/]+)/types$")
 _SCHEMA = re.compile(r"^/api/v3/work_packages/schemas/(?P<identifier>[^/]+)$")
 _WP_BY_ID = re.compile(r"^/api/v3/work_packages/(?P<id>\d+)$")
+_WP_COMMENTS = re.compile(r"^/api/v3/work_packages/(?P<id>\d+)/comments$")
 _HREF_ID = re.compile(r"/(\d+)$")
 
 
@@ -80,6 +81,7 @@ class FakeOpenProject:
         work_packages: list[dict[str, JSON]] | None = None,
         relations: list[dict[str, JSON]] | None = None,
         priorities: list[dict[str, JSON]] | None = None,
+        comments: list[dict[str, JSON]] | None = None,
         patch_error: tuple[int, str] | None = None,
     ) -> None:
         self.statuses = statuses or []
@@ -99,6 +101,14 @@ class FakeOpenProject:
                 wp.setdefault("lockVersion", 0)
         self.relations = relations or []
         self.priorities = priorities or []
+        # Comment fixtures: dicts with at least ``workPackageId``,
+        # ``authorId``, ``createdAt`` and ``content``. Posted comments are
+        # appended here with auto-assigned ids.
+        self.comments: list[dict[str, JSON]] = list(comments or [])
+        self._next_comment_id = (
+            max((int(c["id"]) for c in self.comments if isinstance(c.get("id"), int)), default=0)
+            + 1
+        )
         self.requests: list[httpx.Request] = []
         # Bodies of every successful PATCH /api/v3/work_packages/<id>.
         self.patches: list[dict[str, JSON]] = []
@@ -122,8 +132,23 @@ class FakeOpenProject:
             if wp_by_id:
                 return self._patch_work_package(int(wp_by_id.group("id")), request)
             return self._error(404, "The requested resource could not be found.")
+        if request.method == "POST":
+            comments_match = _WP_COMMENTS.match(path)
+            if comments_match:
+                return self._post_comment(int(comments_match.group("id")), request)
+            return self._error(404, "The requested resource could not be found.")
         if request.method != "GET":
             return self._error(405, "Method not allowed")
+
+        comments_match = _WP_COMMENTS.match(path)
+        if comments_match:
+            work_package_id = int(comments_match.group("id"))
+            elements = [
+                self._comment_element(comment)
+                for comment in self.comments
+                if int(comment.get("workPackageId", -1)) == work_package_id
+            ]
+            return self._collection(request, elements, path)
 
         if path == "/api/v3/statuses":
             return self._collection(request, self.statuses, "/api/v3/statuses")
@@ -429,3 +454,48 @@ class FakeOpenProject:
             json={"_type": "Error", "message": message},
             headers={"Content-Type": "application/hal+json"},
         )
+
+    # -- comments --------------------------------------------------------
+
+    def _post_comment(
+        self, work_package_id: int, request: httpx.Request
+    ) -> httpx.Response:
+        """Mirror the live POST /work_packages/<id>/comments behaviour."""
+        if not any(wp.get("id") == work_package_id for wp in self.work_packages):
+            return self._error(404, "The requested resource could not be found.")
+        try:
+            body = json.loads(request.content.decode("utf-8") or "{}")
+        except json.JSONDecodeError:
+            return self._error(400, "Malformed request body")
+        # The live API takes the text under the ``comment`` key.
+        content = body.get("comment")
+        if not isinstance(content, str) or not content:
+            return self._error(422, "Comment is required")
+        comment: dict[str, JSON] = {
+            "id": self._next_comment_id,
+            "workPackageId": work_package_id,
+            "authorId": body.get("authorId"),
+            "createdAt": body.get("createdAt") or "2026-02-10T12:00:00Z",
+            "content": content,
+        }
+        self._next_comment_id += 1
+        self.comments.append(comment)
+        return self._json(
+            self._comment_element(comment), status_code=201
+        )
+
+    def _comment_element(self, comment: dict[str, JSON]) -> dict[str, JSON]:
+        """Shape a stored comment fixture like a live HAL comment entry."""
+        element: dict[str, JSON] = {
+            "id": comment.get("id"),
+            "_type": "XAPian::Comment",
+            "workPackage": {"id": comment.get("workPackageId")},
+            "createdAt": comment.get("createdAt"),
+            "updatedAt": comment.get("createdAt"),
+            "content": comment.get("content", ""),
+            "_links": {},
+        }
+        author_id = comment.get("authorId")
+        if author_id is not None:
+            element["author"] = {"id": author_id}
+        return element

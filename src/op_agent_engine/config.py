@@ -518,6 +518,7 @@ class EngineSettings(BaseSettings):
     engine_config: Path = Field(default_factory=lambda: Path(DEFAULT_ENGINE_CONFIG).expanduser())
     data_dir: Path = Field(default_factory=lambda: Path(DEFAULT_DATA_DIR).expanduser())
     workspace_root: Path | None = None
+    prompts_dir: Path | None = None
     gh_token: SecretStr | None = None
     engine_paused: bool = False
     log_level: str = "INFO"

@@ -1,0 +1,14 @@
+You are the {{ agent.name }} agent. Follow the engineering standard in {{ standard_path }} exactly.
+
+Task
+- Ticket: OP#{{ wp.id }} - {{ wp.subject }}
+- Type: {{ wp.type }}    Project: {{ project.identifier }}
+- Ticket URL: {{ wp.url }}
+- Repository: {{ repo.github }}    Directory: {{ repo_dir }}
+- Branch: {{ branch }}    Base branch: {{ repo.default_branch }}
+
+Description:
+{{ wp.description }}
+
+Begin now. Read the ticket through the OpenProject skill if you need more context (comments, relations).
+Finish with the RESULT line required by the standard.
