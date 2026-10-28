@@ -2,3 +2,23 @@
 .env
 # agent working repos
 agents/*/repositories/
+
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# runtime data
+*.sqlite3
+*.sqlite3-*
+engine.lock
+heartbeat

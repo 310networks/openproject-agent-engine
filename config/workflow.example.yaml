@@ -1,0 +1,98 @@
+# op-agent-engine workflow configuration
+#
+# Copy to ~/.config/op-agent-engine/workflow.yaml and adjust.
+# ${VAR} references are resolved from the service environment (engine.env).
+# A missing variable is a startup error.
+#
+# Placeholders available inside runner argv/cwd/stdin_file:
+#   {prompt_file} {repo_dir} {workspace_dir} {run_dir}
+#   {model} {branch} {work_package_id}
+
+openproject:
+  statuses:
+    new: "New"
+    in_progress: "In Progress"
+    ready_for_review: "Ready for Review"
+    in_testing: "In Testing"
+    on_hold: "On Hold"
+    rejected: "Rejected"
+    closed: "Closed"
+  agent_field: "AGENT"            # custom field name; resolved to customField<N> at startup
+  engine_user: "agent-engine"     # login of the engine user
+  dispatch_priority: [ready_for_review, rejected, new]   # finish work before starting new work
+  eligible_types: ["Task", "Bug", "Feature"]
+  skip_work_packages_with_children: true
+  skip_if_assigned_to_human: true
+
+projects:
+  - identifier: "example-project"   # OpenProject project identifier
+    repo:
+      github: "310networks/example-project"
+      dir: "example-project"   # clone directory name under <workspace>/repositories/
+      default_branch: "main"
+    enabled: true
+
+agents:
+  FRONTEND:
+    name: frontendEngineer
+    kind: implementer
+    op_login: "frontendEngineer"
+    workspace: "frontendEngineer"          # under WORKSPACE_ROOT
+    runner: pi
+    model: null                            # optional, passed to runner as {model}
+    timeout_seconds: 3600
+    env:
+      # Verified: the OpenProject CLI (`op`) reads OP_CLI_HOST and OP_CLI_TOKEN.
+      # OP_CLI_PROFILE selects a different profile from ~/.config/openproject/config.
+      OP_CLI_HOST: "${OP_BASE_URL}"
+      OP_CLI_TOKEN: "${OP_TOKEN_FRONTEND}"
+  BACKEND:
+    name: backendEngineer
+    kind: implementer
+    op_login: "backendEngineer"
+    workspace: "backendEngineer"
+    runner: pi
+    env:
+      OP_CLI_HOST: "${OP_BASE_URL}"
+      OP_CLI_TOKEN: "${OP_TOKEN_BACKEND}"
+  LEAD_DESIGNER:
+    name: leadDesigner
+    kind: implementer
+    op_login: "leadDesigner"
+    workspace: "leadDesigner"
+    runner: pi
+    env:
+      OP_CLI_HOST: "${OP_BASE_URL}"
+      OP_CLI_TOKEN: "${OP_TOKEN_DESIGNER}"
+  REVIEWER:
+    name: codeReviewer
+    kind: reviewer
+    op_login: "codeReviewer"
+    workspace: "codeReviewer"
+    runner: pi
+    env:
+      OP_CLI_HOST: "${OP_BASE_URL}"
+      OP_CLI_TOKEN: "${OP_TOKEN_REVIEWER}"
+    # Future: add GH_TOKEN here to give the reviewer a dedicated GitHub account.
+
+runners:
+  pi:
+    # Verified against pi 1.4.0: -p is print mode, @file attaches the prompt,
+    # --approve trusts project-local resources (print mode cannot prompt).
+    # pi does not ask for approval before tool calls.
+    argv: ["pi", "-p", "--approve", "@{prompt_file}", "Follow the instructions in the attached prompt file."]
+    cwd: "{repo_dir}"
+    env: {}                        # pi uses the host's default ~/.pi/agent configuration
+    inject_standard: false         # pi loads AGENTS.md from parent directories
+  opencode:
+    # Verified against opencode 1.18.4: `run` is non-interactive, -f/--file
+    # attaches the prompt, --auto approves permissions that are not denied.
+    argv: ["opencode", "run", "--auto", "--file", "{prompt_file}", "Follow the instructions in the attached prompt file."]
+    cwd: "{repo_dir}"
+    env: {}
+    inject_standard: true          # do not rely on parent-directory discovery
+  generic_stdin:
+    argv: ["my-agent", "--non-interactive"]
+    stdin_file: "{prompt_file}"
+    cwd: "{repo_dir}"
+    inject_standard: true
