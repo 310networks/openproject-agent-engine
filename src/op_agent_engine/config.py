@@ -522,13 +522,25 @@ class EngineSettings(BaseSettings):
     engine_paused: bool = False
     log_level: str = "INFO"
 
-    def missing_runtime_values(self) -> list[str]:
-        """Names of required variables that are absent or empty."""
+    def missing_api_values(self) -> list[str]:
+        """Required variables for talking to OpenProject."""
         missing: list[str] = []
         if not self.op_base_url:
             missing.append("OP_BASE_URL")
         if not self.op_engine_token or not self.op_engine_token.get_secret_value():
             missing.append("OP_ENGINE_TOKEN")
+        return missing
+
+    def require_api_values(self) -> None:
+        missing = self.missing_api_values()
+        if missing:
+            raise ConfigError(
+                "missing required environment variables: " + ", ".join(missing)
+            )
+
+    def missing_runtime_values(self) -> list[str]:
+        """Names of required variables that are absent or empty."""
+        missing = self.missing_api_values()
         if self.workspace_root is None or not str(self.workspace_root):
             missing.append("WORKSPACE_ROOT")
         return missing

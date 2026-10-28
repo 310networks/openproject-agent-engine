@@ -9,6 +9,7 @@
 #   {model} {branch} {work_package_id}
 
 openproject:
+  # Names must match the OpenProject instance exactly (case-sensitive).
   statuses:
     new: "New"
     in_progress: "In Progress"

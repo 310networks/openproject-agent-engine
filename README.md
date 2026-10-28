@@ -12,10 +12,12 @@ The implementation plan, workflow state machine and acceptance criteria live in
 
 ## Status
 
-Milestone M0 (skeleton) is implemented: package layout, validated configuration
-models, JSON logging with secret redaction, CLI entry points, example workflow
-configuration, and example systemd deployment files. Polling and dispatch are
-not implemented yet.
+Milestones M0 (skeleton) and M1 (OpenProject client and startup resolution) are
+implemented: package layout, validated configuration models, JSON logging with
+secret redaction, CLI entry points, example deployment files, an async
+OpenProject API client with retries and pagination, and startup resolution of
+statuses, users, projects, types and the `AGENT` custom field. Polling and
+dispatch are not implemented yet.
 
 ## Development setup
 
@@ -45,13 +47,17 @@ op-agent-engine check-config --config ~/.config/op-agent-engine/workflow.yaml
 ```
 
 `check-config` validates the whole file (including `${VAR}` resolution, runner
-references, placeholder names, unique workspaces and exactly one reviewer) and
-prints a summary. It exits 1 with a specific message on the first invalid file.
-Use `--json` for machine-readable output.
+references, placeholder names, unique workspaces and exactly one reviewer),
+then contacts OpenProject and resolves every configured status, user, project,
+project type and the `AGENT` custom field option. It prints each resolved ID,
+exits 1 with a specific message on the first invalid file or unresolved item,
+and supports `--json` for machine-readable output. Use `--offline` to validate
+the file without contacting OpenProject.
 
-The engine's own OpenProject IDs (statuses, users, projects, custom field) are
-resolved against the API at startup (M1); `check-config` does not contact
-OpenProject.
+Status names must match the OpenProject instance exactly (case-sensitive). The
+`agent-engine` API token needs the global `manage_user` permission (or
+administrator) because startup resolves agent logins through `GET /api/v3/users`.
+See `docs/VERIFICATION.md` for the live-instance findings.
 
 ## Deployment
 

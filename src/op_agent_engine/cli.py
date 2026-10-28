@@ -1,23 +1,33 @@
 """Command line interface.
 
 Subcommands follow the plan: ``run``, ``once``, ``check-config``, ``status``
-and ``dry-run``. In M0 only ``check-config`` is functional; the others parse
-arguments and fail fast with a clear message so the packaging and entry point
-can be exercised end to end.
+and ``dry-run``. ``check-config`` validates the workflow file and resolves all
+OpenProject IDs; the remaining commands parse arguments and fail fast with a
+clear message until their engine behaviour lands.
 """
 
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
 import sys
 from collections.abc import Sequence
 from pathlib import Path
 
+from pydantic import ValidationError
+
 from op_agent_engine import __version__
-from op_agent_engine.config import DEFAULT_ENGINE_CONFIG, ConfigError, WorkflowConfig
+from op_agent_engine.config import (
+    DEFAULT_ENGINE_CONFIG,
+    ConfigError,
+    EngineSettings,
+    WorkflowConfig,
+)
 from op_agent_engine.logging import configure_logging, get_logger
+from op_agent_engine.openproject.client import OpenProjectClient, OpenProjectError
+from op_agent_engine.openproject.resolve import OpenProjectResolution, resolve_workflow
 
 NOT_IMPLEMENTED_EXIT = 2
 CONFIG_ERROR_EXIT = 1
@@ -109,6 +119,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="print the summary as JSON",
     )
+    check.add_argument(
+        "--offline",
+        action="store_true",
+        help="validate the file only; do not resolve OpenProject IDs",
+    )
 
     subparsers.add_parser(
         "status",
@@ -168,23 +183,54 @@ def _config_summary(config: WorkflowConfig, path: Path) -> dict[str, object]:
     }
 
 
-def _check_config(path: Path, *, as_json: bool) -> int:
+async def _resolve_against_api(
+    config: WorkflowConfig, settings: EngineSettings
+) -> OpenProjectResolution:
+    if settings.op_base_url is None or settings.op_engine_token is None:
+        raise ConfigError(
+            "missing required environment variables: OP_BASE_URL, OP_ENGINE_TOKEN"
+        )
+    async with OpenProjectClient(
+        settings.op_base_url,
+        settings.op_engine_token.get_secret_value(),
+    ) as client:
+        return await resolve_workflow(client, config)
+
+
+def _check_config(path: Path, *, as_json: bool, offline: bool) -> int:
     try:
         config = _load_config(path)
     except ConfigError as error:
         print(f"op-agent-engine: error: {error}", file=sys.stderr)
         return CONFIG_ERROR_EXIT
 
+    resolution: OpenProjectResolution | None = None
+    if not offline:
+        try:
+            settings = EngineSettings()
+            settings.require_api_values()
+            resolution = asyncio.run(_resolve_against_api(config, settings))
+        except (ConfigError, ValidationError) as error:
+            print(f"op-agent-engine: error: {error}", file=sys.stderr)
+            return CONFIG_ERROR_EXIT
+        except OpenProjectError as error:
+            print(f"op-agent-engine: error: {error}", file=sys.stderr)
+            return CONFIG_ERROR_EXIT
+
     if as_json:
-        print(json.dumps(_config_summary(config, path), indent=2))
+        payload = _config_summary(config, path)
+        payload["resolved"] = resolution.as_dict() if resolution is not None else None
+        print(json.dumps(payload, indent=2))
     else:
         print(f"Configuration OK: {path}")
         for line in config.summary():
             print(line)
-        print(
-            "OpenProject IDs are resolved at startup (M1); "
-            "check-config does not contact the API."
-        )
+        if resolution is None:
+            print("OpenProject resolution skipped (--offline).")
+        else:
+            print("Resolved OpenProject IDs:")
+            for line in resolution.summary():
+                print(f"  {line}")
     return OK_EXIT
 
 
@@ -204,7 +250,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     config_path = (args.config or default_config_path()).expanduser()
 
     if args.command == "check-config":
-        return _check_config(config_path, as_json=args.json)
+        return _check_config(config_path, as_json=args.json, offline=args.offline)
 
     # The remaining commands need a valid configuration before they can do
     # anything, even while their engine behaviour is a stub.
