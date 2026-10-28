@@ -253,7 +253,9 @@ def test_run_requires_valid_config(
 def test_stub_commands_load_config_then_report_not_implemented(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    for command in ("run", "once", "dry-run", "status"):
+    # ``run`` and ``status`` are still stubs; ``once``/``dry-run`` are
+    # implemented in M2 and drive a real (mocked) poll instead.
+    for command in ("run", "status"):
         assert main([command, "--config", str(EXAMPLE)]) == NOT_IMPLEMENTED_EXIT
 
     error = capsys.readouterr().err
