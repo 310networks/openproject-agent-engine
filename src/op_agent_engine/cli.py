@@ -2,10 +2,11 @@
 
 Subcommands follow the plan: ``run``, ``once``, ``check-config``, ``status``
 and ``dry-run``. ``check-config`` validates the workflow file and resolves all
-OpenProject IDs. ``once`` and ``dry-run`` perform a single poll and log the
-dispatch plan (M2 is read-only: nothing is claimed or executed). ``run`` and
-``status`` parse arguments and fail fast with a clear message until their
-engine behaviour lands.
+OpenProject IDs. ``once`` performs a single poll and claims what the slot
+rules allow (M3). ``dry-run`` performs a single poll and logs what would be
+claimed without writing anything. ``run`` starts the engine loop (poll,
+schedule, sleep); execution of claimed runs is M4. ``status`` fails fast with
+a clear message until M7.
 """
 
 from __future__ import annotations
@@ -27,17 +28,16 @@ from op_agent_engine.config import (
     EngineSettings,
     WorkflowConfig,
 )
+from op_agent_engine.engine import run_engine, run_engine_once
 from op_agent_engine.logging import configure_logging, get_logger
 from op_agent_engine.openproject.client import OpenProjectClient, OpenProjectError
 from op_agent_engine.openproject.resolve import OpenProjectResolution, resolve_workflow
-from op_agent_engine.poller import Poller
 
 NOT_IMPLEMENTED_EXIT = 2
 CONFIG_ERROR_EXIT = 1
 OK_EXIT = 0
 
 _NOT_IMPLEMENTED_IN = {
-    "run": "M1+ (engine loop)",
     "status": "M7+ (status command)",
 }
 
@@ -198,34 +198,6 @@ async def _resolve_against_api(
         return await resolve_workflow(client, config)
 
 
-async def _poll_once_async(
-    config: WorkflowConfig, settings: EngineSettings, *, dry_run: bool
-) -> int:
-    log = get_logger("op_agent_engine.cli")
-    assert settings.op_base_url is not None
-    assert settings.op_engine_token is not None
-    async with OpenProjectClient(
-        settings.op_base_url,
-        settings.op_engine_token.get_secret_value(),
-    ) as client:
-        resolution = await resolve_workflow(client, config)
-        poller = Poller(
-            client,
-            config,
-            resolution,
-            max_concurrent_runs=settings.max_concurrent_runs,
-        )
-        plan = await poller.poll()
-    log.info(
-        "%s: %d item(s), %d skipped",
-        "dry-run complete" if dry_run else "poll complete",
-        len(plan.items),
-        len(plan.skipped),
-        extra={"items": list(plan.work_package_ids), "dry_run": dry_run},
-    )
-    return OK_EXIT
-
-
 def _poll_once(config_path: Path, *, dry_run: bool) -> int:
     try:
         config = _load_config(config_path)
@@ -240,7 +212,30 @@ def _poll_once(config_path: Path, *, dry_run: bool) -> int:
         return CONFIG_ERROR_EXIT
     configure_logging(os.environ.get("LOG_LEVEL", "INFO"))
     try:
-        return asyncio.run(_poll_once_async(config, settings, dry_run=dry_run))
+        return run_engine_once(config, settings, dry_run=dry_run)
+    except (ConfigError, ValidationError) as error:
+        print(f"op-agent-engine: error: {error}", file=sys.stderr)
+        return CONFIG_ERROR_EXIT
+    except OpenProjectError as error:
+        print(f"op-agent-engine: error: {error}", file=sys.stderr)
+        return CONFIG_ERROR_EXIT
+
+
+def _run(config_path: Path, *, dry_run: bool) -> int:
+    try:
+        config = _load_config(config_path)
+    except ConfigError as error:
+        print(f"op-agent-engine: error: {error}", file=sys.stderr)
+        return CONFIG_ERROR_EXIT
+    try:
+        settings = EngineSettings()
+        settings.require_api_values()
+    except ConfigError as error:
+        print(f"op-agent-engine: error: {error}", file=sys.stderr)
+        return CONFIG_ERROR_EXIT
+    configure_logging(os.environ.get("LOG_LEVEL", "INFO"))
+    try:
+        return run_engine(config, settings, dry_run=dry_run)
     except (ConfigError, ValidationError) as error:
         print(f"op-agent-engine: error: {error}", file=sys.stderr)
         return CONFIG_ERROR_EXIT
@@ -308,6 +303,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _poll_once(
             config_path, dry_run=(args.command == "dry-run") or bool(args.dry_run)
         )
+
+    if args.command == "run":
+        return _run(config_path, dry_run=bool(args.dry_run))
 
     # The remaining commands need a valid configuration before they can do
     # anything, even while their engine behaviour is a stub.

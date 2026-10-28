@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -253,18 +254,60 @@ def test_run_requires_valid_config(
 def test_stub_commands_load_config_then_report_not_implemented(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    # ``run`` and ``status`` are still stubs; ``once``/``dry-run`` are
-    # implemented in M2 and drive a real (mocked) poll instead.
-    for command in ("run", "status"):
-        assert main([command, "--config", str(EXAMPLE)]) == NOT_IMPLEMENTED_EXIT
+    # ``status`` is still a stub; ``run``/``once``/``dry-run`` are implemented
+    # (M3) and drive a real (mocked) poll instead.
+    assert main(["status", "--config", str(EXAMPLE)]) == NOT_IMPLEMENTED_EXIT
 
     error = capsys.readouterr().err
-    assert "'run' is not implemented yet" in error
     assert "'status' is not implemented yet" in error
 
 
-def test_dry_run_flag_is_accepted_before_subcommand(
+def test_run_refuses_to_start_when_the_lock_is_held(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    assert main(["--dry-run", "run", "--config", str(EXAMPLE)]) == NOT_IMPLEMENTED_EXIT
-    assert "not implemented yet" in capsys.readouterr().err
+    import fcntl
+    import os
+
+    data_dir = tmp_path / "data"
+    lock_path = data_dir / "engine.lock"
+    lock_path.parent.mkdir(parents=True)
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644)
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    monkeypatch.setenv("DATA_DIR", str(data_dir))
+    try:
+        assert main(["run", "--config", str(EXAMPLE)]) == 1
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+    output = capsys.readouterr().out
+    assert "another engine instance holds the lock" in output
+
+
+def test_dry_run_flag_is_accepted_before_subcommand(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import yaml
+
+    import op_agent_engine.engine as engine
+    from op_agent_engine.openproject.client import OpenProjectClient
+    from tests.test_poller import PRIORITIES
+    from tests.test_resolve import make_fake, workflow_mapping
+
+    fake = make_fake(work_packages=[], priorities=PRIORITIES)
+
+    def factory(base_url: str, token: str, **kwargs: Any) -> OpenProjectClient:
+        return OpenProjectClient(base_url, token, transport=fake.transport, **kwargs)
+
+    monkeypatch.setattr(engine, "OpenProjectClient", factory)
+    monkeypatch.setenv("OP_ENGINE_TOKEN", "test-token")
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+
+    config_path = tmp_path / "workflow.yaml"
+    config_path.write_text(yaml.safe_dump(workflow_mapping()), encoding="utf-8")
+
+    # A single dry-run poll cycle completes and claims nothing.
+    assert main(["--dry-run", "once", "--config", str(config_path)]) == OK_EXIT
+    assert all(request.method == "GET" for request in fake.requests)

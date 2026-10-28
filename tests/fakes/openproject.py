@@ -1,14 +1,20 @@
 """Minimal in-memory OpenProject API for tests.
 
-Implements the endpoints needed by startup resolution and the M2 poller
-(statuses, users, projects, types, schemas, priorities, work packages and
-relations). Responses use the real HAL collection shape
-(``_embedded.elements`` plus ``_links.nextByOffset``), so pagination and
-redirect behaviour are exercised the same way as against the live API.
+Implements the endpoints needed by startup resolution, the M2 poller and the
+M3 scheduler (statuses, users, projects, types, schemas, priorities, work
+packages, relations and work package updates). Responses use the real HAL
+collection shape (``_embedded.elements`` plus ``_links.nextByOffset``), so
+pagination and redirect behaviour are exercised the same way as against the
+live API.
 
 Work package, relation and priority fixtures are plain dicts shaped like the
 live HAL entries; the fake applies the ``project``/``status``/``type``/
 ``parent`` and ``involved`` filters and the ``sortBy`` order the poller uses.
+
+``PATCH /api/v3/work_packages/<id>`` mirrors the verified live behaviour
+(docs/VERIFICATION.md): the body must carry the current ``lockVersion`` or
+the fake answers 409 ``UpdateConflict``; on success the status/assignee links
+are applied and the lockVersion is incremented.
 """
 
 from __future__ import annotations
@@ -74,6 +80,7 @@ class FakeOpenProject:
         work_packages: list[dict[str, JSON]] | None = None,
         relations: list[dict[str, JSON]] | None = None,
         priorities: list[dict[str, JSON]] | None = None,
+        patch_error: tuple[int, str] | None = None,
     ) -> None:
         self.statuses = statuses or []
         self.users = users or []
@@ -83,10 +90,20 @@ class FakeOpenProject:
         self.allow_user_listing = allow_user_listing
         self.expected_token = expected_token
         self.max_page_size = max_page_size
-        self.work_packages = work_packages or []
+        self.work_packages = list(work_packages or [])
+        # The live API always includes ``lockVersion`` in work package
+        # payloads (readOnly on reads, required on updates); normalise
+        # fixtures that omit it.
+        for wp in self.work_packages:
+            if isinstance(wp, dict):
+                wp.setdefault("lockVersion", 0)
         self.relations = relations or []
         self.priorities = priorities or []
         self.requests: list[httpx.Request] = []
+        # Bodies of every successful PATCH /api/v3/work_packages/<id>.
+        self.patches: list[dict[str, JSON]] = []
+        # When set, every PATCH returns this (status, message) instead.
+        self.patch_error = patch_error
 
     @property
     def transport(self) -> httpx.MockTransport:
@@ -98,10 +115,16 @@ class FakeOpenProject:
         self.requests.append(request)
         if self.expected_token is not None and not self._authorized(request):
             return self._error(401, "Unauthorized")
+
+        path = request.url.path
+        if request.method == "PATCH":
+            wp_by_id = _WP_BY_ID.match(path)
+            if wp_by_id:
+                return self._patch_work_package(int(wp_by_id.group("id")), request)
+            return self._error(404, "The requested resource could not be found.")
         if request.method != "GET":
             return self._error(405, "Method not allowed")
 
-        path = request.url.path
         if path == "/api/v3/statuses":
             return self._collection(request, self.statuses, "/api/v3/statuses")
         if path == "/api/v3/priorities":
@@ -159,6 +182,63 @@ class FakeOpenProject:
             return self._json(schema)
 
         return self._error(404, "The requested resource could not be found.")
+
+    def _patch_work_package(
+        self, work_package_id: int, request: httpx.Request
+    ) -> httpx.Response:
+        """Mirror the verified live PATCH behaviour (docs/VERIFICATION.md).
+
+        * ``lockVersion`` is required in the body; missing or stale -> 409
+          ``UpdateConflict``.
+        * ``_links.status`` / ``_links.assignee`` are applied.
+        * The lockVersion is incremented on success.
+        """
+        wp = next(
+            (w for w in self.work_packages if w.get("id") == work_package_id), None
+        )
+        if wp is None:
+            return self._error(404, "The requested resource could not be found.")
+        if self.patch_error is not None:
+            status, message = self.patch_error
+            return self._error(status, message)
+
+        try:
+            body = json.loads(request.content.decode())
+        except ValueError:
+            body = None
+        if not isinstance(body, dict):
+            return self._error(400, "Malformed request body.")
+
+        current_version = wp.get("lockVersion", 0)
+        sent_version = body.get("lockVersion")
+        if not isinstance(sent_version, int) or isinstance(sent_version, bool):
+            return self._conflict()
+        if sent_version != current_version:
+            return self._conflict()
+
+        self.patches.append({"work_package_id": work_package_id, "body": body})
+        links = body.get("_links")
+        if isinstance(links, dict):
+            wp_links = wp.setdefault("_links", {})
+            for name in ("status", "assignee"):
+                link = links.get(name)
+                if isinstance(link, dict) and isinstance(link.get("href"), str):
+                    wp_links[name] = {"href": link["href"]}
+        wp["lockVersion"] = current_version + 1
+        return self._json(wp)
+
+    @staticmethod
+    def _conflict() -> httpx.Response:
+        return httpx.Response(
+            409,
+            json={
+                "_type": "Error",
+                "errorIdentifier": "urn:openproject-org:api:v3:errors:UpdateConflict",
+                "message": "Could not update the resource because of "
+                "conflicting modifications.",
+            },
+            headers={"Content-Type": "application/hal+json"},
+        )
 
     def _authorized(self, request: httpx.Request) -> bool:
         header = request.headers.get("Authorization", "")

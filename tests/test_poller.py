@@ -172,6 +172,7 @@ async def test_dry_run_writes_nothing() -> None:
 
 def test_cli_dry_run_logs_plan_and_writes_nothing(tmp_path, monkeypatch) -> None:
     import op_agent_engine.cli as cli
+    import op_agent_engine.engine as engine
 
     work_packages = [wp(100, status=1, agent=11), wp(200, status=3, agent=None)]
     fake = make_fake(work_packages=work_packages, priorities=PRIORITIES)
@@ -179,9 +180,10 @@ def test_cli_dry_run_logs_plan_and_writes_nothing(tmp_path, monkeypatch) -> None
     def factory(base_url: str, token: str, **kwargs: Any) -> OpenProjectClient:
         return OpenProjectClient(base_url, token, transport=fake.transport, **kwargs)
 
-    monkeypatch.setattr(cli, "OpenProjectClient", factory)
+    monkeypatch.setattr(engine, "OpenProjectClient", factory)
     monkeypatch.setenv("OP_BASE_URL", BASE_URL)
     monkeypatch.setenv("OP_ENGINE_TOKEN", TOKEN)
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
 
     config_path = tmp_path / "workflow.yaml"
     config_path.write_text(yaml.safe_dump(workflow_mapping()), encoding="utf-8")
@@ -190,10 +192,13 @@ def test_cli_dry_run_logs_plan_and_writes_nothing(tmp_path, monkeypatch) -> None
 
     assert exit_code == 0
     assert all(request.method == "GET" for request in fake.requests)
+    # Dry-run must not create the store file.
+    assert not (tmp_path / "data" / "engine.db").exists()
 
 
 def test_cli_once_runs_a_poll_cycle(tmp_path, monkeypatch) -> None:
     import op_agent_engine.cli as cli
+    import op_agent_engine.engine as engine
 
     work_packages = [wp(100, status=1, agent=11)]
     fake = make_fake(work_packages=work_packages, priorities=PRIORITIES)
@@ -201,9 +206,10 @@ def test_cli_once_runs_a_poll_cycle(tmp_path, monkeypatch) -> None:
     def factory(base_url: str, token: str, **kwargs: Any) -> OpenProjectClient:
         return OpenProjectClient(base_url, token, transport=fake.transport, **kwargs)
 
-    monkeypatch.setattr(cli, "OpenProjectClient", factory)
+    monkeypatch.setattr(engine, "OpenProjectClient", factory)
     monkeypatch.setenv("OP_BASE_URL", BASE_URL)
     monkeypatch.setenv("OP_ENGINE_TOKEN", TOKEN)
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
 
     config_path = tmp_path / "workflow.yaml"
     config_path.write_text(yaml.safe_dump(workflow_mapping()), encoding="utf-8")
@@ -211,5 +217,12 @@ def test_cli_once_runs_a_poll_cycle(tmp_path, monkeypatch) -> None:
     exit_code = cli.main(["once", "--config", str(config_path)])
 
     assert exit_code == 0
-    # `once` is also read-only in M2 (no runner execution yet).
-    assert all(request.method == "GET" for request in fake.requests)
+    # In M3, `once` claims: exactly one PATCH, and the work package is
+    # moved to In Progress and assigned to the agent.
+    patches = [request for request in fake.requests if request.method == "PATCH"]
+    assert len(patches) == 1
+    assert patches[0].url.path == "/api/v3/work_packages/100"
+    claimed = fake.work_packages[0]
+    assert claimed["_links"]["status"]["href"] == "/api/v3/statuses/2"
+    assert claimed["_links"]["assignee"]["href"] == "/api/v3/users/11"
+    assert claimed["lockVersion"] == 1

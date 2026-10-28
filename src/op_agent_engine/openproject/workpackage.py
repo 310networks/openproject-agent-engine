@@ -29,6 +29,9 @@ class WorkPackage:
     priority_name: str
     assignee_id: int | None
     agent_value: str | None
+    # Optimistic-locking version; required in the PATCH body when claiming
+    # (verified live: omitting it yields HTTP 409 UpdateConflict).
+    lock_version: int | None = None
 
 
 def _id_from_href(href: Any) -> int | None:
@@ -95,6 +98,7 @@ def parse_work_package(
     assignee = _link(entry, "assignee") or {}
     raw_id = entry.get("id")
     work_package_id = int(raw_id) if isinstance(raw_id, int) else 0
+    raw_lock = entry.get("lockVersion")
     return WorkPackage(
         id=work_package_id,
         display_id=str(entry.get("displayId") or work_package_id),
@@ -108,4 +112,9 @@ def parse_work_package(
         priority_name=str(priority.get("title", "")),
         assignee_id=_id_from_href(assignee.get("href")),
         agent_value=_extract_agent_value(entry, agent_field_id, option_id_to_value),
+        lock_version=(
+            raw_lock
+            if isinstance(raw_lock, int) and not isinstance(raw_lock, bool)
+            else None
+        ),
     )
