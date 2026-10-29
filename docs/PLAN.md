@@ -8,9 +8,9 @@ Implementation plan for an engine that monitors OpenProject work packages and di
 
 **Goal.** Poll OpenProject every 60 seconds. For each eligible work package, run the right agent in the right workspace with a rendered prompt, verify the outcome against external state (GitHub, OpenProject), and apply the status transition. OpenProject is the system of record.
 
-**In scope:** polling, eligibility, claiming, agent dispatch, outcome verification, status transitions, retry and escalation, crash recovery, logging, dry-run mode, systemd service packaging.
+**In scope:** polling, eligibility, claiming, agent dispatch, outcome verification, status transitions, retry and escalation, crash recovery, logging, dry-run mode, systemd service packaging, agent provisioning (users, roles, memberships) and per-agent project scoping.
 
-**Out of scope (v1):** webhooks, multi-host operation, a web UI, agent session resume, automatic sub-ticket creation, notifications.
+**Out of scope (v1):** webhooks, multi-host operation, a web UI, agent session resume, automatic sub-ticket creation, notifications, and creating OpenProject statuses, types, workflow transitions and custom fields (they are validated, not created).
 
 ## 2. Locked decisions
 
@@ -99,6 +99,7 @@ Provided through the systemd `EnvironmentFile` (section 15).
 |---|---|---|
 | `OP_BASE_URL` | required | OpenProject base URL. |
 | `OP_ENGINE_TOKEN` | required | API token of the `agent-engine` OpenProject user. |
+| `OP_PROVISION_TOKEN` | optional | Admin-capable token used only by `provision` and `check-config` (M8). Falls back to `OP_ENGINE_TOKEN` when that token is admin. Never used for runtime dispatch. |
 | `POLL_INTERVAL_SECONDS` | 60 | Poll interval. |
 | `MAX_CONCURRENT_RUNS` | 1 | Global cap on simultaneous runs. |
 | `MAX_REJECTIONS` | 3 | Rejection cap per work package. |
@@ -128,6 +129,10 @@ openproject:
     closed: "Closed"
   agent_field: "AGENT"            # custom field name; resolved to customField<N> at startup
   engine_user: "agent-engine"     # login of the engine user
+  provisioning:                   # M8; used only by provision/check-config
+    enabled: true
+    agent_role: "Agent Worker"     # role name on this instance
+    engine_role: "Agent Engine"
   dispatch_priority: [ready_for_review, rejected, new]   # finish work before starting new work
   eligible_types: ["Task", "Bug", "Feature"]
   skip_work_packages_with_children: true
@@ -147,6 +152,7 @@ agents:
     kind: implementer
     op_login: "frontendEngineer"
     workspace: "frontendEngineer"          # under WORKSPACE_ROOT
+    projects: ["*"]                        # M8 scope; ["*"] = every enabled project
     runner: pi
     model: null                            # optional, passed to runner as {model}
     timeout_seconds: 3600
@@ -199,6 +205,8 @@ Rules:
 - `${VAR}` placeholders resolve from the engine's environment. A missing variable is a startup error.
 - Any agent may use any runner. Mixing runners is supported (for example, implementers on OpenCode and the reviewer on pi).
 - Per-agent `env` entries override the inherited environment for that agent's runs only.
+- `projects` limits the projects the engine may dispatch to that agent. `["*"]` means every project with `enabled: true`; every other identifier must be declared in `projects`. The field defaults to `["*"]`.
+- `openproject.provisioning` is read only by `provision` and `check-config` (M8); runtime dispatch never uses the provisioning token.
 - `check-config` validates the whole file and every reference (section 18, M1).
 
 ## 6. Runner abstraction (agent-agnostic)
@@ -255,7 +263,7 @@ Known command shapes (**VERIFY** with `--help` before use): pi accepts `-p` for 
 - **Activities:** `GET /api/v3/work_packages/<id>/activities`. Each entry carries the author link, the comment, and the change details (used for rejection counting and comment filtering).
 - **Relations:** `GET /api/v3/work_packages/<id>/relations`. A work package is blocked if any relation of type `blocked` (blocked by) points to a work package whose status is not `Closed`.
 - **Children:** a work package with children is a container and is skipped when `skip_work_packages_with_children` is true.
-- **Permissions model (document in the README for setup):**
+- **Permissions model (provisioned by M8, documented in the README):**
   - Agent users: project member with a role that can view work packages and add comments (notes), and has **no workflow transitions**. This enforces "engine owns transitions" at the permission level. Agent users must be assignable so the engine can set the assignee.
   - `agent-engine` user: project member with a role that can edit work packages (status, assignee) and comment. Configure workflow transitions for this role and each eligible type: `New` to `In Progress`, `In Progress` to `Ready for Review`, `Ready for Review` to `In Testing`, `In Testing` to `Closed`, `In Testing` to `Rejected`, `Rejected` to `In Progress`, and every status the engine handles to `On Hold`. Workflow transitions are configured per role and type in OpenProject.
 - **Errors:** retry transient failures (network errors, HTTP 429 and 5xx) with exponential backoff and jitter, maximum 5 attempts. A failed poll never crashes the engine. The next poll retries.
@@ -269,10 +277,11 @@ A work package is dispatched only if all conditions hold:
 3. Its status is `New`, `Rejected`, `Ready for Review`, or (recovery only) `In Progress` or `In Testing` assigned to an agent user.
 4. For `New` and `Rejected`: the `AGENT` field has a configured value.
 5. It is not assigned to a human (any user other than the configured agent users and `agent-engine`) when `skip_if_assigned_to_human` is true. Unassigned work packages are eligible.
-6. It has no unfinished blockers (relations) and no children (when configured).
-7. It has no active run in the `runs` table.
-8. The target agent has no active run (one active run per agent).
-9. A global slot is available (`MAX_CONCURRENT_RUNS`).
+6. The project is inside the target agent's `projects` scope (M8). A routing value that points at an agent without access to the project is skipped with a warning and never claimed.
+7. It has no unfinished blockers (relations) and no children (when configured).
+8. It has no active run in the `runs` table.
+9. The target agent has no active run (one active run per agent).
+10. A global slot is available (`MAX_CONCURRENT_RUNS`).
 
 Work packages that cannot run because no slot is free are not claimed. They remain unchanged and are reconsidered on the next poll.
 
@@ -443,7 +452,7 @@ The engine runs as a systemd service on the host where the agent CLIs, their con
 - Virtual environment: `~/.local/share/op-agent-engine/venv` (or `pipx`), with the engine installed from the repository.
 - Engine checkout: a dedicated checkout of the engine repository, kept on `main` and separate from any development clone. `WORKSPACE_ROOT` points to its `agents/` directory. The live agents read their `AGENTS.md` files from this checkout, so changing its checked-out branch changes the live standard. Update it with `git pull` on `main` and restart the service.
 - Configuration: `~/.config/op-agent-engine/workflow.yaml`.
-- Secrets: `~/.config/op-agent-engine/engine.env`, mode `0600` (`OP_BASE_URL`, `OP_ENGINE_TOKEN`, per-agent tokens such as `OP_TOKEN_FRONTEND`).
+- Secrets: `~/.config/op-agent-engine/engine.env`, mode `0600` (`OP_BASE_URL`, `OP_ENGINE_TOKEN`, optional `OP_PROVISION_TOKEN`, per-agent tokens such as `OP_TOKEN_FRONTEND`).
 - Data: `~/.local/share/op-agent-engine/` (database, run directories).
 
 **Unit file** `/etc/systemd/system/op-agent-engine.service` (provide as `deploy/op-agent-engine.service` with `<host-user>` placeholders):
@@ -540,6 +549,7 @@ openproject-agent-engine/
 │   ├── dispatcher.py              # claim, prepare, render, run
 │   ├── workspace.py               # section 11
 │   ├── prompts.py                 # rendering, comment selection
+│   ├── provision.py               # users, roles, memberships (M8)
 │   ├── runners/
 │   │   ├── base.py                # RunRequest, RunResult, process handling
 │   │   └── generic.py             # argv/stdin runner driven by config
@@ -580,13 +590,29 @@ Accept: tests cover the cap boundary (rejection 3 allowed, rejection 4 escalates
 **M7 - Recovery, shutdown, pause.** Startup reconciliation (including `In Testing` recovery), resume runs, crash retry caps, PID-reuse-safe cleanup of leftover processes, graceful shutdown, pause controls, heartbeat, `status` command, optional systemd watchdog.
 Accept: tests simulate a restart with `In Progress` and `In Testing` work packages and verify resume and re-review dispatch; an interrupted run does not count toward the crash cap; a failed run does; shutdown marks runs `interrupted`.
 
-**M8 - Documentation and hardening.** README with full OpenProject setup (roles, permissions, statuses, workflows including the `agent-engine` transitions in section 7, custom field, tokens), systemd installation steps, configuration reference, runbook (pause, inspect a run, handle `On Hold`), log retention job, secret redaction tests.
-Accept: a person with an empty OpenProject project can follow the README to a working end-to-end run using a fake agent; no secret appears in logs.
+**M8 - Agent provisioning and project scoping.** `op-agent-engine provision` reconciles the four agent users and the `agent-engine` user from `workflow.yaml`, the roles they need, and their project memberships; the engine then enforces the per-agent project scope declared in configuration. The configuration fields this milestone adds are in section 5.2.
+
+Decisions:
+
+- Only users, roles, memberships and scope are provisioned. Statuses, types, workflow transitions, the `AGENT` custom field and its options stay manual admin setup. `check-config` validates them (M1); `provision` does not create them.
+- Provisioning needs an admin-capable token (`OP_PROVISION_TOKEN`, falling back to `OP_ENGINE_TOKEN` when that token is admin). Runtime dispatch keeps the least-privilege `OP_ENGINE_TOKEN`. The two tokens are never interchangeable.
+- Tokens are not minted. Expected: OpenProject creates API tokens in the UI, not through the API (VERIFY, section 20 item 10). `provision` reports which tokens are still missing and `check-config` verifies each configured `OP_TOKEN_*` belongs to the expected login through `GET /api/v3/users/me`.
+- Users: create when missing, never change an existing login; update the display name and email only when they differ. Never delete or deactivate.
+- Roles: create when missing with the fixed permission sets from section 7 (agent role: view work packages, add notes, no transitions, assignable; engine role: view and edit work packages, add notes, configured transitions). If a role with the configured name exists with different permissions, fail and report the drift instead of rewriting it.
+- Memberships: one membership per agent per project in its scope, carrying the configured role. A missing membership is created. An existing membership with the wrong role is updated to the configured role. A membership is never removed, and a human-added membership is never touched.
+- `projects` on an agent defaults to `["*"]` (every project with `enabled: true`). A non-wildcard identifier that is not declared in `projects` is a configuration error. `["*"]` never reaches projects that are not declared.
+- The engine applies the same scope when deciding eligibility: a work package in a project outside the routed agent's scope is skipped with a warning, never claimed, and left unmodified (not sent to `On Hold`).
+- `provision` is dry-run by default and writes only with `--apply`. `check-config` performs the same lookups read-only and reports per-agent scope plus membership and role drift. Neither command runs in the polling loop.
+
+Accept: with a fake OpenProject, `provision --apply` creates the five users, both roles and one membership per agent per scoped project; a second run performs no writes; the wildcard expands to enabled projects only; a role with drifted permissions fails with a specific message; a mis-scoped `AGENT` value is skipped without a status change; a token whose login does not match its agent fails startup; `--dry-run` writes nothing; no secret appears in logs or `meta.json`. On a live instance, verify the endpoints and permission requirements in section 20 items 9-11, then run the full cycle from an empty project with the five provisioned users.
+
+**M9 - Documentation and hardening.** README with full OpenProject setup (roles, permissions, statuses, workflows including the `agent-engine` transitions in section 7, custom field, tokens), the provisioning and scoping workflow (M8), systemd installation steps, configuration reference, runbook (pause, inspect a run, handle `On Hold`), log retention job, secret redaction tests.
+Accept: a person with an empty OpenProject instance can follow the README to provision the five users, the roles and the scoped memberships, then reach a working end-to-end run using a fake agent; no secret appears in logs.
 
 ## 19. Testing strategy
 
-- **Unit tests** for eligibility, scheduler, outcome table (section 4), comment selection, prompt rendering, config validation, placeholder substitution.
-- **Fakes:** `FakeOpenProject` (in-memory work packages, activities, relations, optimistic locking), `FakeGitHub` (PR existence and merge state), and a fake agent script (`tests/fakes/fake_agent.sh`) whose behavior is selected by an environment variable (`pr_opened`, `blocked`, `crash`, `hang`, `approve`, `reject_with_comment`, `reject_without_comment`).
+- **Unit tests** for eligibility (including project scoping), scheduler, outcome table (section 4), comment selection, prompt rendering, config validation, placeholder substitution, provisioning reconciliation and idempotency.
+- **Fakes:** `FakeOpenProject` (in-memory work packages, activities, relations, optimistic locking, users, roles, memberships), `FakeGitHub` (PR existence and merge state), and a fake agent script (`tests/fakes/fake_agent.sh`) whose behavior is selected by an environment variable (`pr_opened`, `blocked`, `crash`, `hang`, `approve`, `reject_with_comment`, `reject_without_comment`).
 - **HTTP tests** with `respx` for the real client's request shapes, retries, pagination, and 409 handling.
 - **Process tests** for timeout and process-group termination.
 - **End-to-end test** against fakes, running a full cycle `New` to `Closed`, and a cycle with two rejections.
@@ -602,3 +628,6 @@ Accept: a person with an empty OpenProject project can follow the README to a wo
 6. Whether repositories contain their own `AGENTS.md` files. The workspace standard states precedence, but removing conflicting files avoids confusion.
 7. If branch protection is enabled later, a rule requiring an approving review blocks the reviewer's merge while all agents share one GitHub account. A dedicated reviewer account (through the reviewer's `env` `GH_TOKEN`) resolves this.
 8. That no `AGENTS.md` or `CLAUDE.md` exists at the engine repository root or above `agents/`, and that the global agent configuration does not contradict the workspace standards (section 11).
+9. OpenProject user, role and membership API: `POST /api/v3/users` request fields and permission requirements, `GET`/`POST /api/v3/roles` (including the `assignable` attribute), and the `POST /api/v3/memberships` payload shape; whether `manage_user` alone suffices or administrator is required for each.
+10. Whether API tokens can be created programmatically (expected: no) and that `GET /api/v3/users/me` returns the login of the token owner, so a per-agent token can be verified before dispatch.
+11. The permission names each role needs, and whether roles can be created through the API with those permissions: work package view/edit, `add_work_package_notes`, and the workflow transitions from section 7.
