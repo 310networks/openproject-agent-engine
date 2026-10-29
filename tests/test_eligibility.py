@@ -251,6 +251,14 @@ CASES: list[dict[str, Any]] = [
         "agent_key": "IMPL",
         "status_key": "new",
     },
+    # Rule 6 (M8): target agent's project scope.
+    {
+        "id": "rule6_agent_outside_project_scope",
+        "ctx_overrides": {"agent_project_ids": {"IMPL": frozenset(), "REVIEWER": frozenset({4})}},
+        "eligible": False,
+        "reason": "agent 'IMPL' has no access to project 4",
+        "scope_violation": True,
+    },
     # Rule 7: no active run for this work package.
     {
         "id": "rule7_active_run_for_work_package",
@@ -302,6 +310,7 @@ async def test_eligibility_rule(case: dict[str, Any]) -> None:
         assert result.status_key == case["status_key"]
     else:
         assert result.reason == case["reason"]
+        assert result.scope_violation is case.get("scope_violation", False)
 
 
 async def test_build_context_derives_eligible_types_and_agent_users() -> None:
@@ -318,3 +327,8 @@ async def test_build_context_derives_eligible_types_and_agent_users() -> None:
     assert ctx.option_id_to_value == {11: "IMPL", 22: "REVIEWER"}
     assert ctx.status_key_by_id[1] == "new"
     assert ctx.status_key_by_id[3] == "ready_for_review"
+    # Both agents default to ['*'], which expands to the enabled project only.
+    assert ctx.agent_project_ids == {
+        "IMPL": frozenset({4}),
+        "REVIEWER": frozenset({4}),
+    }

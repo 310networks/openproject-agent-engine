@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import signal
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -39,6 +40,10 @@ from op_agent_engine.openproject.client import (
 )
 from op_agent_engine.openproject.resolve import OpenProjectResolution, resolve_workflow
 from op_agent_engine.poller import Poller
+from op_agent_engine.provision import (
+    TokenVerificationError,
+    enforce_agent_tokens,
+)
 from op_agent_engine.recovery import recover_interrupted_runs
 from op_agent_engine.scheduler import ClaimedRun, Scheduler
 from op_agent_engine.store import EngineLock, Store
@@ -170,6 +175,18 @@ class Engine:
         except OpenProjectError as error:
             logger.error("workflow resolution failed: %s", error)
             return 1
+
+        # M8: a token configured for an agent must belong to that agent's
+        # login. Missing tokens are reported by ``provision``; a mismatch is a
+        # startup failure.
+        if self._settings.op_base_url:
+            try:
+                await enforce_agent_tokens(
+                    self._settings.op_base_url, self._config, os.environ
+                )
+            except TokenVerificationError as error:
+                logger.error("agent token verification failed: %s", error)
+                return 1
 
         notify("READY=1")
 
@@ -381,6 +398,8 @@ async def _run_once_async(
         settings.op_base_url, settings.op_engine_token.get_secret_value()
     ) as client:
         resolution = await resolve_workflow(client, config)
+        if settings.op_base_url:
+            await enforce_agent_tokens(settings.op_base_url, config, os.environ)
         poller = Poller(
             client,
             config,

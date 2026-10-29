@@ -34,6 +34,8 @@ _PROJECT_TYPES = re.compile(r"^/api/v3/projects/(?P<project_id>[^/]+)/types$")
 _SCHEMA = re.compile(r"^/api/v3/work_packages/schemas/(?P<identifier>[^/]+)$")
 _WP_BY_ID = re.compile(r"^/api/v3/work_packages/(?P<id>\d+)$")
 _WP_ACTIVITIES = re.compile(r"^/api/v3/work_packages/(?P<id>\d+)/activities$")
+_USER_BY_ID = re.compile(r"^/api/v3/users/(?P<id>\d+)$")
+_MEMBERSHIP_BY_ID = re.compile(r"^/api/v3/memberships/(?P<id>\d+)$")
 _HREF_ID = re.compile(r"/(\d+)$")
 
 
@@ -93,6 +95,9 @@ class FakeOpenProject:
         activities: list[dict[str, JSON]] | None = None,
         posting_user_id: int | None = 10,
         patch_error: tuple[int, str] | None = None,
+        roles: list[dict[str, JSON]] | None = None,
+        memberships: list[dict[str, JSON]] | None = None,
+        token_users: dict[str, int] | None = None,
     ) -> None:
         self.statuses = statuses or []
         self.users = users or []
@@ -101,6 +106,14 @@ class FakeOpenProject:
         self.schemas = schemas or {}
         self.allow_user_listing = allow_user_listing
         self.expected_token = expected_token
+        # Additional token -> user id mappings used by the provisioning and
+        # token-verification tests. ``expected_token`` stays the default
+        # engine token mapped to ``posting_user_id``.
+        self.token_users: dict[str, int] = dict(token_users or {})
+        if expected_token and posting_user_id is not None:
+            self.token_users.setdefault(expected_token, posting_user_id)
+        self.roles: list[dict[str, JSON]] = list(roles or [])
+        self.memberships: list[dict[str, JSON]] = list(memberships or [])
         self.max_page_size = max_page_size
         self.work_packages = list(work_packages or [])
         # The live API always includes ``lockVersion`` in work package
@@ -145,7 +158,7 @@ class FakeOpenProject:
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
-        if self.expected_token is not None and not self._authorized(request):
+        if not self._authorized(request):
             return self._error(401, "Unauthorized")
 
         path = request.url.path
@@ -153,14 +166,37 @@ class FakeOpenProject:
             wp_by_id = _WP_BY_ID.match(path)
             if wp_by_id:
                 return self._patch_work_package(int(wp_by_id.group("id")), request)
+            user_by_id = _USER_BY_ID.match(path)
+            if user_by_id:
+                return self._patch_user(int(user_by_id.group("id")), request)
+            membership_by_id = _MEMBERSHIP_BY_ID.match(path)
+            if membership_by_id:
+                return self._patch_membership(
+                    int(membership_by_id.group("id")), request
+                )
             return self._error(404, "The requested resource could not be found.")
         if request.method == "POST":
             activities_match = _WP_ACTIVITIES.match(path)
             if activities_match:
                 return self._post_comment(int(activities_match.group("id")), request)
+            if path == "/api/v3/users":
+                return self._create_user(request)
+            if path == "/api/v3/memberships":
+                return self._create_membership(request)
             return self._error(404, "The requested resource could not be found.")
         if request.method != "GET":
             return self._error(405, "Method not allowed")
+
+        if path == "/api/v3/users/me":
+            return self._current_user(request)
+        if path == "/api/v3/roles":
+            return self._collection(request, self.roles, "/api/v3/roles")
+        if path == "/api/v3/memberships":
+            return self._collection(
+                request,
+                self._filter_memberships(request),
+                "/api/v3/memberships",
+            )
 
         activities_match = _WP_ACTIVITIES.match(path)
         if activities_match:
@@ -287,12 +323,184 @@ class FakeOpenProject:
             headers={"Content-Type": "application/hal+json"},
         )
 
-    def _authorized(self, request: httpx.Request) -> bool:
+    @staticmethod
+    def _request_token(request: httpx.Request) -> str | None:
         header = request.headers.get("Authorization", "")
-        expected = "Basic " + base64.b64encode(
-            f"apikey:{self.expected_token}".encode()
-        ).decode()
-        return header == expected
+        if not header.startswith("Basic "):
+            return None
+        try:
+            decoded = base64.b64decode(header[6:]).decode()
+        except (ValueError, UnicodeDecodeError):
+            return None
+        username, _, token = decoded.partition(":")
+        return token if username == "apikey" else None
+
+    def _authorized(self, request: httpx.Request) -> bool:
+        if self.expected_token is None and not self.token_users:
+            return True
+        token = self._request_token(request)
+        if token is None:
+            return False
+        return token == self.expected_token or token in self.token_users
+
+    def _current_user(self, request: httpx.Request) -> httpx.Response:
+        token = self._request_token(request)
+        user_id = self.token_users.get(token or "")
+        if user_id is None:
+            user_id = self.posting_user_id
+        user = next(
+            (entry for entry in self.users if entry.get("id") == user_id), None
+        )
+        if user is None:
+            return self._error(404, "The requested resource could not be found.")
+        return self._json(user)
+
+    def _create_user(self, request: httpx.Request) -> httpx.Response:
+        body = self._body(request)
+        if not isinstance(body, dict):
+            return self._error(400, "Malformed request body")
+        login = body.get("login")
+        if not isinstance(login, str) or not login:
+            return self._error(422, "Login can't be blank")
+        if any(user.get("login") == login for user in self.users):
+            return self._error(422, "Login has already been taken")
+        user_id = max(
+            (int(user["id"]) for user in self.users if isinstance(user.get("id"), int)),
+            default=0,
+        ) + 1
+        first = str(body.get("firstName") or "")
+        last = str(body.get("lastName") or "")
+        user: dict[str, JSON] = {
+            "_type": "User",
+            "id": user_id,
+            "login": login,
+            "name": " ".join(part for part in (first, last) if part),
+            "firstName": first,
+            "lastName": last,
+            "email": body.get("email"),
+            "admin": bool(body.get("admin", False)),
+            "status": body.get("status", "active"),
+            "_links": {
+                "self": {"href": f"/api/v3/users/{user_id}", "title": login}
+            },
+        }
+        self.users.append(user)
+        return self._json(user, status_code=201)
+
+    def _patch_user(
+        self, user_id: int, request: httpx.Request
+    ) -> httpx.Response:
+        user = next(
+            (entry for entry in self.users if entry.get("id") == user_id), None
+        )
+        if user is None:
+            return self._error(404, "The requested resource could not be found.")
+        body = self._body(request)
+        if not isinstance(body, dict):
+            return self._error(400, "Malformed request body")
+        for key in ("firstName", "lastName", "email"):
+            if key in body:
+                user[key] = body[key]
+        if "firstName" in body or "lastName" in body:
+            user["name"] = " ".join(
+                part
+                for part in (
+                    str(user.get("firstName") or ""),
+                    str(user.get("lastName") or ""),
+                )
+                if part
+            )
+        return self._json(user)
+
+    def _create_membership(self, request: httpx.Request) -> httpx.Response:
+        body = self._body(request)
+        if not isinstance(body, dict):
+            return self._error(400, "Malformed request body")
+        links = body.get("_links")
+        if not isinstance(links, dict):
+            return self._error(422, "Roles can't be blank")
+        principal = _href_id(links.get("principal"))
+        project = _href_id(links.get("project"))
+        roles = links.get("roles")
+        if not isinstance(roles, list) or principal is None:
+            return self._error(422, "Roles can't be blank")
+        membership_id = max(
+            (
+                int(entry["id"])
+                for entry in self.memberships
+                if isinstance(entry.get("id"), int)
+            ),
+            default=0,
+        ) + 1
+        membership: dict[str, JSON] = {
+            "_type": "Membership",
+            "id": membership_id,
+            "_links": {
+                "self": {
+                    "href": f"/api/v3/memberships/{membership_id}",
+                },
+                "principal": {"href": f"/api/v3/users/{principal}"},
+                "project": {"href": f"/api/v3/projects/{project}"},
+                "roles": [
+                    {"href": role.get("href")}
+                    for role in roles
+                    if isinstance(role, dict)
+                ],
+            },
+        }
+        self.memberships.append(membership)
+        return self._json(membership, status_code=201)
+
+    def _patch_membership(
+        self, membership_id: int, request: httpx.Request
+    ) -> httpx.Response:
+        membership = next(
+            (
+                entry
+                for entry in self.memberships
+                if entry.get("id") == membership_id
+            ),
+            None,
+        )
+        if membership is None:
+            return self._error(404, "The requested resource could not be found.")
+        body = self._body(request)
+        links = body.get("_links") if isinstance(body, dict) else None
+        roles = links.get("roles") if isinstance(links, dict) else None
+        if not isinstance(roles, list):
+            return self._error(422, "Roles can't be blank")
+        membership_links = membership.setdefault("_links", {})
+        membership_links["roles"] = [
+            {"href": role.get("href")}
+            for role in roles
+            if isinstance(role, dict)
+        ]
+        return self._json(membership)
+
+    def _filter_memberships(
+        self, request: httpx.Request
+    ) -> list[dict[str, JSON]]:
+        conditions = self._filter_conditions(request) or {}
+        result: list[dict[str, JSON]] = []
+        for membership in self.memberships:
+            links = membership.get("_links")
+            if not isinstance(links, dict):
+                continue
+            principal = _href_id(links.get("principal"))
+            project = _href_id(links.get("project"))
+            if "principal" in conditions and str(principal) not in conditions["principal"]:
+                continue
+            if "project" in conditions and str(project) not in conditions["project"]:
+                continue
+            result.append(membership)
+        return result
+
+    @staticmethod
+    def _body(request: httpx.Request) -> JSON | None:
+        try:
+            return json.loads(request.content.decode("utf-8") or "{}")
+        except (ValueError, UnicodeDecodeError):
+            return None
 
     def _filter_users(self, request: httpx.Request) -> list[dict[str, JSON]]:
         filters_raw = request.url.params.get("filters")

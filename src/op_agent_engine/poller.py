@@ -92,6 +92,7 @@ class Poller:
             # only pay for relation/child queries when they can matter.
             pre = evaluate_eligibility(wp, ctx)
             if not pre.eligible:
+                self._log_skipped(wp, pre.reason or "ineligible", pre.scope_violation)
                 skipped.append((wp, pre.reason or "ineligible"))
                 continue
             blocker_status_keys = await self._fetch_blocker_status_keys(wp)
@@ -103,6 +104,9 @@ class Poller:
                 has_children=has_children,
             )
             if not result.eligible:
+                self._log_skipped(
+                    wp, result.reason or "ineligible", result.scope_violation
+                )
                 skipped.append((wp, result.reason or "ineligible"))
                 continue
             items.append(
@@ -113,6 +117,26 @@ class Poller:
         plan = DispatchPlan(items=tuple(items), skipped=tuple(skipped))
         self._log_plan(plan)
         return plan
+
+    @staticmethod
+    def _log_skipped(
+        wp: WorkPackage, reason: str, scope_violation: bool
+    ) -> None:
+        """Warn about a mis-scoped agent; log other skips at debug level."""
+        if scope_violation:
+            logger.warning(
+                "skipping %s: %s (project scope, work package left untouched)",
+                wp.display_id,
+                reason,
+                extra={
+                    "work_package_id": wp.id,
+                    "project_id": wp.project_id,
+                    "reason": reason,
+                    "scope_violation": True,
+                },
+            )
+        else:
+            logger.debug("skipped %s: %s", wp.display_id, reason)
 
     # -- ordering --------------------------------------------------------
 
@@ -293,7 +317,8 @@ class Poller:
         else:
             logger.info("dispatch plan: no eligible work packages")
         for wp, reason in plan.skipped:
-            logger.debug("skipped %s: %s", wp.display_id, reason)
+            if "no access to project" not in reason:
+                logger.debug("skipped %s: %s", wp.display_id, reason)
 
 
 # ---------------------------------------------------------------------------

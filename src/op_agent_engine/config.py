@@ -155,12 +155,37 @@ class StatusNames(BaseModel):
         }
 
 
+class ProvisioningConfig(BaseModel):
+    """Settings used only by ``provision`` and ``check-config`` (M8).
+
+    Roles cannot be created through the OpenProject API (docs/VERIFICATION.md
+    item 9), so the role names identify roles that an administrator creates
+    manually. The email domain is used only when ``provision`` has to create a
+    missing user; no notification is sent for memberships.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    agent_role: str = "Agent Worker"
+    engine_role: str = "Agent Engine"
+    email_domain: str = "agent-engine.local"
+
+    @field_validator("agent_role", "engine_role", "email_domain")
+    @classmethod
+    def _non_empty(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("must not be empty")
+        return value
+
+
 class OpenProjectConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     statuses: StatusNames = Field(default_factory=StatusNames)
     agent_field: str = "AGENT"
     engine_user: str = "agent-engine"
+    provisioning: ProvisioningConfig = Field(default_factory=ProvisioningConfig)
     dispatch_priority: list[str] = Field(
         default_factory=lambda: ["ready_for_review", "rejected", "new"]
     )
@@ -256,7 +281,21 @@ class AgentConfig(BaseModel):
     runner: str
     model: str | None = None
     timeout_seconds: int | None = Field(default=None, gt=0)
+    projects: list[str] = Field(default_factory=lambda: ["*"])
     env: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("projects")
+    @classmethod
+    def _projects(cls, value: list[str]) -> list[str]:
+        if not value:
+            raise ValueError("projects must not be empty; use ['*'] for every enabled project")
+        if any(not item.strip() for item in value):
+            raise ValueError("project identifiers must not be empty")
+        if len(set(value)) != len(value):
+            raise ValueError("project identifiers must not contain duplicates")
+        if "*" in value and len(value) > 1:
+            raise ValueError("'*' cannot be combined with explicit project identifiers")
+        return value
 
     @field_validator("name", "op_login")
     @classmethod
@@ -388,6 +427,17 @@ class WorkflowConfig(BaseModel):
                 f"found {len(reviewers)}"
                 + (f" ({', '.join(reviewers)})" if reviewers else "")
             )
+
+        declared = set(identifiers)
+        for key, agent in self.agents.items():
+            if "*" in agent.projects:
+                continue
+            unknown = sorted(set(agent.projects) - declared)
+            if unknown:
+                raise ValueError(
+                    f"agent '{key}' projects reference identifier(s) not declared in "
+                    f"projects: {', '.join(unknown)}"
+                )
         return self
 
     # -- helpers ---------------------------------------------------------
@@ -402,6 +452,22 @@ class WorkflowConfig(BaseModel):
 
     def enabled_projects(self) -> list[ProjectConfig]:
         return [project for project in self.projects if project.enabled]
+
+    def projects_for_agent(self, agent: AgentConfig) -> list[ProjectConfig]:
+        """Enabled projects inside an agent's configured scope.
+
+        ``['*']`` expands to every enabled project; an explicit list never
+        reaches a project that is not declared. Disabled projects are excluded
+        because they are not monitored.
+        """
+        if "*" in agent.projects:
+            return self.enabled_projects()
+        wanted = set(agent.projects)
+        return [
+            project
+            for project in self.projects
+            if project.enabled and project.identifier in wanted
+        ]
 
     def summary(self) -> list[str]:
         """Human-readable summary used by ``check-config``."""
@@ -427,8 +493,14 @@ class WorkflowConfig(BaseModel):
             lines.append(
                 f"  - {key}: {agent.name} ({agent.kind}), "
                 f"op_login={agent.op_login}, workspace={agent.workspace}, "
-                f"runner={agent.runner}"
+                f"runner={agent.runner}, projects={','.join(agent.projects)}"
             )
+        provisioning = self.openproject.provisioning
+        lines.append(
+            f"provisioning: {'enabled' if provisioning.enabled else 'disabled'}, "
+            f"agent role={provisioning.agent_role!r}, "
+            f"engine role={provisioning.engine_role!r}"
+        )
         lines.append(f"runners: {len(self.runners)}")
         for key, runner in self.runners.items():
             lines.append(f"  - {key}: {' '.join(runner.argv)}")
@@ -509,6 +581,7 @@ class EngineSettings(BaseSettings):
 
     op_base_url: str | None = None
     op_engine_token: SecretStr | None = None
+    op_provision_token: SecretStr | None = None
     poll_interval_seconds: int = Field(default=60, gt=0)
     max_concurrent_runs: int = Field(default=1, gt=0)
     max_rejections: int = Field(default=3, ge=0)

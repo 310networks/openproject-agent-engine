@@ -39,6 +39,15 @@ from op_agent_engine.engine import (
 from op_agent_engine.logging import configure_logging
 from op_agent_engine.openproject.client import OpenProjectClient, OpenProjectError
 from op_agent_engine.openproject.resolve import OpenProjectResolution, resolve_workflow
+from op_agent_engine.provision import (
+    ProvisioningError,
+    ProvisionReport,
+    audit_workflow,
+    missing_tokens,
+    provision_workflow,
+    provisioning_token,
+    require_admin,
+)
 from op_agent_engine.store import Run, Store
 
 CONFIG_ERROR_EXIT = 1
@@ -139,6 +148,22 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="print the status as JSON",
     )
+
+    provision = subparsers.add_parser(
+        "provision",
+        help="reconcile agent users, roles and scoped project memberships",
+        parents=[_subcommand_options()],
+    )
+    provision.add_argument(
+        "--apply",
+        action="store_true",
+        help="perform writes (default: dry-run)",
+    )
+    provision.add_argument(
+        "--json",
+        action="store_true",
+        help="print the provisioning report as JSON",
+    )
     return parser
 
 
@@ -170,6 +195,11 @@ def _config_summary(config: WorkflowConfig, path: Path) -> dict[str, object]:
             }
             for project in config.projects
         ],
+        "provisioning": {
+            "enabled": config.openproject.provisioning.enabled,
+            "agent_role": config.openproject.provisioning.agent_role,
+            "engine_role": config.openproject.provisioning.engine_role,
+        },
         "agents": {
             key: {
                 "name": agent.name,
@@ -177,6 +207,11 @@ def _config_summary(config: WorkflowConfig, path: Path) -> dict[str, object]:
                 "op_login": agent.op_login,
                 "workspace": agent.workspace,
                 "runner": agent.runner,
+                "projects": agent.projects,
+                "scoped_projects": [
+                    project.identifier
+                    for project in config.projects_for_agent(agent)
+                ],
             }
             for key, agent in config.agents.items()
         },
@@ -204,6 +239,23 @@ async def _resolve_against_api(
         settings.op_engine_token.get_secret_value(),
     ) as client:
         return await resolve_workflow(client, config)
+
+
+async def _audit_against_api(
+    config: WorkflowConfig, settings: EngineSettings
+) -> ProvisionReport:
+    """Read-only provisioning audit (M8), using the admin-capable token."""
+    if settings.op_base_url is None:
+        raise ConfigError("missing required environment variables: OP_BASE_URL")
+    token = provisioning_token(settings)
+    async with OpenProjectClient(settings.op_base_url, token) as client:
+        await require_admin(client)
+        return await audit_workflow(
+            client,
+            config,
+            environ=os.environ,
+            base_url=settings.op_base_url,
+        )
 
 
 def _poll_once(config_path: Path, *, dry_run: bool) -> int:
@@ -260,11 +312,16 @@ def _check_config(path: Path, *, as_json: bool, offline: bool) -> int:
         return CONFIG_ERROR_EXIT
 
     resolution: OpenProjectResolution | None = None
+    provision_report: ProvisionReport | None = None
     if not offline:
         try:
             settings = EngineSettings()
             settings.require_api_values()
             resolution = asyncio.run(_resolve_against_api(config, settings))
+            if config.openproject.provisioning.enabled:
+                provision_report = asyncio.run(
+                    _audit_against_api(config, settings)
+                )
         except (ConfigError, ValidationError) as error:
             print(f"op-agent-engine: error: {error}", file=sys.stderr)
             return CONFIG_ERROR_EXIT
@@ -272,9 +329,21 @@ def _check_config(path: Path, *, as_json: bool, offline: bool) -> int:
             print(f"op-agent-engine: error: {error}", file=sys.stderr)
             return CONFIG_ERROR_EXIT
 
+    if provision_report is not None and provision_report.tokens.mismatches:
+        for status in provision_report.tokens.mismatches:
+            print(
+                f"op-agent-engine: error: agent token/login mismatch: "
+                f"{status.message}",
+                file=sys.stderr,
+            )
+        return CONFIG_ERROR_EXIT
+
     if as_json:
         payload = _config_summary(config, path)
         payload["resolved"] = resolution.as_dict() if resolution is not None else None
+        payload["provisioning"] = (
+            provision_report.as_dict() if provision_report is not None else None
+        )
         print(json.dumps(payload, indent=2))
     else:
         print(f"Configuration OK: {path}")
@@ -286,7 +355,17 @@ def _check_config(path: Path, *, as_json: bool, offline: bool) -> int:
             print("Resolved OpenProject IDs:")
             for line in resolution.summary():
                 print(f"  {line}")
-    return OK_EXIT
+        if provision_report is not None:
+            print("Provisioning audit:")
+            for identifier, agent in config.agents.items():
+                scoped = ", ".join(
+                    project.identifier
+                    for project in config.projects_for_agent(agent)
+                )
+                print(f"  {identifier}: projects={','.join(agent.projects)} -> {scoped}")
+            for line in provision_report.summary():
+                print(line)
+    return OK_EXIT if (provision_report is None or provision_report.ok) else CONFIG_ERROR_EXIT
 
 
 def _read_heartbeat(path: Path) -> tuple[str | None, float | None]:
@@ -387,6 +466,56 @@ def _status(*, as_json: bool) -> int:
     return OK_EXIT
 
 
+async def _provision_async(
+    config: WorkflowConfig, settings: EngineSettings, *, apply: bool
+) -> ProvisionReport:
+    assert settings.op_base_url is not None
+    token = provisioning_token(settings)
+    async with OpenProjectClient(settings.op_base_url, token) as client:
+        await require_admin(client)
+        return await provision_workflow(
+            client,
+            config,
+            apply=apply,
+            environ=os.environ,
+            base_url=settings.op_base_url,
+        )
+
+
+def _provision(path: Path, *, apply: bool, as_json: bool) -> int:
+    try:
+        config = _load_config(path)
+    except ConfigError as error:
+        print(f"op-agent-engine: error: {error}", file=sys.stderr)
+        return CONFIG_ERROR_EXIT
+    try:
+        settings = EngineSettings()
+        if not settings.op_base_url:
+            raise ConfigError("missing required environment variables: OP_BASE_URL")
+        provisioning_token(settings)
+    except (ConfigError, ProvisioningError) as error:
+        print(f"op-agent-engine: error: {error}", file=sys.stderr)
+        return CONFIG_ERROR_EXIT
+    configure_logging(os.environ.get("LOG_LEVEL", "INFO"))
+    try:
+        report = asyncio.run(_provision_async(config, settings, apply=apply))
+    except (ConfigError, ValidationError, OpenProjectError) as error:
+        print(f"op-agent-engine: error: {error}", file=sys.stderr)
+        return CONFIG_ERROR_EXIT
+
+    if as_json:
+        print(json.dumps(report.as_dict(), indent=2))
+    else:
+        for line in report.summary():
+            print(line)
+        if report.tokens.missing:
+            print(
+                "Missing agent tokens (create them in the OpenProject UI): "
+                + ", ".join(missing_tokens(report.tokens))
+            )
+    return OK_EXIT if report.ok else CONFIG_ERROR_EXIT
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -398,6 +527,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "check-config":
         return _check_config(config_path, as_json=args.json, offline=args.offline)
+
+    if args.command == "provision":
+        return _provision(config_path, apply=args.apply, as_json=args.json)
 
     if args.command in ("once", "dry-run"):
         return _poll_once(

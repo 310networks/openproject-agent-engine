@@ -12,7 +12,15 @@ from op_agent_engine.openproject.client import OpenProjectClient
 from op_agent_engine.openproject.resolve import resolve_workflow
 from op_agent_engine.poller import Poller
 from tests.fakes.openproject import FakeOpenProject
-from tests.test_resolve import BASE_URL, TOKEN, make_config, make_fake, workflow_mapping
+from tests.test_resolve import (
+    BASE_URL,
+    TOKEN,
+    make_config,
+    make_fake,
+    schema,
+    schemas,
+    workflow_mapping,
+)
 
 PRIORITIES: list[dict[str, Any]] = [
     {"id": 7, "name": "Low", "position": 1},
@@ -156,6 +164,51 @@ async def test_blocker_and_children_are_respected() -> None:
     skipped = {wp.id: reason for wp, reason in plan.skipped}
     assert skipped[104] == "has children"
     assert skipped[105] == "has unfinished blocker(s) [500]"
+
+
+async def test_mis_scoped_agent_value_is_skipped_without_claiming() -> None:
+    mapping = workflow_mapping()
+    mapping["projects"].append(
+        {
+            "identifier": "other",
+            "repo": {"github": "owner/other", "dir": "other"},
+            "enabled": True,
+        }
+    )
+    # IMPL may only work in demo; REVIEWER is wildcard.
+    mapping["agents"]["IMPL"]["projects"] = ["demo"]
+    mapping["agents"]["REVIEWER"]["projects"] = ["*"]
+    config = WorkflowConfig.from_mapping(mapping, environ={})
+
+    fake = make_fake(
+        projects=[
+            {"id": 4, "identifier": "demo", "name": "Demo"},
+            {"id": 5, "identifier": "other", "name": "Other"},
+        ],
+        types={
+            "demo": [{"id": 1, "name": "Task"}],
+            "other": [{"id": 1, "name": "Task"}],
+        },
+        schemas={**schemas(), "5-1": schema()},
+        work_packages=[
+            wp(100, status=1, agent=11),
+            wp(300, status=1, agent=11, proj=5),
+        ],
+        priorities=PRIORITIES,
+    )
+    client = OpenProjectClient(BASE_URL, TOKEN, transport=fake.transport)
+    try:
+        resolution = await resolve_workflow(client, config)
+        poller = Poller(client, config, resolution, max_concurrent_runs=2)
+        plan = await poller.poll()
+    finally:
+        await client.aclose()
+
+    assert [item.work_package.id for item in plan.items] == [100]
+    skipped = {work_package.id: reason for work_package, reason in plan.skipped}
+    assert skipped[300] == "agent 'IMPL' has no access to project 5"
+    # The poller is read-only; a mis-scoped ticket is never modified.
+    assert fake.patches == []
 
 
 async def test_dry_run_writes_nothing() -> None:

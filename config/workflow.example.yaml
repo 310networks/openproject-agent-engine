@@ -20,6 +20,11 @@ openproject:
     closed: "Closed"
   agent_field: "AGENT"            # custom field name; resolved to customField<N> at startup
   engine_user: "agent-engine"     # login of the engine user
+  provisioning:                   # M8; used only by provision/check-config
+    enabled: true
+    agent_role: "Agent Worker"     # role name on this instance (create manually)
+    engine_role: "Agent Engine"    # role name on this instance (create manually)
+    email_domain: "agent-engine.local"   # only used when creating a missing user
   dispatch_priority: [ready_for_review, rejected, new]   # finish work before starting new work
   eligible_types: ["Task", "Bug", "Feature"]
   skip_work_packages_with_children: true
@@ -39,6 +44,7 @@ agents:
     kind: implementer
     op_login: "frontendEngineer"
     workspace: "frontendEngineer"          # under WORKSPACE_ROOT
+    projects: ["*"]                        # M8 scope; ["*"] = every enabled project
     runner: pi
     model: null                            # optional, passed to runner as {model}
     timeout_seconds: 3600
@@ -52,6 +58,7 @@ agents:
     kind: implementer
     op_login: "backendEngineer"
     workspace: "backendEngineer"
+    projects: ["*"]
     runner: pi
     env:
       OP_CLI_HOST: "${OP_BASE_URL}"
@@ -61,6 +68,7 @@ agents:
     kind: implementer
     op_login: "leadDesigner"
     workspace: "leadDesigner"
+    projects: ["*"]
     runner: pi
     env:
       OP_CLI_HOST: "${OP_BASE_URL}"
@@ -70,6 +78,7 @@ agents:
     kind: reviewer
     op_login: "codeReviewer"
     workspace: "codeReviewer"
+    projects: ["*"]
     runner: pi
     env:
       OP_CLI_HOST: "${OP_BASE_URL}"

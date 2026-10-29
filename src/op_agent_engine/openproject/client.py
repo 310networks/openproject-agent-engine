@@ -109,6 +109,11 @@ class OpenProjectClient:
             headers={"Accept": "application/hal+json"},
         )
 
+    @property
+    def base_url(self) -> str:
+        """The configured base URL (without a trailing slash)."""
+        return self._base_url.rstrip("/")
+
     async def __aenter__(self) -> OpenProjectClient:
         return self
 

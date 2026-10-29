@@ -18,6 +18,7 @@ from op_agent_engine.openproject.resolve import (
     ResolvedType,
     ResolvedUser,
 )
+from op_agent_engine.provision import ProvisionReport, TokenReport, TokenStatus
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = REPO_ROOT / "config" / "workflow.example.yaml"
@@ -63,11 +64,18 @@ async def _fake_resolve(config: object, settings: object) -> OpenProjectResoluti
     return SAMPLE_RESOLUTION
 
 
+async def _fake_audit(config: object, settings: object) -> ProvisionReport:
+    return ProvisionReport(apply=False)
+
+
 @pytest.fixture(autouse=True)
 def example_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     for name, value in EXAMPLE_ENV.items():
         monkeypatch.setenv(name, value)
     monkeypatch.setenv("ENGINE_CONFIG", str(EXAMPLE))
+    # The provisioning audit is exercised in tests/test_provision.py; keep the
+    # CLI tests offline.
+    monkeypatch.setattr(cli, "_audit_against_api", _fake_audit)
 
 
 def test_help_exits_zero(capsys: pytest.CaptureFixture[str]) -> None:
@@ -213,6 +221,7 @@ def test_check_config_reports_resolved_ids(
     assert "example-project: Example Project (id 4)" in output
     assert "agent field: AGENT -> customField3" in output
     assert "FRONTEND: option id 11" in output
+    assert "Provisioning audit:" in output
     assert "engine-token" not in output
 
 
@@ -228,6 +237,8 @@ def test_check_config_json_includes_resolved_ids(
     assert payload["resolved"]["agent_field"]["field_id"] == "customField3"
     assert payload["resolved"]["agent_field"]["options"]["REVIEWER"] == 14
     assert payload["resolved"]["projects"]["example-project"]["types"]["Task"] == 1
+    assert payload["provisioning"]["apply"] is False
+    assert payload["agents"]["FRONTEND"]["projects"] == ["*"]
 
 
 def test_check_config_reports_resolution_failure(
@@ -243,6 +254,71 @@ def test_check_config_reports_resolution_failure(
     error = capsys.readouterr().err
     assert "OpenProject statuses not found" in error
     assert "in_testing='In Testing'" in error
+
+
+def test_provision_is_dry_run_by_default(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, bool] = {}
+
+    async def fake_provision(
+        config: object, settings: object, *, apply: bool
+    ) -> ProvisionReport:
+        captured["apply"] = apply
+        report = ProvisionReport(apply=apply)
+        report.add("create_user", "impl", "would create user")
+        return report
+
+    monkeypatch.setattr(cli, "_provision_async", fake_provision)
+
+    assert main(["provision", "--config", str(EXAMPLE)]) == OK_EXIT
+    assert captured["apply"] is False
+    output = capsys.readouterr().out
+    assert "provisioning (dry-run)" in output
+    assert "create_user impl" in output
+
+
+def test_provision_apply_and_json(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def fake_provision(
+        config: object, settings: object, *, apply: bool
+    ) -> ProvisionReport:
+        return ProvisionReport(apply=apply)
+
+    monkeypatch.setattr(cli, "_provision_async", fake_provision)
+
+    assert main(["provision", "--apply", "--json", "--config", str(EXAMPLE)]) == OK_EXIT
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["apply"] is True
+    assert payload["actions"] == []
+
+
+def test_check_config_fails_on_agent_token_mismatch(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def mismatch_audit(config: object, settings: object) -> ProvisionReport:
+        report = ProvisionReport(apply=False)
+        report.tokens = TokenReport(
+            statuses=(
+                TokenStatus(
+                    agent_key="FRONTEND",
+                    env_var="OP_TOKEN_FRONTEND",
+                    login="backendEngineer",
+                    ok=False,
+                    message="belongs to the wrong login",
+                ),
+            )
+        )
+        return report
+
+    monkeypatch.setattr(cli, "_audit_against_api", mismatch_audit)
+    monkeypatch.setattr(cli, "_resolve_against_api", _fake_resolve)
+
+    assert main(["check-config", "--config", str(EXAMPLE)]) == CONFIG_ERROR_EXIT
+    error = capsys.readouterr().err
+    assert "agent token/login mismatch" in error
+    assert "frontend-token" not in error
 
 
 def test_run_requires_valid_config(

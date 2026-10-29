@@ -15,7 +15,8 @@ The implementation plan, workflow state machine and acceptance criteria live in
 Milestones M0 (skeleton), M1 (OpenProject client and startup resolution),
 M2 (polling and eligibility), M3 (store and claim protocol),
 M4 (runner and implementer flow), M5 (reviewer flow), M6 (rejection loop and
-comments) and M7 (recovery, shutdown and pause) are implemented: package
+comments), M7 (recovery, shutdown and pause) and M8 (agent provisioning and
+project scoping) are implemented: package
 layout, validated configuration models,
 JSON logging with secret redaction, CLI entry points, example deployment
 files, an async OpenProject API client with retries and pagination, startup
@@ -35,7 +36,54 @@ rejection would exceed `MAX_REJECTIONS`. M7 adds startup reconciliation of
 `In Progress` and `In Testing` work packages (resume and re-review runs),
 PID-reuse-safe cleanup of leftover agent process groups, graceful shutdown
 with `STOP_GRACE_SECONDS`, pause controls, the heartbeat file and the
-`status` command.
+`status` command. M8 adds OpenProject user and scoped-membership
+reconciliation (`op-agent-engine provision`), per-agent `projects` scope in
+eligibility, and verification that each configured agent token belongs to the
+agent's login.
+
+## Provisioning and project scope
+
+The engine owns status transitions, so the OpenProject permission model is
+deliberately narrow:
+
+- Each agent user is a project member with the `Agent Worker` role: view work
+  packages and add comments (`add_work_package_comments`), **no workflow
+  transitions**. Agent users must be assignable.
+- The `agent-engine` user has the `Agent Engine` role in each monitored
+  project: view/edit work packages, add comments, and the transitions listed
+  in PLAN section 7 (`New` -> `In Progress`, `In Progress` -> `Ready for
+  Review`, `Ready for Review` -> `In Testing`, `In Testing` -> `Closed` /
+  `Rejected`, `Rejected` -> `In Progress`, and any handled status -> `On
+  Hold`). Configure these per role and type in OpenProject.
+- The `AGENT` custom field, statuses, types and workflow transitions remain
+  manual administrator setup.
+
+`workflow.yaml` declares the role names under
+`openproject.provisioning` and each agent's project scope under
+`agents.<KEY>.projects` (`["*"]` means every enabled project; an explicit
+list must name declared projects). `provision` is a dry-run unless `--apply`
+is passed:
+
+```bash
+set -a; . ~/.config/op-agent-engine/engine.env; set +a
+op-agent-engine provision --config ~/.config/op-agent-engine/workflow.yaml          # plan
+op-agent-engine provision --apply --config ~/.config/op-agent-engine/workflow.yaml  # write
+```
+
+It creates missing users (never changes a login, never deletes or deactivates),
+updates a differing display name/email, and creates or corrects one membership
+per agent per scoped project plus the engine membership. A second run performs
+no writes. `provision` and `check-config` use `OP_PROVISION_TOKEN` (falling
+back to `OP_ENGINE_TOKEN` only when that token is an administrator); runtime
+dispatch always uses the least-privilege `OP_ENGINE_TOKEN`.
+
+**OpenProject API limit:** roles cannot be created and their permissions
+cannot be read through the API (verified; see `docs/VERIFICATION.md` item 13).
+Create the two roles manually first. `provision` fails with a specific message
+if a role is missing and prints a manual-verification note for permissions.
+API tokens are also minted only in the UI; `provision` reports missing
+`OP_TOKEN_*` variables and `check-config` fails if a configured token belongs
+to a different login.
 
 ## Operations
 

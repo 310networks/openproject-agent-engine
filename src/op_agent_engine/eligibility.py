@@ -41,6 +41,7 @@ class EligibilityContext:
     option_id_to_value: dict[int, str]
     priority_position: dict[int, int]
     max_concurrent_runs: int
+    agent_project_ids: dict[str, frozenset[int]]
 
 
 def build_eligibility_context(
@@ -97,6 +98,17 @@ def build_eligibility_context(
         for value, option_id in resolution.agent_field.options.items()
     }
 
+    # M8 project scope: an agent may only be dispatched to projects declared
+    # in its ``projects`` list. ``['*']`` expands to every enabled project.
+    agent_project_ids: dict[str, frozenset[int]] = {}
+    for key, agent in config.agents.items():
+        ids: set[int] = set()
+        for project in config.projects_for_agent(agent):
+            resolved = resolution.projects.get(project.identifier)
+            if resolved is not None:
+                ids.add(resolved.id)
+        agent_project_ids[key] = frozenset(ids)
+
     return EligibilityContext(
         config=config,
         resolution=resolution,
@@ -111,6 +123,7 @@ def build_eligibility_context(
         option_id_to_value=option_id_to_value,
         priority_position=priority_position,
         max_concurrent_runs=max_concurrent_runs,
+        agent_project_ids=agent_project_ids,
     )
 
 
@@ -120,6 +133,7 @@ class EligibilityResult:
     reason: str | None
     agent_key: str | None = None
     status_key: str | None = None
+    scope_violation: bool = False
 
 
 def evaluate_eligibility(
@@ -193,6 +207,18 @@ def evaluate_eligibility(
             status_key=status_key,
         )
 
+    # Rule 6 (M8): the agent's configured project scope must include this
+    # project. A mis-scoped routing value is skipped with a warning and the
+    # work package is never modified.
+    allowed_projects = ctx.agent_project_ids.get(agent_key, frozenset())
+    if wp.project_id not in allowed_projects:
+        return _reject(
+            f"agent '{agent_key}' has no access to project {wp.project_id}",
+            agent_key=agent_key,
+            status_key=status_key,
+            scope_violation=True,
+        )
+
     # Rule 6: no unfinished blockers and no children (when configured).
     unfinished = sorted(blocker_id for blocker_id, key in blocker_status_keys if key != "closed")
     if unfinished:
@@ -236,5 +262,12 @@ def _reject(
     *,
     agent_key: str | None = None,
     status_key: str | None = None,
+    scope_violation: bool = False,
 ) -> EligibilityResult:
-    return EligibilityResult(False, reason, agent_key=agent_key, status_key=status_key)
+    return EligibilityResult(
+        False,
+        reason,
+        agent_key=agent_key,
+        status_key=status_key,
+        scope_violation=scope_violation,
+    )

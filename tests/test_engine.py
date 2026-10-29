@@ -23,6 +23,7 @@ from op_agent_engine.github import PullRequest
 from op_agent_engine.openproject.client import OpenProjectClient
 from op_agent_engine.openproject.resolve import OpenProjectResolution
 from op_agent_engine.prompts import PromptRenderer
+from op_agent_engine.provision import TokenVerificationError
 from op_agent_engine.runners.base import OnSpawned, RunRequest, RunResult
 from op_agent_engine.store import FAILED, INTERRUPTED, SUCCEEDED, Store
 from op_agent_engine.workspace import Workspace
@@ -461,6 +462,34 @@ async def test_dry_run_makes_no_changes(
         assert runner.requests == []
         # No durable store was created.
         assert not store_path.exists()
+    finally:
+        await client.aclose()
+
+
+async def test_startup_fails_on_agent_token_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = FakeRunner(make_result(tmp_path))
+    engine, fake, client, _ = await make_engine(
+        tmp_path,
+        monkeypatch,
+        work_packages=[wp(100, status=STATUS_NEW, agent=11)],
+        runner=runner,
+        gh=FakeGitHub(pr=PR),
+    )
+
+    async def fail_tokens(*args: Any, **kwargs: Any) -> Any:
+        raise TokenVerificationError(
+            "agent token/login mismatch: OP_TOKEN_IMPL belongs to 'reviewer', "
+            "expected 'impl'"
+        )
+
+    monkeypatch.setattr("op_agent_engine.engine.enforce_agent_tokens", fail_tokens)
+    try:
+        assert await engine.run(max_polls=1) == 1
+        # The token guard runs before any poll, claim or spawn.
+        assert fake.patches == []
+        assert runner.requests == []
     finally:
         await client.aclose()
 
