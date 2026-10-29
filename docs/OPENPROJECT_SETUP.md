@@ -50,13 +50,17 @@ Create exactly two project roles — **Administration → Users and permissions
   `check-config` and `run` fail with "the engine token needs the global
   'manage_user' permission".
 
-  Keep **Agent Engine** as a *project* role — a global role cannot carry the
-  work-package permissions above. In the role form, enable *Manage users*
-  under its **Global permissions** section. If your version does not offer
-  global permissions on project roles, create a separate global role with
-  only *Manage users* and assign it to `agent-engine` under
-  *Administration → Users → agent-engine → Global role*; keep the project
-  role as-is.
+  Keep **Agent Engine** as a *project* role — a global-only role cannot
+  carry the work-package permissions above. In the role editor, *Manage
+  users* lives on the **Global permissions** tab, separate from the project
+  permissions. Do not confuse it with *Manage members* under the project
+  permissions: that only manages a project's memberships and does not allow
+  listing users. If your version does not offer global permissions on
+  project roles, create a separate **global role** (like the instance's
+  *Standard global role*) with only *Manage users* and assign it to
+  `agent-engine` under *Administration → Users → agent-engine → Global
+  role*; keep the project role as-is. Changing the role takes effect
+  immediately; the token does not need to be regenerated.
 
 ## 5. Workflow transitions
 
