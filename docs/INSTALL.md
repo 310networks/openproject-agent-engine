@@ -106,8 +106,11 @@ The script stops and removes the systemd units, removes the config and data
 directories plus the checkout's `workflow.yaml`/`engine.env` and backups,
 then removes the OpenProject users. Users are deleted when the instance
 permits it; if deletion returns HTTP 403 they are locked instead. The token
-owner and any administrator account are never touched. Finally the script
-runs `uv tool uninstall op-agent-engine`.
+owner and any administrator account are never touched. Because the default
+setup makes `agent-engine` an administrator, that account survives the
+uninstall; the script ends with a reminder to delete it manually under
+**Administration → Users**. Finally the script runs
+`uv tool uninstall op-agent-engine`.
 
 OpenProject disables user deletion on some instances
 (`users_deletable_by_admin`). In that case the API returns 403 and the script

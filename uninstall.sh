@@ -37,6 +37,18 @@ die() {
     exit 1
 }
 
+admin_reminder() {
+    # The default setup makes agent-engine an administrator, and OpenProject
+    # never deletes administrator accounts through the API. Remind the
+    # operator to remove it by hand.
+    if [[ $KEEP_USERS -eq 0 ]]; then
+        printf '\n%s\n' "${BOLD}Note:${RESET} OpenProject never deletes administrator accounts."
+        printf '%s\n' "If 'agent-engine' was made an administrator (the default setup),"
+        printf '%s\n' "it still exists. Delete it manually in OpenProject:"
+        printf '%s\n' "  Administration -> Users -> agent-engine -> Delete"
+    fi
+}
+
 UV_BIN="$(command -v uv || true)"
 if [[ -z "$UV_BIN" && -x "$HOME/.local/bin/uv" ]]; then
     UV_BIN="$HOME/.local/bin/uv"
@@ -79,6 +91,7 @@ fi
 APPLY_EXPLICIT=0
 DRY_RUN=0
 KEEP_TOOL=0
+KEEP_USERS=0
 ARGS=()
 for arg in "$@"; do
     case "$arg" in
@@ -92,6 +105,10 @@ for arg in "$@"; do
             ;;
         --keep-tool)
             KEEP_TOOL=1
+            ;;
+        --keep-users)
+            KEEP_USERS=1
+            ARGS+=("$arg")
             ;;
         *)
             ARGS+=("$arg")
@@ -115,7 +132,11 @@ if [[ $STATUS -ne 0 ]]; then
     exit "$STATUS"
 fi
 
-if [[ $DRY_RUN -eq 1 || $KEEP_TOOL -eq 1 ]]; then
+if [[ $DRY_RUN -eq 1 ]]; then
+    exit 0
+fi
+if [[ $KEEP_TOOL -eq 1 ]]; then
+    admin_reminder
     exit 0
 fi
 
@@ -130,3 +151,4 @@ if ! "$UV_BIN" tool uninstall op-agent-engine; then
 fi
 
 printf '\n%s\n' "${BOLD}${CYAN}Uninstall complete${RESET}"
+admin_reminder

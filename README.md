@@ -67,7 +67,9 @@ only installer prerequisite.
 The uninstaller stops and removes the systemd units, removes
 `~/.config/op-agent-engine/` and `~/.local/share/op-agent-engine/`, deletes
 the checkout's `workflow.yaml`/`engine.env` and their backups, removes or
-locks the OpenProject users, then uninstalls the `uv` tool. Use
+locks the OpenProject users, then uninstalls the `uv` tool. The
+administrator `agent-engine` account is never deleted by the API; the script
+reminds you to remove it manually under **Administration → Users**. Use
 `--keep-config`, `--keep-data`, `--keep-users` or `--keep-tool` to retain a
 layer; `--purge-agent-repos` also deletes `WORKSPACE_ROOT/*/repositories`.
 

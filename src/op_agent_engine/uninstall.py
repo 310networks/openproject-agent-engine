@@ -412,6 +412,31 @@ def remove_local_paths(paths: Sequence[Path], *, apply: bool) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
+def _manual_cleanup_notes(
+    report: UserRemovalReport, engine_login: str
+) -> list[str]:
+    """Remind the operator when an administrator account was left behind.
+
+    OpenProject never lets the API delete administrator accounts (and the
+    token owner is always skipped), so an ``agent-engine`` user that was made
+    an administrator survives the uninstall and must be removed in the UI.
+    """
+    skipped = {
+        action.login: action.detail
+        for action in report.actions
+        if action.action == "skipped"
+    }
+    reason = skipped.get(engine_login)
+    if reason is None:
+        return []
+    return [
+        f"OpenProject did not remove {engine_login} ({reason}); administrator "
+        "accounts are never deleted",
+        "delete it manually: Administration -> Users -> "
+        f"{engine_login} -> Delete",
+    ]
+
+
 def _confirm(ui: UI) -> bool:
     if not sys.stdin.isatty():
         raise SetupError(
@@ -503,6 +528,12 @@ def _run_uninstall(options: UninstallOptions, ui: UI) -> int:
                 "delete them manually in OpenProject if you need them removed"
             )
         ui.ok("OpenProject users deleted, locked or skipped")
+        notes = _manual_cleanup_notes(
+            report, runtime.config.openproject.engine_user
+        )
+        if notes:
+            ui.warn(notes[0])
+            ui.info(notes[1])
 
     remove_service_files(ui)
     workspace_root = None

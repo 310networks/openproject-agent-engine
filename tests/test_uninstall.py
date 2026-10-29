@@ -361,3 +361,46 @@ async def test_remove_users_is_idempotent_for_locked_accounts() -> None:
     assert all(
         request.method == "GET" for request in fake.requests
     )
+
+
+def test_manual_cleanup_notes_name_a_skipped_admin_engine_user() -> None:
+    report = uninstall.UserRemovalReport()
+    report.actions.append(
+        uninstall.UserAction("agent-engine", "skipped", "administrator account")
+    )
+
+    notes = uninstall._manual_cleanup_notes(report, "agent-engine")
+
+    assert "did not remove agent-engine" in notes[0]
+    assert "administrator account" in notes[0]
+    assert "Administration -> Users -> agent-engine -> Delete" in notes[1]
+
+
+def test_manual_cleanup_notes_cover_the_token_owner() -> None:
+    report = uninstall.UserRemovalReport()
+    report.actions.append(
+        uninstall.UserAction("agent-engine", "skipped", "token owner")
+    )
+
+    notes = uninstall._manual_cleanup_notes(report, "agent-engine")
+
+    assert "token owner" in notes[0]
+
+
+def test_manual_cleanup_notes_are_empty_when_the_engine_user_is_deleted() -> None:
+    report = uninstall.UserRemovalReport()
+    report.actions.append(
+        uninstall.UserAction("agent-engine", "deleted", "id 10")
+    )
+
+    assert uninstall._manual_cleanup_notes(report, "agent-engine") == []
+
+
+def test_uninstall_script_reminds_about_the_admin_engine_user() -> None:
+    script = (Path(__file__).resolve().parents[1] / "uninstall.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert "admin_reminder" in script
+    assert "--keep-users" in script
+    assert "Administration -> Users -> agent-engine -> Delete" in script
