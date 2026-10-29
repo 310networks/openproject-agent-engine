@@ -9,6 +9,7 @@ nothing about the agent CLI itself. The only contract is the final
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
@@ -28,6 +29,16 @@ from op_agent_engine.runners.base import (
 #: Inherited environment: the minimum an agent CLI needs to behave like a
 #: manual run (section 6). Everything else is passed explicitly.
 _INHERITED_ENV_VARS = ("PATH", "HOME", "USER", "LOGNAME", "TZ", "LANG", "LC_ALL")
+
+#: An argv element that is nothing but one placeholder, e.g. ``{model}``.
+_WHOLE_PLACEHOLDER = re.compile(r"\{[a-z_]+\}")
+#: A stand-alone argv flag such as ``--model`` or ``-m``.
+_FLAG = re.compile(r"--?[A-Za-z0-9][A-Za-z0-9_-]*")
+#: A flag whose glued-on value rendered empty, e.g. ``--model=``.
+_EMPTY_FLAG_VALUE = re.compile(r"--?[A-Za-z0-9][A-Za-z0-9_-]*=")
+#: Placeholders that may legitimately render empty; a missing value is omitted
+#: instead of being passed as an empty argument.
+_OPTIONAL_PLACEHOLDERS = frozenset({"model"})
 
 
 class GenericRunner:
@@ -57,14 +68,11 @@ class GenericRunner:
             "repo_dir": str(repo_dir),
             "workspace_dir": str(workspace_dir),
             "run_dir": str(run_dir),
-            "model": agent.model or "",
+            "model": self._config.model_for(agent_key) or "",
             "branch": branch,
             "work_package_id": str(work_package_id),
         }
-        argv = tuple(
-            self._fill(part, values, where=f"runners.{agent.runner}.argv")
-            for part in runner.argv
-        )
+        argv = self._build_argv(runner, values)
         cwd = Path(
             self._fill(runner.cwd, values, where=f"runners.{agent.runner}.cwd")
         )
@@ -101,6 +109,27 @@ class GenericRunner:
 
     # -- helpers -----------------------------------------------------------
 
+    def _build_argv(
+        self, runner: RunnerConfig, values: Mapping[str, str]
+    ) -> tuple[str, ...]:
+        """Fill the argv template, omitting optional values that are unset.
+
+        ``--model {model}`` with no model configured must not reach the agent
+        CLI: the placeholder element and the flag in front of it are dropped, so
+        the run is identical to an argv without ``{model}`` at all.
+        """
+        argv: list[str] = []
+        for part in runner.argv:
+            filled = self._fill(part, values, where="runners.argv")
+            if not filled and _is_optional_placeholder(part):
+                if argv and _FLAG.fullmatch(argv[-1]):
+                    argv.pop()
+                continue
+            if _mentions_optional(part) and _EMPTY_FLAG_VALUE.fullmatch(filled):
+                continue
+            argv.append(filled)
+        return tuple(argv)
+
     def _build_env(
         self,
         agent_key: str,
@@ -134,3 +163,12 @@ class GenericRunner:
             raise ConfigError(
                 f"{where}: unknown placeholder '{name}' (allowed: {allowed})"
             ) from error
+
+
+def _is_optional_placeholder(part: str) -> bool:
+    match = _WHOLE_PLACEHOLDER.fullmatch(part)
+    return match is not None and match.group(0)[1:-1] in _OPTIONAL_PLACEHOLDERS
+
+
+def _mentions_optional(part: str) -> bool:
+    return any("{" + name + "}" in part for name in _OPTIONAL_PLACEHOLDERS)

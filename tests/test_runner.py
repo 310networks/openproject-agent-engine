@@ -338,3 +338,121 @@ def test_run_result_is_frozen_dataclass() -> None:
     )
     with pytest.raises(dataclasses.FrozenInstanceError):
         result.exit_code = 1  # type: ignore[misc]
+
+
+def _model_mapping(*, agent_model=None, runner_model=None) -> dict[str, object]:
+    mapping = base_mapping()
+    runners = mapping["runners"]
+    assert isinstance(runners, dict)
+    generic = runners["generic"]
+    assert isinstance(generic, dict)
+    generic["argv"] = [
+        "run-agent",
+        "--model",
+        "{model}",
+        "--prompt",
+        "{prompt_file}",
+    ]
+    if runner_model is not None:
+        generic["model"] = runner_model
+    agents = mapping["agents"]
+    assert isinstance(agents, dict)
+    fe = agents["FE"]
+    assert isinstance(fe, dict)
+    fe["model"] = agent_model
+    return mapping
+
+
+def _argv(config: WorkflowConfig, agent: str, tmp_path: Path) -> tuple[str, ...]:
+    return GenericRunner(config).build_request(
+        agent,
+        run_id=1,
+        work_package_id=100,
+        run_dir=tmp_path / "run",
+        repo_dir=tmp_path / "repo",
+        workspace_dir=tmp_path / "ws",
+        branch="op-4-100",
+        prompt_file=tmp_path / "prompt.txt",
+        timeout_seconds=60,
+    ).argv
+
+
+def test_model_from_agent_is_passed_to_the_runner(tmp_path: Path) -> None:
+    config = WorkflowConfig.from_mapping(
+        _model_mapping(agent_model="anthropic/claude-sonnet-4-5"), environ={}
+    )
+
+    assert _argv(config, "FE", tmp_path) == (
+        "run-agent",
+        "--model",
+        "anthropic/claude-sonnet-4-5",
+        "--prompt",
+        str(tmp_path / "prompt.txt"),
+    )
+
+
+def test_runner_model_is_the_default_for_its_agents(tmp_path: Path) -> None:
+    config = WorkflowConfig.from_mapping(
+        _model_mapping(runner_model="openai/gpt-5"), environ={}
+    )
+
+    assert config.model_for("FE") == "openai/gpt-5"
+    # The second agent has no model of its own either.
+    assert config.model_for("REVIEW") == "openai/gpt-5"
+    assert _argv(config, "REVIEW", tmp_path)[1:3] == ("--model", "openai/gpt-5")
+
+
+def test_agent_model_overrides_the_runner_model(tmp_path: Path) -> None:
+    config = WorkflowConfig.from_mapping(
+        _model_mapping(agent_model="anthropic/claude-opus-4", runner_model="openai/gpt-5"),
+        environ={},
+    )
+
+    assert config.model_for("FE") == "anthropic/claude-opus-4"
+    assert _argv(config, "FE", tmp_path)[1:3] == ("--model", "anthropic/claude-opus-4")
+
+
+def test_unset_model_drops_the_placeholder_and_its_flag(tmp_path: Path) -> None:
+    # The agent CLI's own default model must apply: no empty --model argument.
+    config = WorkflowConfig.from_mapping(_model_mapping(), environ={})
+
+    assert config.model_for("FE") is None
+    assert _argv(config, "FE", tmp_path) == (
+        "run-agent",
+        "--prompt",
+        str(tmp_path / "prompt.txt"),
+    )
+
+
+def test_unset_model_drops_a_glued_flag_value(tmp_path: Path) -> None:
+    mapping = _model_mapping()
+    runners = mapping["runners"]
+    assert isinstance(runners, dict)
+    generic = runners["generic"]
+    assert isinstance(generic, dict)
+    generic["argv"] = ["run-agent", "--model={model}", "--prompt", "{prompt_file}"]
+    config = WorkflowConfig.from_mapping(mapping, environ={})
+
+    assert _argv(config, "FE", tmp_path) == (
+        "run-agent",
+        "--prompt",
+        str(tmp_path / "prompt.txt"),
+    )
+
+
+@pytest.mark.parametrize("bad", ["two words", "a\tb", "a b "])
+def test_agent_model_must_be_a_single_token(bad: str) -> None:
+    with pytest.raises(ConfigError, match="single token"):
+        WorkflowConfig.from_mapping(_model_mapping(agent_model=bad), environ={})
+
+
+@pytest.mark.parametrize("bad", ["two words", "a\tb"])
+def test_runner_model_must_be_a_single_token(bad: str) -> None:
+    with pytest.raises(ConfigError, match="single token"):
+        WorkflowConfig.from_mapping(_model_mapping(runner_model=bad), environ={})
+
+
+def test_blank_model_is_treated_as_unset() -> None:
+    config = WorkflowConfig.from_mapping(_model_mapping(agent_model="   "), environ={})
+
+    assert config.model_for("FE") is None

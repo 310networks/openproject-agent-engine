@@ -32,11 +32,13 @@ agents:
     workspace: frontendEngineer
     projects: ["*"]            # ["*"] = every enabled project
     runner: pi
+    model: "anthropic/claude-sonnet-4-5"    # optional, overrides the runner's model
     env: {OP_CLI_HOST: "${OP_BASE_URL}", OP_CLI_TOKEN: "${OP_TOKEN_FRONTEND}"}
 runners:
   pi:
-    argv: ["pi", "-p", "--approve", "@{prompt_file}",
+    argv: ["pi", "-p", "--approve", "--model", "{model}", "@{prompt_file}",
            "Follow the instructions in the attached prompt file."]
+    model: null                # optional default for every agent using this runner
     cwd: "{repo_dir}"
     inject_standard: false     # pi discovers AGENTS.md from parent dirs
 ```
@@ -55,6 +57,30 @@ Field notes:
   a `runners` entry, no code change. Placeholders: `{prompt_file}`,
   `{repo_dir}`, `{workspace_dir}`, `{run_dir}`, `{model}`, `{branch}`,
   `{work_package_id}`.
+- **Model selection.** `model` can be set on an agent (`agents.<KEY>.model`)
+  and/or as a default on a runner (`runners.<name>.model`); the agent's value
+  wins. `check-config` prints the resolved model per agent. The value is a
+  single token (no spaces) in the CLI's own format — `provider/id` works for
+  both supported CLIs:
+
+  ```yaml
+  runners:
+    pi:
+      argv: ["pi", "-p", "--approve", "--model", "{model}", "@{prompt_file}", "..."]
+    opencode:
+      argv: ["opencode", "run", "--auto", "--model", "{model}", "--file", "{prompt_file}", "..."]
+  agents:
+    REVIEWER:
+      runner: opencode
+      model: "openai/gpt-5"    # per-agent override
+  ```
+
+  `{model}` is optional: when neither the agent nor its runner sets a model,
+  the `{model}` element **and the flag in front of it** are dropped from argv
+  (so `--model {model}` never reaches the CLI as `--model ""`), leaving the
+  CLI's own default model in charge. `--model={model}` glued into one argument
+  is dropped the same way; keep flag and placeholder as separate argv elements.
+  Leave the placeholder out of argv entirely if the CLI has no model flag.
 - `inject_standard: true` prepends the workspace `AGENTS.md` to the prompt;
   keep `false` for pi.
 

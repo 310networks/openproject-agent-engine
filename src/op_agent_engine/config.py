@@ -332,6 +332,11 @@ class AgentConfig(BaseModel):
             raise ValueError("runner must not be empty")
         return value
 
+    @field_validator("model")
+    @classmethod
+    def _model(cls, value: str | None) -> str | None:
+        return _model_name(value, "model")
+
 
 class RunnerConfig(BaseModel):
     """A generic command template. The engine knows nothing about the agent itself."""
@@ -343,6 +348,15 @@ class RunnerConfig(BaseModel):
     env: dict[str, str] = Field(default_factory=dict)
     stdin_file: str | None = None
     inject_standard: bool = False
+    #: Default model for the agents using this runner; an agent's own
+    #: ``model`` wins. Substituted into argv as ``{model}`` and omitted from
+    #: argv entirely when neither is set.
+    model: str | None = None
+
+    @field_validator("model")
+    @classmethod
+    def _model(cls, value: str | None) -> str | None:
+        return _model_name(value, "model")
 
     @field_validator("argv")
     @classmethod
@@ -367,6 +381,26 @@ class RunnerConfig(BaseModel):
         for index, argument in enumerate(self.argv):
             _check_placeholders(argument, f"runners.argv[{index}]")
         return self
+
+
+def _model_name(value: str | None, location: str) -> str | None:
+    """Validate a model identifier.
+
+    The value is substituted into a single argv element (``--model {model}``),
+    so it must stay one token: no whitespace, no empty string.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"{location} must be a string")
+    name = value.strip()
+    if not name:
+        return None
+    if any(character.isspace() for character in name):
+        raise ValueError(
+            f"{location} must be a single token such as 'anthropic/claude-sonnet-4'"
+        )
+    return name
 
 
 def _check_placeholders(value: str, location: str) -> None:
@@ -481,6 +515,16 @@ class WorkflowConfig(BaseModel):
             if project.enabled and project.identifier in wanted
         ]
 
+    def model_for(self, agent_key: str) -> str | None:
+        """Return the model used by ``agent_key``.
+
+        An agent's own ``model`` wins over the default declared on its runner.
+        ``None`` means the agent CLI's own default is used and ``{model}`` (and
+        its flag) is dropped from the runner argv.
+        """
+        agent = self.agents[agent_key]
+        return agent.model or self.runners[agent.runner].model
+
     def summary(self) -> list[str]:
         """Human-readable summary used by ``check-config``."""
         statuses = ", ".join(
@@ -502,10 +546,13 @@ class WorkflowConfig(BaseModel):
             )
         lines.append(f"agents: {len(self.agents)}")
         for key, agent in self.agents.items():
+            model = agent.model or self.runners[agent.runner].model
+            model_text = f", model={model}" if model else ""
             lines.append(
                 f"  - {key}: {agent.name} ({agent.kind}), "
                 f"op_login={agent.op_login}, workspace={agent.workspace}, "
                 f"runner={agent.runner}, projects={','.join(agent.projects)}"
+                f"{model_text}"
             )
         provisioning = self.openproject.provisioning
         engine_role = (
@@ -520,7 +567,8 @@ class WorkflowConfig(BaseModel):
         )
         lines.append(f"runners: {len(self.runners)}")
         for key, runner in self.runners.items():
-            lines.append(f"  - {key}: {' '.join(runner.argv)}")
+            model_text = f" [model={runner.model}]" if runner.model else ""
+            lines.append(f"  - {key}: {' '.join(runner.argv)}{model_text}")
         return lines
 
     # -- loading ---------------------------------------------------------
