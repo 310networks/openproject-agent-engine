@@ -7,6 +7,10 @@ Two files drive everything: `~/.config/op-agent-engine/workflow.yaml`
 references secrets as `${VAR}`, resolved from the environment before
 validation; a missing variable is a startup error.
 
+With the interactive installer, edit `workflow.yaml` and `engine.env` in the
+checkout root; `install.sh` copies them into `~/.config/op-agent-engine/`
+before provisioning.
+
 ## `workflow.yaml` skeleton
 
 ```yaml
@@ -75,6 +79,7 @@ Field notes:
 
 | Command | Purpose |
 |---|---|
+| `setup` | interactive installer: init, provision, token prompts, service, dry run |
 | `init` | scaffold config and env files (idempotent) |
 | `run` | long-running service loop |
 | `once` | one poll; claims and executes within the slot rules |

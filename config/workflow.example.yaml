@@ -1,6 +1,7 @@
 # op-agent-engine workflow configuration
 #
-# Copy to ~/.config/op-agent-engine/workflow.yaml and adjust.
+# Copy to <checkout>/workflow.yaml and adjust, then run ./install.sh.
+# The installer copies it to ~/.config/op-agent-engine/workflow.yaml.
 # ${VAR} references are resolved from the service environment (engine.env).
 # A missing variable is a startup error.
 #

@@ -7,14 +7,63 @@ at its `agents/` directory, and the live agents read
 `agents/<workspace>/AGENTS.md` from that checkout. The checked-out branch is
 the live standard for agents.
 
-## Option 1: uv (recommended)
+## Interactive installer (recommended)
+
+```bash
+git clone <engine-repo> ~/op-agent-engine && cd ~/op-agent-engine
+cp config/workflow.example.yaml ./workflow.yaml
+cp deploy/engine.env.example ./engine.env
+chmod 600 ./engine.env
+# edit workflow.yaml and engine.env, then:
+./install.sh
+```
+
+Before running it, complete the one-time instance setup in
+[docs/OPENPROJECT_SETUP.md](OPENPROJECT_SETUP.md) (statuses, `AGENT` field,
+roles and workflows). In `engine.env`, set `OP_BASE_URL` and
+`OP_PROVISION_TOKEN` (an administrator token); leave the per-account tokens
+(`OP_ENGINE_TOKEN` and the `OP_TOKEN_*` values) as placeholders — the
+installer collects them later.
+
+`install.sh` requires `uv` and performs the rest in order:
+
+1. plays a short terminal animation;
+2. installs the package with `uv tool install --force .`;
+3. copies your edited `workflow.yaml` and `engine.env` into
+   `~/.config/op-agent-engine/` (existing files are backed up as
+   `<name>.bak.<timestamp>`) and runs `op-agent-engine init`, which keeps the
+   existing files;
+4. runs `op-agent-engine provision --apply` to create the engine and agent
+   users;
+5. prompts for one API token per account — the `agent-engine` runtime token
+   and one token for each agent in `workflow.yaml` — and verifies each token
+   through `/api/v3/users/me`;
+6. runs `op-agent-engine check-config`, installs the systemd service
+   (`install-service --apply`, sudo), and finishes with a read-only
+   `op-agent-engine dry-run`.
+
+Tokens are written back to both `engine.env` copies with mode `600` and are
+never printed. Re-running `./install.sh` is safe: identical config files are
+left alone and changed ones are backed up first.
+
+`op-agent-engine setup` is the same orchestration without the shell intro, if
+you prefer to run it directly. Useful flags: `--skip-service` and `--yes`.
+
+## Manual uv install
+
+Use this if you want to run each step yourself.
 
 ```bash
 git clone <engine-repo> ~/op-agent-engine && cd ~/op-agent-engine
 uv tool install .
 ```
 
-`op-agent-engine` lands in `~/.local/bin`. To update:
+`op-agent-engine` lands in `~/.local/bin`. Then follow the manual steps in
+[docs/CONFIG.md](CONFIG.md) and [docs/OPENPROJECT_SETUP.md](OPENPROJECT_SETUP.md):
+`init`, edit the files, `provision --apply`, mint tokens, `check-config`,
+`install-service --apply`, `dry-run`.
+
+To update:
 
 ```bash
 cd ~/op-agent-engine && git pull --ff-only
@@ -22,7 +71,7 @@ uv tool install --force .
 sudo systemctl restart op-agent-engine
 ```
 
-## Option 2: venv (no uv required)
+## Manual venv install (no uv required)
 
 ```bash
 python3.12 -m venv ~/.local/share/op-agent-engine/venv
@@ -36,7 +85,9 @@ ln -s ~/.local/share/op-agent-engine/venv/bin/op-agent-engine \
 `op-agent-engine init` creates `~/.config/op-agent-engine/` (mode `700`) with
 `workflow.yaml` and `engine.env` (mode `600`), substituting your user and
 home directory for the `<home>`/`<user>` placeholders. It is idempotent and
-never overwrites existing files.
+never overwrites existing files. The interactive installer copies your
+checkout files first (applying the same placeholder substitution) and then
+runs `init`, which keeps them.
 
 ## Systemd service
 

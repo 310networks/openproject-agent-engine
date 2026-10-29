@@ -12,9 +12,12 @@ from __future__ import annotations
 
 import getpass
 import os
+import re
 import shutil
 import subprocess
+from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 
 UNIT_NAMES: tuple[str, ...] = (
@@ -39,9 +42,35 @@ _CONFIG_FILES: tuple[tuple[str, str, int], ...] = (
     ("engine.env.example", "engine.env", 0o600),
 )
 
+# Files edited in the checkout root by the operator before ``install.sh`` runs.
+_SOURCE_CONFIG_FILES: tuple[tuple[str, int], ...] = (
+    ("workflow.yaml", 0o644),
+    ("engine.env", 0o600),
+)
+
+_ENV_LINE = re.compile(r"^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=")
+
+
+class SetupError(RuntimeError):
+    """The checkout configuration cannot be installed."""
+
 
 class InstallError(RuntimeError):
     """A subprocess step failed; the message includes the command output."""
+
+
+@dataclass
+class SourceInstallReport:
+    """Result of copying the operator-edited files into the config directory."""
+
+    copied: list[str] = field(default_factory=list)
+    kept: list[str] = field(default_factory=list)
+    backups: list[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        return not self.errors
 
 
 @dataclass
@@ -96,6 +125,145 @@ def _current_user() -> str:
 
 def _substitute(text: str) -> str:
     return text.replace("<home>", str(Path.home())).replace("<user>", _current_user())
+
+
+def _backup_path(target: Path, stamp: str) -> Path:
+    """Return a non-existing ``<name>.bak.<stamp>`` path next to ``target``."""
+    candidate = target.with_name(f"{target.name}.bak.{stamp}")
+    index = 1
+    while candidate.exists():
+        candidate = target.with_name(f"{target.name}.bak.{stamp}.{index}")
+        index += 1
+    return candidate
+
+
+def _write_private(path: Path, text: str, mode: int) -> None:
+    """Atomically write ``text`` and enforce ``mode``."""
+    temp = path.with_name(f".{path.name}.tmp")
+    temp.write_text(text, encoding="utf-8")
+    os.chmod(temp, mode)
+    os.replace(temp, path)
+    os.chmod(path, mode)
+
+
+def install_source_config(
+    source_dir: Path,
+    config_dir: Path,
+    *,
+    stamp: str | None = None,
+) -> SourceInstallReport:
+    """Copy the operator-edited files from the checkout into ``config_dir``.
+
+    ``workflow.yaml`` and ``engine.env`` are read from ``source_dir`` (the
+    checkout root) and written to ``config_dir`` (``~/.config/op-agent-engine``).
+    Existing targets are backed up instead of being silently replaced, and a
+    target that already matches the source is left untouched.
+    """
+    report = SourceInstallReport()
+    try:
+        config_dir.mkdir(parents=True, exist_ok=True)
+        os.chmod(config_dir, 0o700)
+    except OSError as error:
+        report.errors.append(f"cannot create {config_dir}: {error}")
+        return report
+
+    stamp = stamp or datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    for name, mode in _SOURCE_CONFIG_FILES:
+        source = source_dir / name
+        target = config_dir / name
+        if not source.is_file():
+            report.errors.append(f"missing source file: {source}")
+            continue
+        try:
+            # The operator copies the examples verbatim, so apply the same
+            # <home>/<user> substitution that ``init`` performs.
+            text = _substitute(source.read_text(encoding="utf-8"))
+            if source.resolve() == target.resolve():
+                os.chmod(target, mode)
+                report.kept.append(str(target))
+                continue
+            if target.exists():
+                if target.read_text(encoding="utf-8") == text:
+                    os.chmod(target, mode)
+                    report.kept.append(str(target))
+                    continue
+                backup = _backup_path(target, stamp)
+                shutil.copy2(target, backup)
+                report.backups.append(str(backup))
+            _write_private(target, text, mode)
+            report.copied.append(str(target))
+        except OSError as error:
+            report.errors.append(f"cannot install {target}: {error}")
+    return report
+
+
+def load_env_file(path: Path) -> dict[str, str]:
+    """Read a simple ``KEY=VALUE`` environment file.
+
+    Comments, blank lines and ``export`` prefixes are accepted. Values may be
+    single- or double-quoted; no shell expansion is performed.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as error:
+        raise SetupError(f"cannot read {path}: {error}") from error
+
+    env: dict[str, str] = {}
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped.startswith("export "):
+            stripped = stripped[len("export ") :].lstrip()
+        key, separator, value = stripped.partition("=")
+        key = key.strip()
+        if not separator or not key:
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+            value = value[1:-1]
+        env[key] = value
+    return env
+
+
+def update_env_file(path: Path, updates: Mapping[str, str]) -> None:
+    """Update ``KEY=VALUE`` lines in place while preserving comments and order.
+
+    Missing keys are appended under a short marker. The file is rewritten
+    atomically and forced to mode ``0600`` because it contains API tokens.
+    """
+    try:
+        original = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        original = "# op-agent-engine environment file\n"
+    except OSError as error:
+        raise SetupError(f"cannot read {path}: {error}") from error
+
+    remaining = dict(updates)
+    lines: list[str] = []
+    for line in original.splitlines():
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#"):
+            match = _ENV_LINE.match(stripped)
+            if match is not None:
+                key = match.group(1)
+                if key in remaining:
+                    lines.append(f"{key}={remaining.pop(key)}")
+                    continue
+        lines.append(line)
+
+    if remaining:
+        if lines and lines[-1].strip():
+            lines.append("")
+        lines.append("# Added by op-agent-engine setup")
+        for key, value in remaining.items():
+            lines.append(f"{key}={value}")
+
+    text = "\n".join(lines).rstrip("\n") + "\n"
+    try:
+        _write_private(path, text, 0o600)
+    except OSError as error:
+        raise SetupError(f"cannot write {path}: {error}") from error
 
 
 def init_config(config_dir: Path) -> InitReport:

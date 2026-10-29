@@ -56,6 +56,113 @@ class TestInit:
         assert any("workflow.yaml" in path for path in report.kept)
 
 
+class TestSourceConfig:
+    def test_installs_and_backs_up_existing_files(self, tmp_path: Path) -> None:
+        source = tmp_path / "checkout"
+        source.mkdir()
+        (source / "workflow.yaml").write_text("new workflow", encoding="utf-8")
+        (source / "engine.env").write_text("OP_BASE_URL=https://op.example\n", encoding="utf-8")
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "workflow.yaml").write_text("old workflow", encoding="utf-8")
+        (config_dir / "engine.env").write_text(
+            "OP_BASE_URL=https://old.example\n", encoding="utf-8"
+        )
+
+        report = install.install_source_config(source, config_dir, stamp="20250101T000000Z")
+
+        assert report.ok
+        assert (config_dir / "workflow.yaml").read_text(encoding="utf-8") == "new workflow"
+        assert (config_dir / "engine.env").read_text(encoding="utf-8") == (
+            "OP_BASE_URL=https://op.example\n"
+        )
+        assert (config_dir / "workflow.yaml.bak.20250101T000000Z").is_file()
+        assert (config_dir / "engine.env.bak.20250101T000000Z").is_file()
+        assert (config_dir / "engine.env").stat().st_mode & 0o777 == 0o600
+        assert config_dir.stat().st_mode & 0o777 == 0o700
+
+    def test_substitutes_home_and_user_placeholders(self, tmp_path: Path) -> None:
+        source = tmp_path / "checkout"
+        source.mkdir()
+        (source / "workflow.yaml").write_text("workflow", encoding="utf-8")
+        (source / "engine.env").write_text(
+            "WORKSPACE_ROOT=<home>/op-agent-engine/agents\n"
+            "ENGINE_CONFIG=<home>/.config/op-agent-engine/workflow.yaml\n",
+            encoding="utf-8",
+        )
+        config_dir = tmp_path / "config"
+
+        report = install.install_source_config(source, config_dir)
+
+        assert report.ok
+        text = (config_dir / "engine.env").read_text(encoding="utf-8")
+        assert "<home>" not in text
+        assert str(Path.home()) in text
+
+    def test_second_run_keeps_identical_files(self, tmp_path: Path) -> None:
+        source = tmp_path / "checkout"
+        source.mkdir()
+        (source / "workflow.yaml").write_text("workflow", encoding="utf-8")
+        (source / "engine.env").write_text("OP_BASE_URL=https://op.example\n", encoding="utf-8")
+        config_dir = tmp_path / "config"
+        install.install_source_config(source, config_dir, stamp="first")
+
+        report = install.install_source_config(source, config_dir, stamp="second")
+
+        assert report.ok
+        assert report.copied == []
+        assert len(report.kept) == 2
+        assert not (config_dir / "workflow.yaml.bak.second").exists()
+
+
+class TestEnvFile:
+    def test_load_env_file(self, tmp_path: Path) -> None:
+        path = tmp_path / "engine.env"
+        path.write_text(
+            "# comment\n"
+            "OP_BASE_URL=https://op.example\n"
+            'export QUOTED="two words"\n'
+            "SINGLE='one word'\n"
+            "not a pair\n",
+            encoding="utf-8",
+        )
+
+        assert install.load_env_file(path) == {
+            "OP_BASE_URL": "https://op.example",
+            "QUOTED": "two words",
+            "SINGLE": "one word",
+        }
+
+    def test_update_env_file_preserves_comments_and_order(self, tmp_path: Path) -> None:
+        path = tmp_path / "engine.env"
+        path.write_text(
+            "# keep this comment\n"
+            "OP_BASE_URL=https://op.example\n"
+            "OP_ENGINE_TOKEN=old\n",
+            encoding="utf-8",
+        )
+
+        install.update_env_file(
+            path, {"OP_ENGINE_TOKEN": "new", "OP_TOKEN_FRONTEND": "frontend"}
+        )
+
+        text = path.read_text(encoding="utf-8")
+        assert "# keep this comment" in text
+        assert "OP_BASE_URL=https://op.example" in text
+        assert "OP_ENGINE_TOKEN=new" in text
+        assert "OP_TOKEN_FRONTEND=frontend" in text
+        assert text.index("OP_BASE_URL") < text.index("OP_ENGINE_TOKEN")
+        assert path.stat().st_mode & 0o777 == 0o600
+
+    def test_update_env_file_creates_missing_file(self, tmp_path: Path) -> None:
+        path = tmp_path / "engine.env"
+
+        install.update_env_file(path, {"OP_BASE_URL": "https://op.example"})
+
+        assert install.load_env_file(path) == {"OP_BASE_URL": "https://op.example"}
+        assert path.stat().st_mode & 0o777 == 0o600
+
+
 class TestInstallService:
     def test_dry_run_stages_rendered_units(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

@@ -1,5 +1,9 @@
 # env
 .env
+# operator files created from the examples before running install.sh
+/workflow.yaml
+/engine.env
+/*.bak.*
 # agent working repos
 agents/*/repositories/
 

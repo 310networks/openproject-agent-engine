@@ -64,8 +64,8 @@ server-side; the engine enforces them client-side either way.
 ## 6. Users and tokens
 
 Only an admin token is needed before this step: set `OP_BASE_URL` and
-`OP_PROVISION_TOKEN` in `engine.env`, then run
-`op-agent-engine provision --apply`. It creates the five users
+`OP_PROVISION_TOKEN` in `engine.env`. `op-agent-engine provision --apply`
+(run by the installer, or manually) creates the five users
 (`frontendEngineer`, `backendEngineer`, `leadDesigner`, `codeReviewer`,
 `agent-engine`) and one membership per agent per scoped project. It never
 deletes, deactivates or renames logins, and it exits successfully while the
@@ -73,7 +73,13 @@ agent tokens are still placeholders — it just lists the variables to fill in.
 
 The users' passwords are randomly generated and never shown, so mint their
 API tokens as an administrator: **Administration → Users → [user] → API
-tokens** (one per user). Then put the values in `engine.env`:
+tokens** (one per user).
+
+The interactive installer (`./install.sh`, or `op-agent-engine setup`) pauses
+here and asks for each token one at a time — the `agent-engine` runtime token
+plus one per agent — verifies it against `/api/v3/users/me`, and writes it to
+`engine.env` (mode `600`). If you install manually, put the values in
+`engine.env` yourself:
 
 | Variable | Owner |
 |---|---|

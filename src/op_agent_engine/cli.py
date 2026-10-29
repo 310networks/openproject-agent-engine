@@ -50,6 +50,7 @@ from op_agent_engine.provision import (
 )
 from op_agent_engine.retention import CleanupReport, cleanup_run_dirs
 from op_agent_engine.store import RUNS_DIR_NAME, Run, Store
+from op_agent_engine.wizard import run_setup
 
 CONFIG_ERROR_EXIT = 1
 OK_EXIT = 0
@@ -182,6 +183,36 @@ def build_parser() -> argparse.ArgumentParser:
         "--json",
         action="store_true",
         help="print the cleanup report as JSON",
+    )
+
+    setup = subparsers.add_parser(
+        "setup",
+        help="interactive end-to-end installer (init, provision, tokens, service)",
+    )
+    setup.add_argument(
+        "--source-dir",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help="checkout containing workflow.yaml and engine.env (default: cwd)",
+    )
+    setup.add_argument(
+        "--config-dir",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help="target directory (default: ~/.config/op-agent-engine)",
+    )
+    setup.add_argument(
+        "--skip-service",
+        action="store_true",
+        help="do not install the systemd units",
+    )
+    setup.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        help="answer yes to the systemd installation prompt",
     )
 
     init = subparsers.add_parser(
@@ -654,12 +685,40 @@ def _cleanup(*, days: int | None, as_json: bool, dry_run: bool) -> int:
     return OK_EXIT if not report.errors else CONFIG_ERROR_EXIT
 
 
+def _setup(
+    *, source_dir: Path, config_dir: Path, skip_service: bool, assume_yes: bool
+) -> int:
+    return run_setup(
+        source_dir=source_dir,
+        config_dir=config_dir,
+        skip_service=skip_service,
+        assume_yes=assume_yes,
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    config_path = (args.config or default_config_path()).expanduser()
+    if args.command == "setup":
+        source_dir = (
+            Path(args.source_dir).expanduser()
+            if args.source_dir is not None
+            else Path.cwd()
+        )
+        config_dir = (
+            Path(args.config_dir).expanduser()
+            if args.config_dir is not None
+            else install.default_config_dir()
+        )
+        return _setup(
+            source_dir=source_dir,
+            config_dir=config_dir,
+            skip_service=bool(args.skip_service),
+            assume_yes=bool(args.yes),
+        )
 
+    config_path = (getattr(args, "config", None) or default_config_path()).expanduser()
     if args.command == "init":
         config_dir = (
             Path(args.config_dir).expanduser()

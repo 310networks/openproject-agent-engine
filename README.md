@@ -31,24 +31,28 @@ and every engine comment starts with `ENGINE:`. Failed runs are retried up to
 
 ```bash
 git clone <engine-repo> ~/op-agent-engine && cd ~/op-agent-engine
-uv tool install .                        # venv fallback: docs/INSTALL.md
-op-agent-engine init                     # scaffolds ~/.config/op-agent-engine/
-# edit workflow.yaml (project, repo, statuses); in engine.env set OP_BASE_URL
-# and OP_PROVISION_TOKEN (an admin token) — agent tokens come later
-# one-time OpenProject setup: docs/OPENPROJECT_SETUP.md (statuses, AGENT
-# field, roles, workflows)
-set -a; . ~/.config/op-agent-engine/engine.env; set +a
-op-agent-engine provision --apply        # creates the five users; lists the
-                                         # token variables still to fill in
-# mint one API token per user (as admin: Administration → Users → user →
-# API tokens) and put the values in engine.env
-op-agent-engine check-config
-op-agent-engine install-service --apply  # installs + enables the systemd service (sudo)
-op-agent-engine dry-run                  # logs the dispatch plan, writes nothing
+cp config/workflow.example.yaml ./workflow.yaml
+cp deploy/engine.env.example ./engine.env
+chmod 600 ./engine.env
+# edit workflow.yaml (project, repo, statuses) and engine.env
+# (OP_BASE_URL and OP_PROVISION_TOKEN — an admin token).
+# One-time OpenProject setup first: docs/OPENPROJECT_SETUP.md
+# (statuses, AGENT field, roles, workflows).
+./install.sh
 ```
+
+`install.sh` is an interactive installer. It plays a short robot intro,
+installs the package with `uv`, copies your two files into
+`~/.config/op-agent-engine/`, provisions the OpenProject users, then prompts
+for one API token per account (engine plus each agent), verifies each token,
+installs the systemd service and runs a dry poll. Tokens are written to both
+`engine.env` files with mode `600` and are never printed.
 
 The service starts immediately and autostarts on boot. Follow it with
 `journalctl -u op-agent-engine -f`.
+
+The manual equivalent is in [docs/INSTALL.md](docs/INSTALL.md); `uv` is the
+only installer prerequisite.
 
 ## Documentation
 

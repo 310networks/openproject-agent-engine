@@ -33,6 +33,10 @@ cycle, or back the run with a real branch/PR when testing live.
 ## Manual acceptance checklist (real instance, throwaway repo)
 
 - [ ] One-time OpenProject setup done ([OPENPROJECT_SETUP.md](OPENPROJECT_SETUP.md)).
+- [ ] `./install.sh` (with `workflow.yaml` and `engine.env` in the checkout
+      root) installs the tool, provisions the users, prompts for one token
+      per account, verifies each token, installs the service and runs a dry
+      poll.
 - [ ] `check-config` resolves every status, user, project, type, role and
       `AGENT` option.
 - [ ] `provision --apply` creates the five users and memberships; a second
