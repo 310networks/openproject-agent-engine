@@ -640,7 +640,12 @@ def _provision(path: Path, *, apply: bool, as_json: bool) -> int:
     except (ConfigError, ProvisioningError) as error:
         print(f"op-agent-engine: error: {error}", file=sys.stderr)
         return CONFIG_ERROR_EXIT
-    configure_logging(os.environ.get("LOG_LEVEL", "INFO"))
+    # ``--json`` is machine-readable output, so keep stdout pure JSON: route
+    # log records (for example httpx's INFO request lines) to stderr instead.
+    configure_logging(
+        os.environ.get("LOG_LEVEL", "INFO"),
+        stream=sys.stderr if as_json else None,
+    )
     try:
         report = asyncio.run(_provision_async(config, settings, apply=apply))
     except (ConfigError, ValidationError, OpenProjectError) as error:
@@ -794,6 +799,13 @@ def _uninstall(args: argparse.Namespace) -> int:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    # Every subcommand configures logging from ``LOG_LEVEL``. Propagate the
+    # ``--log-level`` flag so it is not silently ignored (the installer relies
+    # on ``--log-level CRITICAL`` to keep ``provision --json`` output clean).
+    log_level = getattr(args, "log_level", None)
+    if log_level:
+        os.environ["LOG_LEVEL"] = str(log_level)
 
     if args.command == "uninstall":
         return _uninstall(args)

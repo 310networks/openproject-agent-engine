@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -292,6 +293,56 @@ def test_provision_apply_and_json(
     payload = json.loads(capsys.readouterr().out)
     assert payload["apply"] is True
     assert payload["actions"] == []
+
+
+def test_provision_json_keeps_logs_on_stderr(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def fake_provision(
+        config: object, settings: object, *, apply: bool
+    ) -> ProvisionReport:
+        logging.getLogger("httpx").info("HTTP Request: GET /api/v3/users/me")
+        return ProvisionReport(apply=apply)
+
+    monkeypatch.setattr(cli, "_provision_async", fake_provision)
+    monkeypatch.delenv("LOG_LEVEL", raising=False)
+
+    assert main(["provision", "--apply", "--json", "--config", str(EXAMPLE)]) == OK_EXIT
+
+    captured = capsys.readouterr()
+    # stdout must stay valid JSON even when INFO logging is enabled.
+    assert json.loads(captured.out)["apply"] is True
+    assert "HTTP Request" in captured.err
+
+
+def test_log_level_flag_overrides_environment(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def fake_provision(
+        config: object, settings: object, *, apply: bool
+    ) -> ProvisionReport:
+        logging.getLogger("httpx").info("HTTP Request: GET /api/v3/users/me")
+        return ProvisionReport(apply=apply)
+
+    monkeypatch.setattr(cli, "_provision_async", fake_provision)
+    monkeypatch.setenv("LOG_LEVEL", "INFO")
+    try:
+        assert main(
+            [
+                "provision",
+                "--apply",
+                "--json",
+                "--log-level",
+                "CRITICAL",
+                "--config",
+                str(EXAMPLE),
+            ]
+        ) == OK_EXIT
+        captured = capsys.readouterr()
+        assert json.loads(captured.out)["apply"] is True
+        assert "HTTP Request" not in captured.err
+    finally:
+        logging.getLogger().setLevel(logging.INFO)
 
 
 def test_check_config_fails_on_agent_token_mismatch(
