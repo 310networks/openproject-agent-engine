@@ -13,6 +13,7 @@ from op_agent_engine.openproject.client import OpenProjectClient
 from op_agent_engine.provision import (
     ProvisioningError,
     TokenVerificationError,
+    _create_user_payload,
     audit_workflow,
     check_agent_tokens,
     enforce_agent_tokens,
@@ -526,3 +527,18 @@ def test_wildcard_cannot_be_combined_with_explicit_projects() -> None:
     with pytest.raises(ConfigError) as excinfo:
         make_config(agents=agents)
     assert "cannot be combined" in str(excinfo.value)
+
+
+def test_generated_passwords_satisfy_the_instance_policy() -> None:
+    # OpenProject rejects users whose password lacks any of: lowercase,
+    # uppercase, numeric or special (verified live: HTTP 422).
+    seen: set[str] = set()
+    for _ in range(50):
+        password = _create_user_payload("u", "U", "u@example.com")["password"]
+        assert any(c.islower() for c in password)
+        assert any(c.isupper() for c in password)
+        assert any(c.isdigit() for c in password)
+        assert any(not c.isalnum() for c in password)
+        assert len(password) >= 36
+        seen.add(password)
+    assert len(seen) == 50  # passwords are random, not constant

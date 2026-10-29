@@ -24,6 +24,7 @@ Verified API constraints (docs/VERIFICATION.md items 9-11):
 from __future__ import annotations
 
 import secrets
+import string
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
@@ -501,6 +502,27 @@ async def _reconcile_users(
     return users
 
 
+def _generate_password() -> str:
+    """Generate a random password satisfying the instance password policy.
+
+    The password is discarded after user creation (the user authenticates
+    with an API token), but OpenProject requires at least one lowercase,
+    one uppercase, one numeric and one special character, and
+    ``secrets.token_urlsafe()`` does not guarantee that.
+    """
+    special = "!%*+=?"
+    required = (
+        secrets.choice(string.ascii_lowercase),
+        secrets.choice(string.ascii_uppercase),
+        secrets.choice(string.digits),
+        secrets.choice(special),
+    )
+    alphabet = string.ascii_letters + string.digits + special
+    chars = list(required) + [secrets.choice(alphabet) for _ in range(32)]
+    secrets.SystemRandom().shuffle(chars)
+    return "".join(chars)
+
+
 def _create_user_payload(login: str, display_name: str, email: str) -> dict[str, Any]:
     first_name, last_name = _split_name(display_name)
     # The password is generated only because OpenProject requires one for an
@@ -514,7 +536,7 @@ def _create_user_payload(login: str, display_name: str, email: str) -> dict[str,
         "admin": False,
         "status": "active",
         "language": "en",
-        "password": secrets.token_urlsafe(32),
+        "password": _generate_password(),
     }
 
 
