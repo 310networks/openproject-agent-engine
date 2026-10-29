@@ -32,6 +32,7 @@ JSON = Any
 _PROJECT = re.compile(r"^/api/v3/projects/(?P<identifier>[^/]+)$")
 _PROJECT_TYPES = re.compile(r"^/api/v3/projects/(?P<project_id>[^/]+)/types$")
 _SCHEMA = re.compile(r"^/api/v3/work_packages/schemas/(?P<identifier>[^/]+)$")
+_ID_FROM_HREF = re.compile(r"/(?P<id>\d+)/?$")
 _WP_BY_ID = re.compile(r"^/api/v3/work_packages/(?P<id>\d+)$")
 _WP_ACTIVITIES = re.compile(r"^/api/v3/work_packages/(?P<id>\d+)/activities$")
 _USER_BY_ID = re.compile(r"^/api/v3/users/(?P<id>\d+)$")
@@ -96,6 +97,7 @@ class FakeOpenProject:
         activities: list[dict[str, JSON]] | None = None,
         posting_user_id: int | None = 10,
         patch_error: tuple[int, str] | None = None,
+        form_error: tuple[int, str] | None = None,
         delete_user_error: tuple[int, str] | None = None,
         roles: list[dict[str, JSON]] | None = None,
         memberships: list[dict[str, JSON]] | None = None,
@@ -151,6 +153,9 @@ class FakeOpenProject:
         self.patches: list[dict[str, JSON]] = []
         # When set, every PATCH returns this (status, message) instead.
         self.patch_error = patch_error
+        # When set, POST /api/v3/work_packages/form returns this instead, so
+        # tests can exercise the schema-endpoint fallback.
+        self.form_error = form_error
         # When set, DELETE /api/v3/users/<id> returns this (status, message).
         self.delete_user_error = delete_user_error
 
@@ -193,6 +198,8 @@ class FakeOpenProject:
             activities_match = _WP_ACTIVITIES.match(path)
             if activities_match:
                 return self._post_comment(int(activities_match.group("id")), request)
+            if path == "/api/v3/work_packages/form":
+                return self._post_form(request)
             if path == "/api/v3/users":
                 return self._create_user(request)
             if path == "/api/v3/memberships":
@@ -284,6 +291,37 @@ class FakeOpenProject:
             return self._json(schema)
 
         return self._error(404, "The requested resource could not be found.")
+
+    def _post_form(self, request: httpx.Request) -> httpx.Response:
+        """Mirror POST /api/v3/work_packages/form.
+
+        The live API (OpenProject 17.x) embeds the type schema, including the
+        ``allowedValues`` links that the plain schemas endpoint omits.
+        """
+        if self.form_error is not None:
+            status, message = self.form_error
+            return self._error(status, message)
+        try:
+            body = json.loads(request.content.decode())
+        except ValueError:
+            body = None
+        if not isinstance(body, dict):
+            return self._error(400, "Malformed request body.")
+        links = [body.get("project"), body.get("type")]
+        identifiers: list[str] = []
+        for link in links:
+            href = link.get("href") if isinstance(link, dict) else None
+            match = _ID_FROM_HREF.search(href) if isinstance(href, str) else None
+            if match is None:
+                return self._error(400, "Malformed request body.")
+            identifiers.append(match.group("id"))
+        project = self._project_by_id(identifiers[0])
+        if project is None:
+            return self._error(404, "The requested resource could not be found.")
+        schema = self.schemas.get(f"{identifiers[0]}-{identifiers[1]}")
+        if schema is None:
+            return self._error(404, "The requested resource could not be found.")
+        return self._json({"_type": "Form", "_embedded": {"schema": schema}})
 
     def _patch_work_package(
         self, work_package_id: int, request: httpx.Request

@@ -20,6 +20,7 @@ from op_agent_engine.openproject.resolve import (
     ResolvedUser,
 )
 from op_agent_engine.provision import ProvisionReport, TokenReport, TokenStatus
+from tests.fakes import non_write_requests
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = REPO_ROOT / "workflow.example.yaml"
@@ -483,7 +484,7 @@ def test_dry_run_flag_is_accepted_before_subcommand(
 
     # A single dry-run poll cycle completes and claims nothing.
     assert main(["--dry-run", "once", "--config", str(config_path)]) == OK_EXIT
-    assert all(request.method == "GET" for request in fake.requests)
+    assert len(non_write_requests(fake.requests)) == len(fake.requests)
 
 
 def test_cleanup_removes_old_run_directories(

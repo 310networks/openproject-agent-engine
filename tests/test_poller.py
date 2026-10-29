@@ -12,6 +12,7 @@ from op_agent_engine.openproject.client import OpenProjectClient
 from op_agent_engine.openproject.resolve import resolve_workflow
 from op_agent_engine.poller import Poller
 from tests.fakes.openproject import FakeOpenProject
+from tests.fakes import non_write_requests
 from tests.test_resolve import (
     BASE_URL,
     TOKEN,
@@ -217,8 +218,9 @@ async def test_dry_run_writes_nothing() -> None:
     plan = await poller.poll()
 
     assert len(plan.items) == 2
-    # A dry run only reads; it must not POST/PATCH/DELETE anything.
-    assert all(request.method == "GET" for request in fake.requests), [
+    # A dry run only reads; it must not create, update or delete anything.
+    # (The form endpoint is a read-only schema preview, not a write.)
+    assert len(non_write_requests(fake.requests)) == len(fake.requests), [
         f"{request.method} {request.url.path}" for request in fake.requests
     ]
 
@@ -244,7 +246,7 @@ def test_cli_dry_run_logs_plan_and_writes_nothing(tmp_path, monkeypatch) -> None
     exit_code = cli.main(["dry-run", "--config", str(config_path)])
 
     assert exit_code == 0
-    assert all(request.method == "GET" for request in fake.requests)
+    assert len(non_write_requests(fake.requests)) == len(fake.requests)
     # Dry-run must not create the store file.
     assert not (tmp_path / "data" / "engine.db").exists()
 

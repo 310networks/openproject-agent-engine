@@ -393,3 +393,66 @@ async def test_supports_custom_option_self_link_shape() -> None:
     assert resolution.agent_field.field_id == "customField9"
     assert resolution.agent_field.options == {"IMPL": 31, "REVIEWER": 32}
 
+
+
+async def test_schema_is_read_from_the_form_endpoint() -> None:
+    # OpenProject 17.x only embeds ``allowedValues`` in the form schema; the
+    # plain schemas endpoint returns link properties with empty ``_links``.
+    fake = make_fake()
+
+    resolution = await resolve(fake)
+
+    assert resolution.agent_field.options == {"IMPL": 11, "REVIEWER": 22}
+    form_requests = [
+        request
+        for request in fake.requests
+        if request.url.path == "/api/v3/work_packages/form"
+    ]
+    assert len(form_requests) == 3
+    assert all(request.method == "POST" for request in form_requests)
+    schema_requests = [
+        request
+        for request in fake.requests
+        if request.url.path.startswith("/api/v3/work_packages/schemas/")
+    ]
+    assert schema_requests == []
+
+
+async def test_falls_back_to_schema_endpoint_without_form_permission() -> None:
+    fake = make_fake(form_error=(403, "You are not authorized to access this resource."))
+
+    resolution = await resolve(fake)
+
+    assert resolution.agent_field.options == {"IMPL": 11, "REVIEWER": 22}
+    schema_requests = [
+        request
+        for request in fake.requests
+        if request.url.path.startswith("/api/v3/work_packages/schemas/")
+    ]
+    assert len(schema_requests) == 3
+
+
+async def test_link_field_without_allowed_values_is_reported() -> None:
+    # Shape returned by GET /api/v3/work_packages/schemas/<id>-<type> on
+    # OpenProject 17.x: the custom field is present but ``_links`` is empty.
+    empty_links_schema = {
+        "_type": "Schema",
+        "customField3": {
+            "type": "CustomOption",
+            "name": "AGENT",
+            "writable": True,
+            "location": "_links",
+            "_links": {},
+        },
+    }
+    fake = make_fake(
+        schemas={"4-1": empty_links_schema, "4-4": empty_links_schema, "4-7": empty_links_schema},
+        form_error=(403, "You are not authorized to access this resource."),
+    )
+
+    with pytest.raises(OpenProjectResolutionError) as excinfo:
+        await resolve(fake)
+
+    message = str(excinfo.value)
+    assert "is not a list field with allowed values" in message
+    assert "returned no allowedValues" in message

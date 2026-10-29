@@ -17,6 +17,7 @@ from op_agent_engine.poller import DispatchItem, DispatchPlan
 from op_agent_engine.scheduler import Scheduler
 from op_agent_engine.store import CANCELLED, RUNNING, Store
 from tests.fakes.openproject import FakeOpenProject
+from tests.fakes import non_write_requests
 from tests.test_poller import PRIORITIES, wp
 from tests.test_resolve import BASE_URL, TOKEN, make_config, make_fake, resolve
 
@@ -464,7 +465,7 @@ async def test_dry_run_claims_nothing(tmp_path: Path) -> None:
 
         # Nothing was written anywhere.
         assert fake.patches == []
-        assert all(request.method == "GET" for request in fake.requests)
+        assert len(non_write_requests(fake.requests)) == len(fake.requests)
         assert store.active_run_count() == 0
     finally:
         await client.aclose()

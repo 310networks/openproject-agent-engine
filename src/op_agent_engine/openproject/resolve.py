@@ -11,9 +11,15 @@ Verified API details (see ``docs/VERIFICATION.md``):
   ``manage_user`` permission (or administrator).
 * Projects: ``GET /api/v3/projects/{identifier}`` accepts the identifier.
 * Project types: ``GET /api/v3/projects/{id}/types`` (paginated).
-* Schema: ``GET /api/v3/work_packages/schemas/{projectId}-{typeId}`` returns a
-  single object. A list custom field appears as ``customField<N>`` with
-  ``name`` and ``_links.allowedValues`` entries carrying ``href`` and ``title``.
+* Schema: ``POST /api/v3/work_packages/form`` with a body naming the project
+  and type returns the very same schema object under ``_embedded.schema``, but
+  with ``_links.allowedValues`` fully populated. On OpenProject 17.x the plain
+  ``GET /api/v3/work_packages/schemas/{projectId}-{typeId}`` endpoint returns
+  those link properties without ``allowedValues`` (empty ``_links`` for every
+  link field, including built-ins such as ``status`` and ``priority``), so the
+  form endpoint is queried first and the schema endpoint is only a fallback.
+  A list custom field appears as ``customField<N>`` with ``name`` and
+  ``_links.allowedValues`` entries carrying ``href`` and ``title``.
 """
 
 from __future__ import annotations
@@ -382,14 +388,9 @@ async def _resolve_agent_field(
         for resolved_type in project.types.values():
             schema_label = f"project '{project.identifier}', type '{resolved_type.name}'"
             schema_identifier = f"{project.id}-{resolved_type.id}"
-            payload = await client.get_json(
-                f"/api/v3/work_packages/schemas/{schema_identifier}"
+            payload = await _fetch_schema(
+                client, project.id, resolved_type.id, schema_identifier, schema_label
             )
-            if not isinstance(payload, dict):
-                raise OpenProjectResolutionError(
-                    f"OpenProject schema {schema_identifier} ({schema_label}) "
-                    "returned a non-object response"
-                )
 
             matches = [
                 (key, value)
@@ -426,7 +427,9 @@ async def _resolve_agent_field(
             if allowed_values is None:
                 problems.append(
                     f"custom field '{field_name}' in schema {schema_identifier} "
-                    f"({schema_label}) is not a list field with allowed values"
+                    f"({schema_label}) is not a list field with allowed values "
+                    "(OpenProject returned no allowedValues; the field must be a "
+                    "single-select List field enabled for this type)"
                 )
                 continue
 
@@ -492,6 +495,50 @@ async def _resolve_agent_field(
             )
 
     return ResolvedAgentField(name=field_name, field_id=field_id, options=option_ids)
+
+
+async def _fetch_schema(
+    client: OpenProjectClient,
+    project_id: int,
+    type_id: int,
+    schema_identifier: str,
+    schema_label: str,
+) -> dict[str, Any]:
+    """Return the form schema for a project/type pair.
+
+    The form endpoint embeds ``allowedValues`` for every link property; the
+    ``/work_packages/schemas/{id}-{type}`` endpoint does not (verified against
+    OpenProject 17.7.1). Fall back to the schema endpoint when the form is not
+    available to the token (e.g. it lacks ``add_work_packages``).
+    """
+    try:
+        form = await client.post_json(
+            "/api/v3/work_packages/form",
+            json_body={
+                "_type": "WorkPackage",
+                "project": {"href": f"/api/v3/projects/{project_id}"},
+                "type": {"href": f"/api/v3/types/{type_id}"},
+            },
+        )
+    except OpenProjectError:
+        form = None
+
+    if isinstance(form, dict):
+        embedded = form.get("_embedded")
+        if isinstance(embedded, dict):
+            schema = embedded.get("schema")
+            if isinstance(schema, dict):
+                return schema
+
+    payload = await client.get_json(
+        f"/api/v3/work_packages/schemas/{schema_identifier}"
+    )
+    if not isinstance(payload, dict):
+        raise OpenProjectResolutionError(
+            f"OpenProject schema {schema_identifier} ({schema_label}) "
+            "returned a non-object response"
+        )
+    return payload
 
 
 def _allowed_values(property_payload: dict[str, Any]) -> list[Any] | None:
