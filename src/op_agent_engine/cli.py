@@ -48,7 +48,8 @@ from op_agent_engine.provision import (
     provisioning_token,
     require_admin,
 )
-from op_agent_engine.store import Run, Store
+from op_agent_engine.retention import CleanupReport, cleanup_run_dirs
+from op_agent_engine.store import RUNS_DIR_NAME, Run, Store
 
 CONFIG_ERROR_EXIT = 1
 OK_EXIT = 0
@@ -163,6 +164,24 @@ def build_parser() -> argparse.ArgumentParser:
         "--json",
         action="store_true",
         help="print the provisioning report as JSON",
+    )
+
+    cleanup = subparsers.add_parser(
+        "cleanup",
+        help="remove run directories older than the retention period",
+        parents=[_subcommand_options()],
+    )
+    cleanup.add_argument(
+        "--days",
+        type=int,
+        default=None,
+        metavar="N",
+        help="retention in days (default: $RUN_RETENTION_DAYS or 30)",
+    )
+    cleanup.add_argument(
+        "--json",
+        action="store_true",
+        help="print the cleanup report as JSON",
     )
     return parser
 
@@ -516,6 +535,34 @@ def _provision(path: Path, *, apply: bool, as_json: bool) -> int:
     return OK_EXIT if report.ok else CONFIG_ERROR_EXIT
 
 
+def _cleanup(*, days: int | None, as_json: bool, dry_run: bool) -> int:
+    """Log retention job: remove old ``DATA_DIR/runs/<runId>`` directories."""
+    try:
+        settings = EngineSettings()
+    except ValidationError as error:
+        print(f"op-agent-engine: error: {error}", file=sys.stderr)
+        return CONFIG_ERROR_EXIT
+    retention_days = settings.run_retention_days if days is None else days
+    if retention_days < 0:
+        print(
+            "op-agent-engine: error: --days must not be negative",
+            file=sys.stderr,
+        )
+        return CONFIG_ERROR_EXIT
+
+    report: CleanupReport = cleanup_run_dirs(
+        settings.data_dir / RUNS_DIR_NAME,
+        older_than_days=retention_days,
+        dry_run=dry_run,
+    )
+    if as_json:
+        print(json.dumps(report.as_dict(), indent=2))
+    else:
+        for line in report.summary():
+            print(line)
+    return OK_EXIT if not report.errors else CONFIG_ERROR_EXIT
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -524,6 +571,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "status":
         return _status(as_json=args.json)
+
+    if args.command == "cleanup":
+        return _cleanup(
+            days=args.days, as_json=args.json, dry_run=bool(args.dry_run)
+        )
 
     if args.command == "check-config":
         return _check_config(config_path, as_json=args.json, offline=args.offline)

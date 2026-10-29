@@ -19,6 +19,9 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+# Run artifact directory name (PLAN section 16).
+RUNS_DIR_NAME = "runs"
+
 # Run states (PLAN section 12).
 RUNNING = "running"
 SUCCEEDED = "succeeded"
@@ -146,7 +149,7 @@ class Store:
         """Directory for per-run artifacts (``DATA_DIR/runs/<runId>/``)."""
         if self._path == Path("__in_memory__"):
             return Path("__in_memory__") / "runs"
-        return self._path.parent / "runs"
+        return self._path.parent / RUNS_DIR_NAME
 
     # -- lifecycle -------------------------------------------------------
 

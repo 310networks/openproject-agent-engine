@@ -433,3 +433,64 @@ def test_dry_run_flag_is_accepted_before_subcommand(
     # A single dry-run poll cycle completes and claims nothing.
     assert main(["--dry-run", "once", "--config", str(config_path)]) == OK_EXIT
     assert all(request.method == "GET" for request in fake.requests)
+
+
+def test_cleanup_removes_old_run_directories(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+    from datetime import timedelta
+
+    data_dir = tmp_path / "data"
+    runs_dir = data_dir / "runs"
+    old = runs_dir / "1"
+    old.mkdir(parents=True)
+    old_file = old / "prompt.txt"
+    old_file.write_text("prompt", encoding="utf-8")
+    fresh = runs_dir / "2"
+    fresh.mkdir()
+    timestamp = (datetime.now(UTC) - timedelta(days=40)).timestamp()
+    os.utime(old_file, (timestamp, timestamp))
+    os.utime(old, (timestamp, timestamp))
+    monkeypatch.setenv("DATA_DIR", str(data_dir))
+    monkeypatch.setenv("RUN_RETENTION_DAYS", "30")
+
+    assert main(["cleanup", "--json"]) == OK_EXIT
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["removed_count"] == 1
+    assert payload["removed"][0]["name"] == "1"
+    assert not old.exists()
+    assert fresh.is_dir()
+
+
+def test_cleanup_dry_run_keeps_directories(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+    from datetime import timedelta
+
+    data_dir = tmp_path / "data"
+    old = data_dir / "runs" / "9"
+    old.mkdir(parents=True)
+    old_file = old / "prompt.txt"
+    old_file.write_text("prompt", encoding="utf-8")
+    timestamp = (datetime.now(UTC) - timedelta(days=90)).timestamp()
+    os.utime(old_file, (timestamp, timestamp))
+    os.utime(old, (timestamp, timestamp))
+    monkeypatch.setenv("DATA_DIR", str(data_dir))
+
+    assert main(["cleanup", "--days", "30", "--dry-run"]) == OK_EXIT
+
+    output = capsys.readouterr().out
+    assert "would remove: 1 run director(ies)" in output
+    assert old.is_dir()
+
+
+def test_cleanup_rejects_negative_days(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+
+    assert main(["cleanup", "--days", "-1"]) == CONFIG_ERROR_EXIT
+    assert "--days must not be negative" in capsys.readouterr().err

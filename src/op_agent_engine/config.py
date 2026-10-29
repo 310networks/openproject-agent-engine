@@ -588,6 +588,7 @@ class EngineSettings(BaseSettings):
     max_crash_retries: int = Field(default=2, ge=0)
     run_timeout_seconds: int = Field(default=3600, gt=0)
     stop_grace_seconds: int = Field(default=60, ge=0)
+    run_retention_days: int = Field(default=30, ge=0)
     engine_config: Path = Field(default_factory=lambda: Path(DEFAULT_ENGINE_CONFIG).expanduser())
     data_dir: Path = Field(default_factory=lambda: Path(DEFAULT_DATA_DIR).expanduser())
     workspace_root: Path | None = None

@@ -10,6 +10,12 @@ Do this once per OpenProject instance. Role names must match
 `openproject.provisioning.agent_role` and `engine_role` in `workflow.yaml`
 (the defaults are `Agent Worker` and `Agent Engine`).
 
+Before the roles, create the `AGENT` list custom field described in the
+[README](../README.md#3-the-agent-custom-field): `FRONTEND`, `BACKEND`,
+`LEAD_DESIGNER` **and** `REVIEWER`. Startup resolves an option for every
+configured agent key, so `REVIEWER` must exist even though `Ready for Review`
+work packages always go to the reviewer and never use the field for routing.
+
 Create **exactly two roles**, not one per agent. The four agent users
 (`frontendEngineer`, `backendEngineer`, `leadDesigner`, `codeReviewer`) all
 share the single `Agent Worker` role; `agent-engine` gets `Agent Engine`.
