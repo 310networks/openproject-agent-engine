@@ -120,7 +120,13 @@ printf '\n%s\n' "${BOLD}${CYAN}OpenProject Agent Engine${RESET}"
 printf '%s\n' "${DIM}------------------------${RESET}"
 printf '\nInstalling the op-agent-engine command with uv...\n\n'
 
-"$UV_BIN" tool install --force "$ROOT_DIR"
+# ``--reinstall-package`` is required. uv caches the wheel it builds from a
+# local directory, keyed by the package version. This project's version does
+# not change between checkouts, so a plain ``--force`` install happily reuses
+# the previously built wheel and keeps running stale code (for example an old
+# ``setup`` that never printed the generated passwords). Forcing a rebuild of
+# just this package keeps the cached third-party dependencies.
+"$UV_BIN" tool install --force --reinstall-package op-agent-engine "$ROOT_DIR"
 
 # Prefer the uv tool shim over any older copy that may be earlier on PATH.
 ENGINE_BIN=""
@@ -137,6 +143,35 @@ if [[ -z "$ENGINE_BIN" ]]; then
 fi
 if ! "$ENGINE_BIN" setup --help >/dev/null 2>&1; then
     die "the selected op-agent-engine ($ENGINE_BIN) is older than this checkout; remove it or fix PATH"
+fi
+
+# Verify the installed code really is this checkout's code. A cached wheel can
+# otherwise make ``setup`` run an older version without any visible error.
+RESOLVED_BIN="$(readlink -f -- "$ENGINE_BIN" 2>/dev/null || true)"
+TOOL_PYTHON=""
+if [[ -n "$RESOLVED_BIN" ]]; then
+    TOOL_PYTHON="$(dirname -- "$RESOLVED_BIN")/python"
+fi
+if [[ -x "$TOOL_PYTHON" && -d "$ROOT_DIR/src/op_agent_engine" ]]; then
+    SOURCE_MISMATCH="$("$TOOL_PYTHON" - "$ROOT_DIR/src/op_agent_engine" 2>/dev/null <<'PY'
+import hashlib
+import pathlib
+import sys
+
+import op_agent_engine
+
+checkout = pathlib.Path(sys.argv[1])
+installed = pathlib.Path(op_agent_engine.__file__).parent
+for name in ("wizard.py", "provision.py"):
+    want = hashlib.sha256((checkout / name).read_bytes()).hexdigest()
+    have = hashlib.sha256((installed / name).read_bytes()).hexdigest()
+    if want != have:
+        print(name)
+PY
+)"
+    if [[ -n "$SOURCE_MISMATCH" ]]; then
+        die "the installed op-agent-engine ($ENGINE_BIN) still has stale code ($SOURCE_MISMATCH); reinstalling did not take effect"
+    fi
 fi
 
 # Make the command visible to the setup subprocesses (notably install-service).

@@ -122,6 +122,41 @@ def test_token_requests_rejects_shared_variable() -> None:
         token_requests(raw)
 
 
+def test_created_accounts_lists_each_login_once() -> None:
+    requests = [
+        TokenRequest(
+            "OP_ENGINE_TOKEN", "agent-engine", "agent-engine (runtime)", "engine"
+        ),
+        TokenRequest(
+            "OP_TOKEN_FRONTEND",
+            "frontendEngineer",
+            "FRONTEND (frontendEngineer)",
+            "agent",
+        ),
+        # A second token variable for the same agent must not duplicate the
+        # account (and its password) in the credentials block.
+        TokenRequest(
+            "OP_TOKEN_FRONTEND_CLI",
+            "frontendEngineer",
+            "FRONTEND (frontendEngineer)",
+            "agent",
+        ),
+    ]
+
+    accounts = wizard._created_accounts(
+        requests,
+        {
+            "agent-engine": "engine-password",
+            "frontendEngineer": "frontend-password",
+        },
+    )
+
+    assert accounts == [
+        ("agent-engine (runtime)", "agent-engine", "engine-password"),
+        ("FRONTEND (frontendEngineer)", "frontendEngineer", "frontend-password"),
+    ]
+
+
 def test_run_setup_happy_path(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -178,6 +213,8 @@ def test_run_setup_happy_path(
     text_output = output.getvalue()
     assert "engine-secret" not in text_output
     assert "frontend-secret" not in text_output
+    assert "My account -> Access tokens" in text_output
+    assert text_output.count("engine-password") >= 2  # summary block + prompt
     assert "engine-password" in text_output
     assert "frontend-password" in text_output
     assert text_output.index("engine-password") < text_output.index("frontend-password")
@@ -198,6 +235,47 @@ def test_run_setup_happy_path(
 
     assert (config_dir / "workflow.yaml").is_file()
     assert config_dir.stat().st_mode & 0o777 == 0o700
+
+
+def test_run_setup_warns_when_existing_user_password_is_unknown(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _source_tree(tmp_path)
+
+    def fake_capture(
+        command: list[str], *, env: dict[str, str], cwd: Path
+    ) -> tuple[int, str, str]:
+        if "provision" in command:
+            # No users were created by this run, so no passwords are available.
+            return 0, json.dumps({"writes": 0, "passwords": {}}), ""
+        return 0, "", ""
+
+    answers = iter(["engine-secret", "frontend-secret"])
+
+    monkeypatch.setattr(wizard, "_run_capture", fake_capture)
+    monkeypatch.setattr(
+        wizard, "_secret_prompt", lambda prompt: next(answers)
+    )
+    monkeypatch.setattr(
+        wizard, "_verify_token", lambda base_url, token, login: (True, "ok")
+    )
+
+    output = io.StringIO()
+    code = run_setup(
+        source_dir=source,
+        config_dir=tmp_path / "config",
+        skip_service=True,
+        assume_yes=True,
+        ui=UI(stream=output),
+    )
+
+    assert code == 0
+    text_output = output.getvalue()
+    assert "already exists" in text_output
+    assert "Administration -> Users -> frontendEngineer" in text_output
+    # The engine login is warned about once, not once per prompt.
+    assert text_output.count("agent-engine already exists") == 1
 
 
 def test_run_setup_rejects_placeholder_admin_token(

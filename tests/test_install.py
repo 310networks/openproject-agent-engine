@@ -276,3 +276,27 @@ class TestCli:
         out = capsys.readouterr().out
         assert "kept existing:" in out
         assert (config_dir / "engine.env").read_text(encoding="utf-8") == "custom"
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_install_script_forces_a_package_rebuild() -> None:
+    """``uv`` caches local builds by version, so ``--force`` alone is not enough.
+
+    The package version does not change between checkouts; without
+    ``--reinstall-package`` the installer silently keeps running the
+    previously built code (for example an older ``setup`` that never printed
+    the generated user passwords).
+    """
+    script = (REPO_ROOT / "install.sh").read_text(encoding="utf-8")
+
+    assert "--reinstall-package op-agent-engine" in script
+
+
+def test_install_script_checks_installed_sources_match_checkout() -> None:
+    script = (REPO_ROOT / "install.sh").read_text(encoding="utf-8")
+
+    assert "SOURCE_MISMATCH" in script
+    assert "wizard.py" in script
+    assert "provision.py" in script

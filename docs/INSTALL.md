@@ -28,18 +28,27 @@ installer collects them later.
 `install.sh` requires `uv` and performs the rest in order:
 
 1. plays a short terminal animation;
-2. installs the package with `uv tool install --force .`;
+2. installs the package with `uv tool install --force --reinstall-package
+   op-agent-engine .`. The extra flag is required: uv caches the wheel it
+   builds from a local directory by version, and this project's version does
+   not change between checkouts, so a plain `--force` can silently keep
+   running previously installed code;
 3. copies your edited `workflow.yaml` and `engine.env` into
    `~/.config/op-agent-engine/` (existing files are backed up as
    `<name>.bak.<timestamp>`) and runs `op-agent-engine init`, which keeps the
    existing files;
 4. runs `op-agent-engine provision --apply` to create the engine and agent
    users;
-5. prints each newly created user's generated password, then prompts for
-   that user's API token one at a time — the `agent-engine` runtime token and
-   one per agent in `workflow.yaml` — verifying each through
-   `/api/v3/users/me`; log in as the user and create the token under
-   **My account → Access tokens**;
+5. lists every newly created account with its generated password (the block
+   is repeated at each prompt, because administrators cannot mint tokens for
+   other users), then asks for that user's API token one at a time — the
+   `agent-engine` runtime token and one per agent in `workflow.yaml` —
+   verifying each through `/api/v3/users/me`; sign in as the user at
+   `OP_BASE_URL` and create the token under **My account → Access tokens**.
+   Passwords are shown once and never written to disk; store them if you may
+   need to sign in again. Accounts that already existed keep their old
+   password, so the installer tells you to reset it in **Administration →
+   Users** instead; alternatively paste a token you already created;
 6. runs `op-agent-engine check-config`, installs the systemd service
    (`install-service --apply`, sudo), and finishes with a read-only
    `op-agent-engine dry-run`.
@@ -69,7 +78,7 @@ To update:
 
 ```bash
 cd ~/op-agent-engine && git pull --ff-only
-uv tool install --force .
+uv tool install --force --reinstall-package op-agent-engine .
 sudo systemctl restart op-agent-engine
 ```
 
