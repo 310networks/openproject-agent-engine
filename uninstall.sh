@@ -106,9 +106,6 @@ if [[ $DRY_RUN -eq 0 && $APPLY_EXPLICIT -eq 0 ]]; then
     ARGS+=("--apply")
 fi
 
-printf '\n%s\n' "${BOLD}${CYAN}OpenProject Agent Engine uninstall${RESET}"
-printf '%s\n' "${BOLD}-----------------------------------${RESET}"
-
 set +e
 "${RUNNER[@]}" uninstall --source-dir "$ROOT_DIR" "${ARGS[@]}"
 STATUS=$?

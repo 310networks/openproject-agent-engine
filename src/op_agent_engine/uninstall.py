@@ -251,7 +251,11 @@ async def remove_openproject_users(
                 report.errors.append(f"{login}: delete failed: {error}")
                 continue
             try:
-                await client.post_json(f"/api/v3/users/{user_id}/lock")
+                # OpenProject rejects an empty POST with 406; send JSON {}
+                # so the request carries a Content-Type header.
+                await client.post_json(
+                    f"/api/v3/users/{user_id}/lock", json_body={}
+                )
                 report.actions.append(
                     UserAction(login, "locked", "delete forbidden by instance")
                 )
@@ -317,8 +321,12 @@ def stop_service(ui: UI) -> None:
         return
     for unit in ("op-agent-engine.service", "op-agent-engine-cleanup.timer"):
         code, detail = _run([*_sudo_prefix(), "systemctl", "disable", "--now", unit])
-        if code != 0:
-            ui.warn(f"{unit}: {detail or 'not loaded'}")
+        if code == 0:
+            continue
+        lowered = detail.lower()
+        if "does not exist" in lowered or "not loaded" in lowered:
+            continue
+        ui.warn(f"{unit}: {detail or 'not loaded'}")
 
 
 def remove_service_files(ui: UI) -> None:

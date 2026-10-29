@@ -199,6 +199,8 @@ class FakeOpenProject:
                 return self._create_membership(request)
             lock_match = _USER_LOCK.match(path)
             if lock_match:
+                if request.headers.get("content-type") != "application/json":
+                    return self._error(406, "Missing content-type header")
                 return self._lock_user(int(lock_match.group("id")))
             return self._error(404, "The requested resource could not be found.")
         if request.method != "GET":

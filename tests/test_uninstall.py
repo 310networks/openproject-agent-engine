@@ -140,6 +140,13 @@ async def test_remove_users_falls_back_to_locking() -> None:
 
     assert report.ok
     assert {action.action for action in report.actions} == {"locked"}
+    lock_requests = [
+        request
+        for request in fake.requests
+        if request.method == "POST" and request.url.path.endswith("/lock")
+    ]
+    assert lock_requests
+    assert all(request.content == b"{}" for request in lock_requests)
     by_login = {user["login"]: user for user in fake.users}
     assert by_login["agent-engine"]["status"] == "locked"
     assert by_login["impl"]["status"] == "locked"
