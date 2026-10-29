@@ -1,4 +1,4 @@
-"""Tests for the dispatcher (PLAN section 4, milestone M4).
+"""Tests for the dispatcher (PLAN section 4, milestones M4 and M5).
 
 The dispatcher is exercised against the fake OpenProject (HAL-shaped
 responses, lockVersion semantics) with a fake runner (no real process), a
@@ -8,6 +8,8 @@ fake GitHub and a stubbed workspace preparation (no real git).
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -32,8 +34,12 @@ from tests.test_resolve import BASE_URL, TOKEN, make_config, make_fake, resolve
 
 STATUS_IN_PROGRESS = 2
 STATUS_READY_FOR_REVIEW = 3
+STATUS_IN_TESTING = 4
 STATUS_ON_HOLD = 5
+STATUS_REJECTED = 6
 STATUS_CLOSED = 7
+
+REVIEWER_USER_ID = 12
 
 OPTION_ID_TO_VALUE = {11: "IMPL", 22: "REVIEWER"}
 
@@ -51,8 +57,14 @@ PR = PullRequest(
 class FakeRunner:
     """Stands in for the runner abstraction: no process is spawned."""
 
-    def __init__(self, result: RunResult) -> None:
+    def __init__(
+        self,
+        result: RunResult,
+        *,
+        on_run: Callable[[], None] | None = None,
+    ) -> None:
         self.result = result
+        self.on_run = on_run
         self.requests: list[RunRequest] = []
 
     def build_request(
@@ -87,6 +99,8 @@ class FakeRunner:
     ) -> RunResult:
         if on_spawned is not None:
             on_spawned(4321, 4321, "2026-02-10T00:00:00+00:00")
+        if self.on_run is not None:
+            self.on_run()
         return self.result
 
 
@@ -95,18 +109,26 @@ class FakeGitHub:
         self,
         pr: PullRequest | None = None,
         error: GitHubError | None = None,
+        merged: PullRequest | None = None,
     ) -> None:
         self.pr = pr
+        self.merged = merged
         self.error = error
         self.calls: list[tuple[str, str]] = []
+        self.states: list[str] = []
 
     async def find_pr(
         self, repo: str, branch: str, *, state: str = "open"
     ) -> PullRequest | None:
         self.calls.append((repo, branch))
+        self.states.append(state)
         if self.error is not None:
             raise self.error
-        return self.pr
+        if state == "merged":
+            return self.merged
+        if state == "open":
+            return self.pr
+        return None
 
 
 def make_result(
@@ -151,6 +173,11 @@ async def make_dispatcher(
         "repo={{ repo.github }} agent={{ agent.name }} "
         "project={{ project.identifier }} default={{ repo.default_branch }} "
         "url={{ wp.url }} type={{ wp.type }} desc={{ wp.description }}"
+    ),
+    review_template: str = (
+        "REVIEWPROMPT subject={{ wp.subject }} branch={{ branch }} "
+        "pr={{ pr.url }} review={{ review_number }} agent={{ agent.name }} "
+        "repo={{ repo.github }} desc={{ wp.description }}"
     ),
 ) -> tuple[Dispatcher, FakeOpenProject, Store, OpenProjectClient, EngineSettings]:
     if fake is None:
@@ -197,6 +224,7 @@ async def make_dispatcher(
     prompts_dir = tmp_path / "prompts"
     prompts_dir.mkdir()
     (prompts_dir / "implement.txt.j2").write_text(prompts_template, encoding="utf-8")
+    (prompts_dir / "review.txt.j2").write_text(review_template, encoding="utf-8")
 
     dispatcher = Dispatcher(
         config=config,
@@ -216,6 +244,16 @@ def make_item(work_package_id: int, *, status: int = STATUS_IN_PROGRESS) -> Disp
     work_package = parse_work_package(entry, "customField3", OPTION_ID_TO_VALUE)
     return DispatchItem(
         work_package=work_package, agent_key="IMPL", status_key="new"
+    )
+
+
+def make_review_item(work_package_id: int) -> DispatchItem:
+    entry = wp(work_package_id, status=STATUS_IN_TESTING, agent=22)
+    work_package = parse_work_package(entry, "customField3", OPTION_ID_TO_VALUE)
+    return DispatchItem(
+        work_package=work_package,
+        agent_key="REVIEWER",
+        status_key="ready_for_review",
     )
 
 
@@ -777,6 +815,472 @@ async def test_openproject_error_after_run_leaves_run_active(
         meta = json.loads((store.runs_dir / "1" / "meta.json").read_text())
         assert meta["state"] == "running"
         assert meta["outcome"] == "error"
+    finally:
+        await client.aclose()
+        store.close()
+
+
+# -- review runs (M5) ---------------------------------------------------------------
+
+MERGED_PR = PullRequest(
+    number=7,
+    url="https://github.com/owner/demo/pull/7",
+    head_branch="op-4-100",
+    state="merged",
+)
+
+
+def reviewer_comment(
+    work_package_id: int,
+    text: str = "Rejected: the tests do not cover the new branch.",
+    *,
+    author_id: int = REVIEWER_USER_ID,
+    created_at: datetime | None = None,
+) -> dict[str, Any]:
+    """An activity entry shaped like the live API (docs/VERIFICATION.md)."""
+    return {
+        "id": 900 + work_package_id,
+        "workPackageId": work_package_id,
+        "_type": "Activity::Comment",
+        "comment": {"raw": text},
+        "details": [],
+        "createdAt": (created_at or datetime.now(UTC)).isoformat(),
+        "_links": {"user": {"href": f"/api/v3/users/{author_id}"}},
+    }
+
+
+async def make_review_dispatcher(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    runner: FakeRunner,
+    gh: FakeGitHub,
+    fake: FakeOpenProject | None = None,
+    max_crash_retries: int = 2,
+) -> tuple[Dispatcher, FakeOpenProject, Store, OpenProjectClient, EngineSettings]:
+    return await make_dispatcher(
+        tmp_path,
+        monkeypatch,
+        runner=runner,
+        gh=gh,
+        fake=fake
+        or make_fake(
+            work_packages=[wp(100, status=STATUS_IN_TESTING, agent=22)],
+            priorities=PRIORITIES,
+        ),
+        max_crash_retries=max_crash_retries,
+    )
+
+
+async def test_review_merged_pr_closes_the_work_package(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = FakeRunner(make_result(tmp_path, result_line="RESULT: APPROVED"))
+    gh = FakeGitHub(pr=PR, merged=MERGED_PR)
+    dispatcher, fake, store, client, _ = await make_review_dispatcher(
+        tmp_path, monkeypatch, runner=runner, gh=gh
+    )
+    try:
+        claimed = claim(store, make_review_item(100), kind="review")
+        await dispatcher.execute(claimed)
+
+        run = store.get_run(1)
+        assert run is not None
+        assert run.state == SUCCEEDED
+        assert run.outcome == "approved"
+        assert run.kind == "review"
+
+        # Closed, status only, no engine comment (the review was clean).
+        assert status_href(fake, 100) == f"/api/v3/statuses/{STATUS_CLOSED}"
+        assert fake.patches[0]["body"]["_links"]["status"]["href"] == (
+            f"/api/v3/statuses/{STATUS_CLOSED}"
+        )
+        assert "assignee" not in fake.patches[0]["body"]["_links"]
+        assert posted_comments(fake, 100) == []
+
+        # Both lookups used the project repo and the run branch; the merged
+        # check asked for merged PRs specifically.
+        assert gh.calls == [("owner/demo", "op-4-100"), ("owner/demo", "op-4-100")]
+        assert gh.states == ["open", "merged"]
+
+        # The review prompt was rendered with the PR and the attempt number.
+        prompt = (store.runs_dir / "1" / "prompt.txt").read_text()
+        assert "REVIEWPROMPT" in prompt
+        assert f"pr={PR.url}" in prompt
+        assert "review=1" in prompt
+        assert "branch=op-4-100" in prompt
+        assert "agent=reviewer" in prompt
+
+        meta = json.loads((store.runs_dir / "1" / "meta.json").read_text())
+        assert meta["kind"] == "review"
+        assert meta["state"] == "succeeded"
+        assert meta["outcome"] == "approved"
+        assert meta["transition"] == "closed"
+        assert meta["pr_url"] == MERGED_PR.url
+    finally:
+        await client.aclose()
+        store.close()
+
+
+async def test_review_rejection_with_comment_moves_to_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = make_fake(
+        work_packages=[wp(100, status=STATUS_IN_TESTING, agent=22)],
+        priorities=PRIORITIES,
+    )
+
+    def post_reviewer_comment() -> None:
+        fake.activities.append(reviewer_comment(100))
+
+    runner = FakeRunner(
+        make_result(
+            tmp_path,
+            result_line="RESULT: REJECTED the tests do not cover the new branch",
+        ),
+        on_run=post_reviewer_comment,
+    )
+    gh = FakeGitHub(pr=PR, merged=None)
+    dispatcher, fake, store, client, _ = await make_review_dispatcher(
+        tmp_path, monkeypatch, runner=runner, gh=gh, fake=fake
+    )
+    try:
+        claimed = claim(store, make_review_item(100), kind="review")
+        await dispatcher.execute(claimed)
+
+        run = store.get_run(1)
+        assert run is not None
+        assert run.state == SUCCEEDED
+        assert run.outcome == "rejected"
+
+        assert status_href(fake, 100) == f"/api/v3/statuses/{STATUS_REJECTED}"
+        # The reviewer wrote the rejection comment; the engine adds none.
+        assert posted_comments(fake, 100) == []
+        assert store.crash_count(100) == 0
+    finally:
+        await client.aclose()
+        store.close()
+
+
+async def test_review_rejection_without_comment_is_a_crash_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = FakeRunner(make_result(tmp_path, result_line="RESULT: REJECTED nope"))
+    gh = FakeGitHub(pr=PR, merged=None)
+    dispatcher, fake, store, client, _ = await make_review_dispatcher(
+        tmp_path, monkeypatch, runner=runner, gh=gh
+    )
+    try:
+        claimed = claim(store, make_review_item(100), kind="review")
+        await dispatcher.execute(claimed)
+
+        run = store.get_run(1)
+        assert run is not None
+        assert run.state == FAILED
+        assert run.outcome == "rejected_without_comment"
+        assert store.crash_count(100) == 1
+
+        # Below the cap: the work package stays In Testing, nothing is patched.
+        assert status_href(fake, 100) == f"/api/v3/statuses/{STATUS_IN_TESTING}"
+        assert fake.patches == []
+        assert posted_comments(fake, 100) == []
+    finally:
+        await client.aclose()
+        store.close()
+
+
+async def test_review_comment_by_someone_else_does_not_count(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = make_fake(
+        work_packages=[wp(100, status=STATUS_IN_TESTING, agent=22)],
+        priorities=PRIORITIES,
+    )
+
+    def post_human_comment() -> None:
+        # A human (the implementer's user) commented, not the reviewer.
+        fake.activities.append(reviewer_comment(100, author_id=11))
+
+    runner = FakeRunner(
+        make_result(tmp_path, result_line="RESULT: REJECTED looks wrong"),
+        on_run=post_human_comment,
+    )
+    dispatcher, fake, store, client, _ = await make_review_dispatcher(
+        tmp_path, monkeypatch, runner=runner, gh=FakeGitHub(pr=PR), fake=fake
+    )
+    try:
+        claimed = claim(store, make_review_item(100), kind="review")
+        await dispatcher.execute(claimed)
+
+        run = store.get_run(1)
+        assert run is not None
+        assert run.outcome == "rejected_without_comment"
+        assert status_href(fake, 100) == f"/api/v3/statuses/{STATUS_IN_TESTING}"
+    finally:
+        await client.aclose()
+        store.close()
+
+
+async def test_review_comment_from_before_the_run_does_not_count(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stale = datetime(2020, 1, 1, tzinfo=UTC)
+    fake = make_fake(
+        work_packages=[wp(100, status=STATUS_IN_TESTING, agent=22)],
+        priorities=PRIORITIES,
+        activities=[reviewer_comment(100, "old rejection", created_at=stale)],
+    )
+    runner = FakeRunner(make_result(tmp_path, result_line="RESULT: REJECTED nope"))
+    dispatcher, fake, store, client, _ = await make_review_dispatcher(
+        tmp_path, monkeypatch, runner=runner, gh=FakeGitHub(pr=PR), fake=fake
+    )
+    try:
+        claimed = claim(store, make_review_item(100), kind="review")
+        await dispatcher.execute(claimed)
+
+        run = store.get_run(1)
+        assert run is not None
+        assert run.outcome == "rejected_without_comment"
+    finally:
+        await client.aclose()
+        store.close()
+
+
+async def test_review_blocked_moves_to_on_hold(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = FakeRunner(
+        make_result(tmp_path, result_line="RESULT: BLOCKED no access to the CI logs")
+    )
+    dispatcher, fake, store, client, _ = await make_review_dispatcher(
+        tmp_path, monkeypatch, runner=runner, gh=FakeGitHub(pr=PR)
+    )
+    try:
+        claimed = claim(store, make_review_item(100), kind="review")
+        await dispatcher.execute(claimed)
+
+        run = store.get_run(1)
+        assert run is not None
+        assert run.state == SUCCEEDED
+        assert run.outcome == "blocked"
+        assert status_href(fake, 100) == f"/api/v3/statuses/{STATUS_ON_HOLD}"
+        assert posted_comments(fake, 100) == [
+            "ENGINE: blocked\n\nno access to the CI logs"
+        ]
+    finally:
+        await client.aclose()
+        store.close()
+
+
+async def test_ready_for_review_without_pr_moves_to_on_hold(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = FakeRunner(make_result(tmp_path))
+    dispatcher, fake, store, client, _ = await make_review_dispatcher(
+        tmp_path, monkeypatch, runner=runner, gh=FakeGitHub(pr=None)
+    )
+    try:
+        claimed = claim(store, make_review_item(100), kind="review")
+        await dispatcher.execute(claimed)
+
+        # The reviewer was never started.
+        assert runner.requests == []
+
+        run = store.get_run(1)
+        assert run is not None
+        assert run.state == FAILED
+        assert run.outcome == "no_pr_for_branch"
+
+        assert status_href(fake, 100) == f"/api/v3/statuses/{STATUS_ON_HOLD}"
+        comments = posted_comments(fake, 100)
+        assert len(comments) == 1
+        assert comments[0].startswith("ENGINE: no PR found")
+        assert "op-4-100" in comments[0]
+
+        meta = json.loads((store.runs_dir / "1" / "meta.json").read_text())
+        assert meta["outcome"] == "no_pr_for_branch"
+        assert meta["transition"] == "on_hold"
+        assert meta["argv"] is None
+    finally:
+        await client.aclose()
+        store.close()
+
+
+async def test_merged_pr_wins_over_a_rejection_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """External verification is authoritative (PLAN section 4)."""
+    runner = FakeRunner(make_result(tmp_path, result_line="RESULT: REJECTED nope"))
+    dispatcher, fake, store, client, _ = await make_review_dispatcher(
+        tmp_path, monkeypatch, runner=runner, gh=FakeGitHub(pr=PR, merged=MERGED_PR)
+    )
+    try:
+        claimed = claim(store, make_review_item(100), kind="review")
+        await dispatcher.execute(claimed)
+
+        run = store.get_run(1)
+        assert run is not None
+        assert run.outcome == "approved"
+        assert status_href(fake, 100) == f"/api/v3/statuses/{STATUS_CLOSED}"
+    finally:
+        await client.aclose()
+        store.close()
+
+
+async def test_review_nonzero_exit_is_a_crash_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = FakeRunner(make_result(tmp_path, exit_code=2))
+    dispatcher, fake, store, client, _ = await make_review_dispatcher(
+        tmp_path, monkeypatch, runner=runner, gh=FakeGitHub(pr=PR)
+    )
+    try:
+        claimed = claim(store, make_review_item(100), kind="review")
+        await dispatcher.execute(claimed)
+
+        run = store.get_run(1)
+        assert run is not None
+        assert run.state == FAILED
+        assert run.outcome == "nonzero_exit"
+        assert store.crash_count(100) == 1
+        # The work package stays In Testing for the next review run.
+        assert status_href(fake, 100) == f"/api/v3/statuses/{STATUS_IN_TESTING}"
+        assert fake.patches == []
+    finally:
+        await client.aclose()
+        store.close()
+
+
+async def test_review_timeout_is_a_crash_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = FakeRunner(make_result(tmp_path, timed_out=True))
+    dispatcher, fake, store, client, _ = await make_review_dispatcher(
+        tmp_path, monkeypatch, runner=runner, gh=FakeGitHub(pr=PR)
+    )
+    try:
+        claimed = claim(store, make_review_item(100), kind="review")
+        await dispatcher.execute(claimed)
+
+        run = store.get_run(1)
+        assert run is not None
+        assert run.state == TIMEOUT
+        assert run.outcome == "timeout"
+        assert store.crash_count(100) == 1
+        assert status_href(fake, 100) == f"/api/v3/statuses/{STATUS_IN_TESTING}"
+    finally:
+        await client.aclose()
+        store.close()
+
+
+async def test_review_crash_cap_escalates_from_in_testing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = FakeRunner(make_result(tmp_path, stdout="review log line\n"))
+    dispatcher, fake, store, client, _ = await make_review_dispatcher(
+        tmp_path, monkeypatch, runner=runner, gh=FakeGitHub(pr=PR)
+    )
+    try:
+        store.increment_crash_count(100)
+        store.increment_crash_count(100)
+        claimed = claim(store, make_review_item(100), kind="review")
+        await dispatcher.execute(claimed)
+
+        run = store.get_run(1)
+        assert run is not None
+        assert run.state == FAILED
+        assert run.outcome == "not_merged"
+        assert store.crash_count(100) == 3
+
+        assert status_href(fake, 100) == f"/api/v3/statuses/{STATUS_ON_HOLD}"
+        comments = posted_comments(fake, 100)
+        assert len(comments) == 1
+        assert comments[0].startswith("ENGINE: escalated")
+        assert "not_merged" in comments[0]
+        assert "review log line" in comments[0]
+    finally:
+        await client.aclose()
+        store.close()
+
+
+async def test_review_merged_check_error_fails_the_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = FakeRunner(make_result(tmp_path))
+    dispatcher, fake, store, client, _ = await make_review_dispatcher(
+        tmp_path, monkeypatch, runner=runner, gh=FakeGitHub(error=GitHubError("boom"))
+    )
+    try:
+        claimed = claim(store, make_review_item(100), kind="review")
+        await dispatcher.execute(claimed)
+
+        # The open-PR lookup fails before the reviewer starts.
+        assert runner.requests == []
+        run = store.get_run(1)
+        assert run is not None
+        assert run.state == FAILED
+        assert run.outcome == "pr_verification_error"
+        assert store.crash_count(100) == 1
+        assert status_href(fake, 100) == f"/api/v3/statuses/{STATUS_IN_TESTING}"
+    finally:
+        await client.aclose()
+        store.close()
+
+
+async def test_review_workspace_failure_stays_in_testing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = FakeRunner(make_result(tmp_path))
+    dispatcher, fake, store, client, _ = await make_review_dispatcher(
+        tmp_path, monkeypatch, runner=runner, gh=FakeGitHub(pr=PR)
+    )
+
+    async def failing_workspace(**kwargs: Any) -> Workspace:
+        raise WorkspaceError("no remote branch origin/op-4-100 to review")
+
+    monkeypatch.setattr(
+        "op_agent_engine.dispatcher.prepare_workspace", failing_workspace
+    )
+    try:
+        claimed = claim(store, make_review_item(100), kind="review")
+        await dispatcher.execute(claimed)
+
+        run = store.get_run(1)
+        assert run is not None
+        assert run.state == FAILED
+        assert run.outcome == "workspace_error"
+        assert store.crash_count(100) == 1
+        assert runner.requests == []
+        assert status_href(fake, 100) == f"/api/v3/statuses/{STATUS_IN_TESTING}"
+    finally:
+        await client.aclose()
+        store.close()
+
+
+async def test_review_dry_run_claim_is_not_executed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = FakeRunner(make_result(tmp_path))
+    gh = FakeGitHub(pr=PR, merged=MERGED_PR)
+    dispatcher, fake, store, client, _ = await make_review_dispatcher(
+        tmp_path, monkeypatch, runner=runner, gh=gh
+    )
+    try:
+        claimed = ClaimedRun(
+            run_id=None,
+            item=make_review_item(100),
+            kind="review",
+            attempt=1,
+            branch="op-4-100",
+            run_dir=None,
+        )
+        await dispatcher.execute(claimed)
+
+        assert runner.requests == []
+        assert gh.calls == []
+        assert fake.patches == []
+        assert fake.comments == []
+        assert store.active_run_count() == 0
     finally:
         await client.aclose()
         store.close()

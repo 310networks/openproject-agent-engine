@@ -6,9 +6,13 @@ from op_agent_engine.outcomes import (
     blocked_comment,
     blocked_reason,
     decide_implementer_outcome,
+    decide_reviewer_outcome,
     escalation_comment,
+    is_rejection,
+    no_pr_comment,
     parse_result_line,
     read_tail,
+    rejection_reason,
 )
 from op_agent_engine.store import FAILED, SUCCEEDED, TIMEOUT
 
@@ -84,6 +88,142 @@ def test_no_pr_is_crash_retry() -> None:
     assert decision.outcome == "no_pr"
     assert decision.crash_retry is True
     assert decision.transition is None
+
+
+# -- decide_reviewer_outcome (M5) ------------------------------------------
+
+
+def test_review_merged_pr_is_approved() -> None:
+    decision = decide_reviewer_outcome(
+        exit_code=0,
+        timed_out=False,
+        result_line="RESULT: APPROVED",
+        pr_merged=True,
+        rejection_comment_found=False,
+    )
+    assert decision.run_state == SUCCEEDED
+    assert decision.outcome == "approved"
+    assert decision.transition == "closed"
+    assert decision.comment is None
+    assert decision.crash_retry is False
+
+
+def test_review_merged_pr_wins_over_a_bad_exit_code() -> None:
+    """External verification is authoritative (PLAN section 4)."""
+    decision = decide_reviewer_outcome(
+        exit_code=-9,
+        timed_out=True,
+        result_line=None,
+        pr_merged=True,
+        rejection_comment_found=False,
+    )
+    assert decision.outcome == "approved"
+    assert decision.transition == "closed"
+
+
+def test_review_rejection_with_comment_moves_to_rejected() -> None:
+    decision = decide_reviewer_outcome(
+        exit_code=0,
+        timed_out=False,
+        result_line="RESULT: REJECTED the tests are missing",
+        pr_merged=False,
+        rejection_comment_found=True,
+    )
+    assert decision.run_state == SUCCEEDED
+    assert decision.outcome == "rejected"
+    assert decision.transition == "rejected"
+    assert decision.comment is None
+    assert decision.crash_retry is False
+
+
+def test_review_rejection_without_comment_is_a_failure() -> None:
+    decision = decide_reviewer_outcome(
+        exit_code=0,
+        timed_out=False,
+        result_line="RESULT: REJECTED the tests are missing",
+        pr_merged=False,
+        rejection_comment_found=False,
+    )
+    assert decision.run_state == FAILED
+    assert decision.outcome == "rejected_without_comment"
+    assert decision.transition is None
+    assert decision.crash_retry is True
+
+
+def test_review_blocked_moves_to_on_hold_with_comment() -> None:
+    decision = decide_reviewer_outcome(
+        exit_code=0,
+        timed_out=False,
+        result_line="RESULT: BLOCKED no access to the CI logs",
+        pr_merged=False,
+        rejection_comment_found=False,
+    )
+    assert decision.run_state == SUCCEEDED
+    assert decision.outcome == "blocked"
+    assert decision.transition == "on_hold"
+    assert decision.comment == "ENGINE: blocked\n\nno access to the CI logs"
+
+
+def test_review_timeout_and_nonzero_exit_are_crash_retries() -> None:
+    timed_out = decide_reviewer_outcome(
+        exit_code=-15,
+        timed_out=True,
+        result_line=None,
+        pr_merged=False,
+        rejection_comment_found=False,
+    )
+    assert timed_out.run_state == TIMEOUT
+    assert timed_out.outcome == "timeout"
+    assert timed_out.crash_retry is True
+
+    nonzero = decide_reviewer_outcome(
+        exit_code=1,
+        timed_out=False,
+        result_line=None,
+        pr_merged=False,
+        rejection_comment_found=False,
+    )
+    assert nonzero.run_state == FAILED
+    assert nonzero.outcome == "nonzero_exit"
+    assert nonzero.crash_retry is True
+
+
+def test_review_not_merged_without_a_result_is_a_crash_retry() -> None:
+    decision = decide_reviewer_outcome(
+        exit_code=0,
+        timed_out=False,
+        result_line="RESULT: ok",
+        pr_merged=False,
+        rejection_comment_found=False,
+    )
+    assert decision.run_state == FAILED
+    assert decision.outcome == "not_merged"
+    assert decision.crash_retry is True
+
+
+# -- rejection parsing -------------------------------------------------------
+
+
+def test_rejection_reason_parsing() -> None:
+    assert rejection_reason("RESULT: REJECTED the tests are missing") == (
+        "the tests are missing"
+    )
+    assert rejection_reason("RESULT: rejected") == ""
+    assert rejection_reason("RESULT: blocked nope") is None
+    assert rejection_reason(None) is None
+
+
+def test_is_rejection() -> None:
+    assert is_rejection("RESULT: REJECTED nope") is True
+    assert is_rejection("RESULT: REJECTED") is True
+    assert is_rejection("RESULT: REJECTEDNESS") is False
+    assert is_rejection("RESULT: APPROVED") is False
+
+
+def test_no_pr_comment_names_the_branch() -> None:
+    comment = no_pr_comment("op-4-100")
+    assert comment.startswith("ENGINE: no PR found")
+    assert "op-4-100" in comment
 
 
 # -- result line parsing ----------------------------------------------------

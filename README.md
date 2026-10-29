@@ -13,21 +13,23 @@ The implementation plan, workflow state machine and acceptance criteria live in
 ## Status
 
 Milestones M0 (skeleton), M1 (OpenProject client and startup resolution),
-M2 (polling and eligibility), M3 (store and claim protocol) and
-M4 (runner and implementer flow) are implemented: package layout, validated
-configuration models, JSON logging with secret redaction, CLI entry points,
-example deployment files, an async OpenProject API client with retries and
-pagination, startup resolution of statuses, users, projects, types and the
-`AGENT` custom field, candidate polling with all eligibility rules and
-dispatch ordering, a durable SQLite run store with the optimistic-locking
-claim protocol, and the execution layer: a generic runner with process groups,
-timeouts and result parsing, per-agent workspace preparation (clone/fetch/
-checkout), Jinja2 prompt rendering, implementer dispatch and outcome
-verification (`PR_OPENED`, `BLOCKED`, crash retry with escalation).
+M2 (polling and eligibility), M3 (store and claim protocol),
+M4 (runner and implementer flow) and M5 (reviewer flow) are implemented:
+package layout, validated configuration models, JSON logging with secret
+redaction, CLI entry points, example deployment files, an async OpenProject
+API client with retries and pagination, startup resolution of statuses, users,
+projects, types and the `AGENT` custom field, candidate polling with all
+eligibility rules and dispatch ordering, a durable SQLite run store with the
+optimistic-locking claim protocol, and the execution layer: a generic runner
+with process groups, timeouts and result parsing, per-agent workspace
+preparation (clone/fetch/checkout), Jinja2 prompt rendering, implementer
+dispatch and outcome verification (`PR_OPENED`, `BLOCKED`, crash retry with
+escalation), and reviewer dispatch (`In Testing` claim, PR lookup before the
+run, merged-PR approval to `Closed`, verified rejection to `Rejected`, and
+`On Hold` for a missing PR or a `BLOCKED` result).
 
-Reviewer dispatch (M5), the rejection/fix loop (M6) and recovery/shutdown
-(M7) are not implemented yet; claimed `fix`/`review` runs are logged and
-marked `interrupted` on stop.
+The rejection/fix loop (M6) and recovery/shutdown (M7) are not implemented
+yet; claimed `fix` runs are logged and marked `interrupted` on stop.
 
 ## Development setup
 

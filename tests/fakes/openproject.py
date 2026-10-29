@@ -34,6 +34,7 @@ _PROJECT_TYPES = re.compile(r"^/api/v3/projects/(?P<project_id>[^/]+)/types$")
 _SCHEMA = re.compile(r"^/api/v3/work_packages/schemas/(?P<identifier>[^/]+)$")
 _WP_BY_ID = re.compile(r"^/api/v3/work_packages/(?P<id>\d+)$")
 _WP_COMMENTS = re.compile(r"^/api/v3/work_packages/(?P<id>\d+)/comments$")
+_WP_ACTIVITIES = re.compile(r"^/api/v3/work_packages/(?P<id>\d+)/activities$")
 _HREF_ID = re.compile(r"/(\d+)$")
 
 
@@ -66,6 +67,14 @@ def _wp_id(wp: dict[str, JSON] | None) -> int | None:
     return None
 
 
+def _work_package_id(entry: dict[str, JSON]) -> int | None:
+    """The work package id of an activity or comment fixture."""
+    value = entry.get("workPackageId")
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    return _wp_id(entry.get("workPackage"))
+
+
 class FakeOpenProject:
     def __init__(
         self,
@@ -82,6 +91,7 @@ class FakeOpenProject:
         relations: list[dict[str, JSON]] | None = None,
         priorities: list[dict[str, JSON]] | None = None,
         comments: list[dict[str, JSON]] | None = None,
+        activities: list[dict[str, JSON]] | None = None,
         patch_error: tuple[int, str] | None = None,
     ) -> None:
         self.statuses = statuses or []
@@ -105,6 +115,11 @@ class FakeOpenProject:
         # ``authorId``, ``createdAt`` and ``content``. Posted comments are
         # appended here with auto-assigned ids.
         self.comments: list[dict[str, JSON]] = list(comments or [])
+        # Activity fixtures shaped like the live API (docs/VERIFICATION.md):
+        # ``_type``, ``comment.raw``, ``details[]``, ``createdAt`` and
+        # ``_links.user``. Posted engine comments are mirrored here so a
+        # reviewer-comment check sees a realistic history.
+        self.activities: list[dict[str, JSON]] = list(activities or [])
         self._next_comment_id = (
             max((int(c["id"]) for c in self.comments if isinstance(c.get("id"), int)), default=0)
             + 1
@@ -147,6 +162,16 @@ class FakeOpenProject:
                 self._comment_element(comment)
                 for comment in self.comments
                 if int(comment.get("workPackageId", -1)) == work_package_id
+            ]
+            return self._collection(request, elements, path)
+
+        activities_match = _WP_ACTIVITIES.match(path)
+        if activities_match:
+            work_package_id = int(activities_match.group("id"))
+            elements = [
+                activity
+                for activity in self.activities
+                if _work_package_id(activity) == work_package_id
             ]
             return self._collection(request, elements, path)
 
@@ -480,6 +505,23 @@ class FakeOpenProject:
         }
         self._next_comment_id += 1
         self.comments.append(comment)
+        # Mirror the comment as an activity entry (the live API exposes
+        # comments through the activities collection).
+        self.activities.append(
+            {
+                "id": comment["id"],
+                "workPackageId": work_package_id,
+                "_type": "Activity::Comment",
+                "comment": {"raw": content},
+                "details": [],
+                "createdAt": comment["createdAt"],
+                "_links": (
+                    {"user": {"href": f"/api/v3/users/{comment['authorId']}"}}
+                    if comment.get("authorId") is not None
+                    else {}
+                ),
+            }
+        )
         return self._json(
             self._comment_element(comment), status_code=201
         )

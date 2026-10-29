@@ -9,8 +9,8 @@ The loop (PLAN section 3):
 3. Resolve the workflow against OpenProject (statuses, users, projects,
    types, agent field).
 4. Repeat until stopped: poll for eligible work packages, schedule (claim)
-   as many as the slot rules allow, and execute each claimed implement run
-   (M4). Fix and review runs are claimed but not executed yet (M5/M6).
+   as many as the slot rules allow, and execute each claimed implement (M4)
+   or review (M5) run. Fix runs are claimed but not executed yet (M6).
 
 At a clean stop the engine waits for in-flight runs up to
 ``STOP_GRACE_SECONDS``; runs still going are cancelled and their rows stay
@@ -27,7 +27,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from op_agent_engine.config import EngineSettings, WorkflowConfig
-from op_agent_engine.dispatcher import Dispatcher
+from op_agent_engine.dispatcher import EXECUTED_KINDS, Dispatcher
 from op_agent_engine.logging import get_logger
 from op_agent_engine.openproject.client import (
     OpenProjectClient,
@@ -214,9 +214,9 @@ class Engine:
                 report = await scheduler.schedule(plan, dry_run=dry_run)
                 if dispatcher is not None:
                     for claimed in report.claimed:
-                        if claimed.kind != "implement":
+                        if claimed.kind not in EXECUTED_KINDS:
                             logger.info(
-                                "claim for %s has kind %s; execution is M5/M6",
+                                "claim for %s has kind %s; execution is M6/M7",
                                 claimed.item.work_package.display_id,
                                 claimed.kind,
                                 extra={
@@ -296,10 +296,10 @@ def run_engine_once(
     """Synchronous entry point for ``once`` / ``dry-run``.
 
     Performs a single poll (and, unless ``dry_run``, a single schedule pass
-    and executes the claimed implement runs) and exits. Neither form takes
-    the engine lock. In dry-run mode no store file is created (an existing
-    one is read so slot rules stay faithful); ``once`` uses the store so its
-    claims are durable.
+    and executes the claimed implement and review runs) and exits. Neither
+    form takes the engine lock. In dry-run mode no store file is created (an
+    existing one is read so slot rules stay faithful); ``once`` uses the store
+    so its claims are durable.
     """
     settings.require_api_values()
     return asyncio.run(
@@ -374,10 +374,10 @@ async def _run_once_async(
                     settings=settings,
                 )
                 for claimed in report.claimed:
-                    if claimed.kind != "implement":
+                    if claimed.kind not in EXECUTED_KINDS:
                         logger.info(
                             "once: claim for %s has kind %s; execution is "
-                            "M5/M6",
+                            "M6/M7",
                             claimed.item.work_package.display_id,
                             claimed.kind,
                         )

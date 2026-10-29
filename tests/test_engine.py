@@ -1,4 +1,4 @@
-"""Integration tests for the engine loop (PLAN section 3, milestone M4).
+"""Integration tests for the engine loop (PLAN section 3, milestones M4/M5).
 
 The engine runs against the fake OpenProject with a real store and a
 dispatcher whose runner is a fake (no process is spawned) and whose
@@ -8,6 +8,8 @@ workspace preparation is stubbed (no git).
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +35,7 @@ STATUS_IN_PROGRESS = 2
 STATUS_READY_FOR_REVIEW = 3
 STATUS_ON_HOLD = 5
 STATUS_REJECTED = 6
+STATUS_CLOSED = 7
 
 # The claim assigns the work package to the target agent's user (the
 # "impl" login, user 11 in the fake), not to the engine user.
@@ -45,6 +48,16 @@ PR = PullRequest(
     state="open",
 )
 
+MERGED_PR = PullRequest(
+    number=7,
+    url="https://github.com/owner/demo/pull/7",
+    head_branch="op-4-100",
+    state="merged",
+)
+
+# The reviewer agent ("reviewer" login) in the fake.
+REVIEWER_USER_ID = 12
+
 
 class FakeRunner:
     def __init__(
@@ -52,9 +65,11 @@ class FakeRunner:
         result: RunResult | None = None,
         *,
         delay: float = 0.0,
+        on_run: Callable[[], None] | None = None,
     ) -> None:
         self.result = result
         self.delay = delay
+        self.on_run = on_run
         self.requests: list[RunRequest] = []
 
     def build_request(
@@ -91,18 +106,31 @@ class FakeRunner:
             await asyncio.sleep(self.delay)
         if on_spawned is not None:
             on_spawned(4321, 4321, "2026-02-10T00:00:00+00:00")
+        if self.on_run is not None:
+            self.on_run()
         assert self.result is not None
         return self.result
 
 
 class FakeGitHub:
-    def __init__(self, pr: PullRequest | None = None) -> None:
+    def __init__(
+        self,
+        pr: PullRequest | None = None,
+        merged: PullRequest | None = None,
+    ) -> None:
         self.pr = pr
+        self.merged = merged
+        self.states: list[str] = []
 
     async def find_pr(
         self, repo: str, branch: str, *, state: str = "open"
     ) -> PullRequest | None:
-        return self.pr
+        self.states.append(state)
+        if state == "merged":
+            return self.merged
+        if state == "open":
+            return self.pr
+        return None
 
 
 def make_result(tmp_path: Path, **kwargs: Any) -> RunResult:
@@ -174,6 +202,10 @@ async def make_engine(
     prompts_dir.mkdir()
     (prompts_dir / "implement.txt.j2").write_text(
         "PROMPT {{ wp.subject }} branch={{ branch }}", encoding="utf-8"
+    )
+    (prompts_dir / "review.txt.j2").write_text(
+        "REVIEW {{ wp.subject }} pr={{ pr.url }} review={{ review_number }}",
+        encoding="utf-8",
     )
     prompts = PromptRenderer(prompts_dir)
 
@@ -490,5 +522,121 @@ async def test_stale_running_run_is_marked_interrupted(
             assert runs[0].state == SUCCEEDED
         finally:
             store.close()
+    finally:
+        await client.aclose()
+
+
+# -- review runs (M5) ---------------------------------------------------------------
+
+
+async def test_engine_reviews_and_closes_a_merged_pr(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = FakeRunner(make_result(tmp_path, result_line="RESULT: APPROVED"))
+    engine, fake, client, store_path = await make_engine(
+        tmp_path,
+        monkeypatch,
+        work_packages=[wp(100, status=STATUS_READY_FOR_REVIEW, agent=22)],
+        runner=runner,
+        gh=FakeGitHub(pr=PR, merged=MERGED_PR),
+    )
+    try:
+        exit_code = await engine.run(max_polls=1)
+        assert exit_code == 0
+
+        # Claimed for the reviewer (In Testing, assignee reviewer user), then
+        # closed because the PR is merged.
+        assert status_href(fake, 100) == f"/api/v3/statuses/{STATUS_CLOSED}"
+
+        prompt = tmp_path / "data" / "runs" / "1" / "prompt.txt"
+        assert prompt.is_file()
+        assert "REVIEW wp 100" in prompt.read_text()
+        assert f"pr={PR.url}" in prompt.read_text()
+
+        store = Store(store_path)
+        try:
+            runs = runs_for(store, 100)
+            assert len(runs) == 1
+            assert runs[0].state == SUCCEEDED
+            assert runs[0].kind == "review"
+            assert runs[0].outcome == "approved"
+        finally:
+            store.close()
+    finally:
+        await client.aclose()
+
+
+async def test_engine_runs_a_review_that_rejects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = FakeRunner(
+        make_result(tmp_path, result_line="RESULT: REJECTED the tests are missing")
+    )
+    engine, fake, client, store_path = await make_engine(
+        tmp_path,
+        monkeypatch,
+        work_packages=[wp(100, status=STATUS_READY_FOR_REVIEW, agent=22)],
+        runner=runner,
+        gh=FakeGitHub(pr=PR),
+    )
+
+    def post_reviewer_comment() -> None:
+        fake.activities.append(
+            {
+                "id": 1,
+                "workPackageId": 100,
+                "_type": "Activity::Comment",
+                "comment": {"raw": "Rejected: the tests are missing."},
+                "details": [],
+                "createdAt": datetime.now(UTC).isoformat(),
+                "_links": {"user": {"href": f"/api/v3/users/{REVIEWER_USER_ID}"}},
+            }
+        )
+
+    runner.on_run = post_reviewer_comment
+    try:
+        exit_code = await engine.run(max_polls=1)
+        assert exit_code == 0
+
+        assert status_href(fake, 100) == f"/api/v3/statuses/{STATUS_REJECTED}"
+
+        store = Store(store_path)
+        try:
+            runs = runs_for(store, 100)
+            assert runs[0].state == SUCCEEDED
+            assert runs[0].kind == "review"
+            assert runs[0].outcome == "rejected"
+        finally:
+            store.close()
+    finally:
+        await client.aclose()
+
+
+async def test_engine_review_without_pr_moves_to_on_hold(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = FakeRunner(make_result(tmp_path))
+    engine, fake, client, _store_path = await make_engine(
+        tmp_path,
+        monkeypatch,
+        work_packages=[wp(100, status=STATUS_READY_FOR_REVIEW, agent=22)],
+        runner=runner,
+        gh=FakeGitHub(pr=None),
+    )
+    try:
+        exit_code = await engine.run(max_polls=1)
+        assert exit_code == 0
+
+        # The reviewer was not started; the claim moved it to In Testing and
+        # the engine then put it On Hold with an explanation.
+        assert runner.requests == []
+        assert status_href(fake, 100) == f"/api/v3/statuses/{STATUS_ON_HOLD}"
+        comments = [
+            str(c["content"])
+            for c in fake.comments
+            if c.get("workPackageId") == 100
+        ]
+        assert len(comments) == 1
+        assert comments[0].startswith("ENGINE: no PR found")
     finally:
         await client.aclose()

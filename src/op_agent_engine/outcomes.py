@@ -1,6 +1,6 @@
-"""Outcome verification for implementer runs (PLAN sections 4 and 10).
+"""Outcome verification for implementer and reviewer runs (PLAN section 4).
 
-The rules for implement and fix runs (fix is M5, review is M6):
+Implement and fix runs (fix is M6):
 
 * ``RESULT: BLOCKED <reason>`` -> blocked: the work package moves to On
   Hold and the reason is posted as an engine comment.
@@ -10,6 +10,17 @@ The rules for implement and fix runs (fix is M5, review is M6):
   increments and a resume run may be dispatched on a later poll (M7). When
   the cap (``MAX_CRASH_RETRIES``) is reached the work package moves to On
   Hold with an engine comment (escalation).
+
+Review runs (M5):
+
+* A merged PR is authoritative: approved, the work package moves to Closed.
+* ``RESULT: REJECTED`` **and** a comment by the reviewer user posted since the
+  run started -> rejected: the work package moves to Rejected. The reviewer
+  wrote the comment, so the engine does not duplicate it.
+* ``RESULT: REJECTED`` without such a comment -> failure (the rejection is not
+  verifiable), so it counts as a crash retry.
+* Anything else (non-zero exit, timeout, no merged PR) -> failure, crash
+  retry; the work package stays In Testing for a later review run.
 """
 
 from __future__ import annotations
@@ -26,6 +37,9 @@ RESULT_RE = re.compile(r"^\s*RESULT:\s*(?P<payload>.+)$")
 
 #: ``BLOCKED <one-line reason>`` (case-insensitive keyword).
 BLOCKED_RE = re.compile(r"^BLOCKED\s+(?P<reason>.+)$", re.IGNORECASE)
+
+#: ``REJECTED [<reason>]`` (case-insensitive keyword).
+REJECTED_RE = re.compile(r"^REJECTED\b\s*(?P<reason>.*)$", re.IGNORECASE)
 
 #: How many tail lines of the run log go into an escalation comment.
 ESCALATION_TAIL_LINES = 40
@@ -67,6 +81,22 @@ def blocked_reason(result_line: str | None) -> str | None:
     return match.group("reason").strip() if match else None
 
 
+def rejection_reason(result_line: str | None) -> str | None:
+    """The (possibly empty) reason when the reviewer reported ``REJECTED``."""
+    payload = parse_result_line(result_line)
+    if payload is None:
+        return None
+    match = REJECTED_RE.match(payload)
+    if match is None:
+        return None
+    return match.group("reason").strip()
+
+
+def is_rejection(result_line: str | None) -> bool:
+    """Whether the run reported ``RESULT: REJECTED`` (with or without reason)."""
+    return rejection_reason(result_line) is not None
+
+
 def decide_implementer_outcome(
     *,
     exit_code: int,
@@ -96,6 +126,61 @@ def decide_implementer_outcome(
             transition="ready_for_review",
         )
     return OutcomeDecision(run_state=FAILED, outcome="no_pr", crash_retry=True)
+
+
+def decide_reviewer_outcome(
+    *,
+    exit_code: int,
+    timed_out: bool,
+    result_line: str | None,
+    pr_merged: bool,
+    rejection_comment_found: bool,
+) -> OutcomeDecision:
+    """Apply the PLAN section 4 rules for review runs.
+
+    External verification is authoritative: a merged PR means approval even
+    when the agent exited non-zero (it may have been killed right after the
+    merge). A rejection is only accepted when the reviewer posted a comment
+    that explains it, otherwise the run is a failure.
+    """
+    if pr_merged:
+        return OutcomeDecision(
+            run_state=SUCCEEDED, outcome="approved", transition="closed"
+        )
+    reason = blocked_reason(result_line)
+    if reason is not None:
+        return OutcomeDecision(
+            run_state=SUCCEEDED,
+            outcome="blocked",
+            transition="on_hold",
+            comment=blocked_comment(reason),
+        )
+    if timed_out:
+        return OutcomeDecision(run_state=TIMEOUT, outcome="timeout", crash_retry=True)
+    if exit_code != 0:
+        return OutcomeDecision(
+            run_state=FAILED, outcome="nonzero_exit", crash_retry=True
+        )
+    if is_rejection(result_line):
+        if rejection_comment_found:
+            return OutcomeDecision(
+                run_state=SUCCEEDED, outcome="rejected", transition="rejected"
+            )
+        return OutcomeDecision(
+            run_state=FAILED,
+            outcome="rejected_without_comment",
+            crash_retry=True,
+        )
+    return OutcomeDecision(run_state=FAILED, outcome="not_merged", crash_retry=True)
+
+
+def no_pr_comment(branch: str) -> str:
+    """Engine comment for ``Ready for Review`` without a PR for the branch."""
+    return (
+        "ENGINE: no PR found\n\n"
+        f"No pull request was found for branch `{branch}`, so the review cannot "
+        "start. Putting the ticket on hold for a human."
+    )
 
 
 def blocked_comment(reason: str) -> str:
