@@ -7,7 +7,7 @@ import pytest
 from op_agent_engine.config import ConfigError, EngineSettings, WorkflowConfig
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-EXAMPLE = REPO_ROOT / "config" / "workflow.example.yaml"
+EXAMPLE = REPO_ROOT / "workflow.example.yaml"
 
 EXAMPLE_ENV = {
     "OP_BASE_URL": "https://openproject.example.com",

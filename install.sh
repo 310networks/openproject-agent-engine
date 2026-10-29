@@ -5,8 +5,8 @@
 # Before running this script, copy the two examples into this directory and
 # edit them:
 #
-#   cp config/workflow.example.yaml ./workflow.yaml
-#   cp deploy/engine.env.example ./engine.env
+#   cp workflow.example.yaml ./workflow.yaml
+#   cp engine.env.example ./engine.env
 #   chmod 600 ./engine.env
 #
 # Then run ./install.sh. The script installs the package with uv and hands
@@ -93,8 +93,8 @@ ${BOLD}Missing configuration files.${RESET}
 
 Copy the two examples into this directory and edit them first:
 
-  cp config/workflow.example.yaml ./workflow.yaml
-  cp deploy/engine.env.example ./engine.env
+  cp workflow.example.yaml ./workflow.yaml
+  cp engine.env.example ./engine.env
   chmod 600 ./engine.env
 
 Then edit ./workflow.yaml (project, repository, statuses) and ./engine.env

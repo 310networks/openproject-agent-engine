@@ -2,7 +2,7 @@
 
 Two files drive everything: `~/.config/op-agent-engine/workflow.yaml`
 (created by `init`; the fully commented reference is
-[`config/workflow.example.yaml`](../config/workflow.example.yaml)) and
+[`workflow.example.yaml`](../workflow.example.yaml)) and
 `~/.config/op-agent-engine/engine.env` (secrets only). `workflow.yaml`
 references secrets as `${VAR}`, resolved from the environment before
 validation; a missing variable is a startup error.

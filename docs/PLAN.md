@@ -529,10 +529,10 @@ openproject-agent-engine/
 │   ├── codeReviewer/AGENTS.md
 │   └── <each>/repositories/       # gitignored, engine-managed clones
 ├── README.md                      # setup: OpenProject roles, statuses, workflows, custom field, tokens, systemd install
-├── config/workflow.example.yaml
+├── workflow.example.yaml
+├── engine.env.example
 ├── deploy/
-│   ├── op-agent-engine.service    # unit file with <host-user> placeholders
-│   └── engine.env.example
+│   └── op-agent-engine.service    # unit file with <host-user> placeholders
 ├── prompts/                       # *.j2 templates (section 10)
 ├── src/op_agent_engine/
 │   ├── cli.py                     # run | once | check-config | status | dry-run

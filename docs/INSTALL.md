@@ -11,8 +11,8 @@ the live standard for agents.
 
 ```bash
 git clone <engine-repo> ~/op-agent-engine && cd ~/op-agent-engine
-cp config/workflow.example.yaml ./workflow.yaml
-cp deploy/engine.env.example ./engine.env
+cp workflow.example.yaml ./workflow.yaml
+cp engine.env.example ./engine.env
 chmod 600 ./engine.env
 # edit workflow.yaml and engine.env, then:
 ./install.sh

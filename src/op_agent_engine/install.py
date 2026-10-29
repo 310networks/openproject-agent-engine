@@ -30,8 +30,8 @@ UNIT_NAMES: tuple[str, ...] = (
 # force-include entries in pyproject.toml). Editable installs fall back to the
 # repository layout.
 _REPO_EXAMPLES: dict[str, Path] = {
-    "workflow.example.yaml": Path("config/workflow.example.yaml"),
-    "engine.env.example": Path("deploy/engine.env.example"),
+    "workflow.example.yaml": Path("workflow.example.yaml"),
+    "engine.env.example": Path("engine.env.example"),
     "units/op-agent-engine.service": Path("deploy/op-agent-engine.service"),
     "units/op-agent-engine-cleanup.service": Path("deploy/op-agent-engine-cleanup.service"),
     "units/op-agent-engine-cleanup.timer": Path("deploy/op-agent-engine-cleanup.timer"),

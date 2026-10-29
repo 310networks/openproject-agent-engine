@@ -437,12 +437,12 @@ def _run_setup(
     source_env = source_dir / "engine.env"
     if not source_workflow.is_file():
         raise SetupError(
-            f"missing {source_workflow}; copy config/workflow.example.yaml "
+            f"missing {source_workflow}; copy workflow.example.yaml "
             "to workflow.yaml in the checkout root and edit it"
         )
     if not source_env.is_file():
         raise SetupError(
-            f"missing {source_env}; copy deploy/engine.env.example to "
+            f"missing {source_env}; copy engine.env.example to "
             "engine.env in the checkout root and edit it"
         )
     try:

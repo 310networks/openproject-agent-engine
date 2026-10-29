@@ -31,8 +31,8 @@ and every engine comment starts with `ENGINE:`. Failed runs are retried up to
 
 ```bash
 git clone <engine-repo> ~/op-agent-engine && cd ~/op-agent-engine
-cp config/workflow.example.yaml ./workflow.yaml
-cp deploy/engine.env.example ./engine.env
+cp workflow.example.yaml ./workflow.yaml
+cp engine.env.example ./engine.env
 chmod 600 ./engine.env
 # edit workflow.yaml (project, repo, statuses) and engine.env
 # (OP_BASE_URL and OP_PROVISION_TOKEN — an admin token).
