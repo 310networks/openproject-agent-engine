@@ -11,16 +11,16 @@ Type=simple
 # NOTIFY_SOCKET is set.
 #Type=notify
 #WatchdogSec=180
-User=<host-user>
-Group=<host-user>
-WorkingDirectory=/home/<host-user>
-EnvironmentFile=/home/<host-user>/.config/op-agent-engine/engine.env
+User=<user>
+Group=<user>
+WorkingDirectory=<home>
+EnvironmentFile=<home>/.config/op-agent-engine/engine.env
 # Must include the directories of every agent CLI (pi, opencode, gh, git, node).
 # Verified CLI locations on the reference host: pi -> ~/.pi/agent/bin,
 # opencode -> ~/.opencode/bin. Add a Node version manager bin directory here if
 # the agent CLIs are installed that way; systemd does not read shell profiles.
-Environment=PATH=/home/<host-user>/.local/bin:/home/<host-user>/.pi/agent/bin:/home/<host-user>/.opencode/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=/home/<host-user>/.local/share/op-agent-engine/venv/bin/op-agent-engine run --config /home/<host-user>/.config/op-agent-engine/workflow.yaml
+Environment=PATH=<home>/.local/bin:<home>/.pi/agent/bin:<home>/.opencode/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=<exe> run --config <home>/.config/op-agent-engine/workflow.yaml
 Restart=on-failure
 RestartSec=10
 KillMode=control-group

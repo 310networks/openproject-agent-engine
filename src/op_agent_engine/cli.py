@@ -22,7 +22,7 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from op_agent_engine import __version__
+from op_agent_engine import __version__, install
 from op_agent_engine.config import (
     DEFAULT_ENGINE_CONFIG,
     ConfigError,
@@ -182,6 +182,36 @@ def build_parser() -> argparse.ArgumentParser:
         "--json",
         action="store_true",
         help="print the cleanup report as JSON",
+    )
+
+    init = subparsers.add_parser(
+        "init",
+        help="scaffold the config directory from the bundled examples",
+    )
+    init.add_argument(
+        "--config-dir",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help="target directory (default: ~/.config/op-agent-engine)",
+    )
+
+    install_service = subparsers.add_parser(
+        "install-service",
+        help="render the systemd units; --apply installs and enables them",
+    )
+    install_service.add_argument(
+        "--apply",
+        action="store_true",
+        help="install the units with sudo and enable the service and timer",
+    )
+    install_service.add_argument(
+        "--stage-dir",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help="where to stage the rendered units (default: "
+        "~/.local/share/op-agent-engine/systemd)",
     )
     return parser
 
@@ -535,6 +565,64 @@ def _provision(path: Path, *, apply: bool, as_json: bool) -> int:
     return OK_EXIT if report.ok else CONFIG_ERROR_EXIT
 
 
+def _init(config_dir: Path) -> int:
+    """Scaffold config files (idempotent) and print the next steps."""
+    report = install.init_config(config_dir)
+    for path in report.created:
+        print(f"created: {path}")
+    for path in report.kept:
+        print(f"kept existing: {path}")
+    for error in report.errors:
+        print(f"op-agent-engine: error: {error}", file=sys.stderr)
+    if not report.ok:
+        return CONFIG_ERROR_EXIT
+    env_file = config_dir / "engine.env"
+    print(
+        "Next steps:\n"
+        f"  1. Edit {config_dir / 'workflow.yaml'} (project, repo, status names)\n"
+        f"     and {env_file} (URLs, tokens).\n"
+        "  2. One-time OpenProject setup: docs/OPENPROJECT_SETUP.md\n"
+        "     (statuses, AGENT field, roles, workflows, tokens).\n"
+        f"  3. set -a; . {env_file}; set +a\n"
+        "     op-agent-engine check-config\n"
+        "     op-agent-engine provision --apply\n"
+        "  4. op-agent-engine install-service --apply\n"
+        "     op-agent-engine dry-run"
+    )
+    return OK_EXIT
+
+
+def _install_service(*, apply: bool, stage_dir: Path) -> int:
+    exe = install.find_executable()
+    if exe is None:
+        print(
+            "op-agent-engine: error: 'op-agent-engine' not found on PATH.\n"
+            "Install it first (uv tool install .) or symlink the venv binary\n"
+            "into ~/.local/bin.",
+            file=sys.stderr,
+        )
+        return CONFIG_ERROR_EXIT
+    report = install.install_service(apply=apply, exe=exe, stage_dir=stage_dir)
+    for path in report.staged:
+        print(f"staged: {path}")
+    for path in report.installed:
+        print(f"installed: {path}")
+    for unit in report.enabled:
+        print(f"enabled: {unit}")
+    for error in report.errors:
+        print(f"op-agent-engine: error: {error}", file=sys.stderr)
+    if not report.ok:
+        return CONFIG_ERROR_EXIT
+    if apply:
+        print("Service is running and enabled at boot: journalctl -u op-agent-engine -f")
+    else:
+        print("To install, run: op-agent-engine install-service --apply")
+        print("or manually:")
+        for command in report.commands:
+            print(f"  {command}")
+    return OK_EXIT
+
+
 def _cleanup(*, days: int | None, as_json: bool, dry_run: bool) -> int:
     """Log retention job: remove old ``DATA_DIR/runs/<runId>`` directories."""
     try:
@@ -568,6 +656,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     config_path = (args.config or default_config_path()).expanduser()
+
+    if args.command == "init":
+        config_dir = (
+            Path(args.config_dir).expanduser()
+            if args.config_dir is not None
+            else install.default_config_dir()
+        )
+        return _init(config_dir)
+
+    if args.command == "install-service":
+        stage_dir = (
+            Path(args.stage_dir).expanduser()
+            if args.stage_dir is not None
+            else install.default_stage_dir()
+        )
+        return _install_service(apply=args.apply, stage_dir=stage_dir)
 
     if args.command == "status":
         return _status(as_json=args.json)

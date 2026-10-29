@@ -33,6 +33,17 @@ op-agent-engine = "op_agent_engine.cli:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/op_agent_engine"]
 
+# Ship the configuration examples and unit templates inside the package so
+# `init` and `install-service` work from any install method (uv tool, pipx,
+# venv). The repository files under config/ and deploy/ stay the source of
+# truth.
+[tool.hatch.build.targets.wheel.force-include]
+"config/workflow.example.yaml" = "op_agent_engine/examples/workflow.example.yaml"
+"deploy/engine.env.example" = "op_agent_engine/examples/engine.env.example"
+"deploy/op-agent-engine.service" = "op_agent_engine/examples/units/op-agent-engine.service"
+"deploy/op-agent-engine-cleanup.service" = "op_agent_engine/examples/units/op-agent-engine-cleanup.service"
+"deploy/op-agent-engine-cleanup.timer" = "op_agent_engine/examples/units/op-agent-engine-cleanup.timer"
+
 [tool.ruff]
 line-length = 100
 target-version = "py312"

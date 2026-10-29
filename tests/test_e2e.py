@@ -4,7 +4,8 @@ One work package goes ``New`` -> ``Ready for Review`` -> ``Closed`` in two
 polls, using the real ``GenericRunner`` to spawn ``tests/fakes/fake_agent.sh``.
 OpenProject and GitHub are fakes; workspace preparation is stubbed (no git).
 
-This is the automated counterpart of the README's manual acceptance checklist:
+This is the automated counterpart of the manual acceptance checklist in
+docs/ACCEPTANCE.md:
 it proves that a configured runner, prompt rendering, result parsing, outcome
 verification and every transition work together, and that no secret configured
 for a run leaks into the run directory.
