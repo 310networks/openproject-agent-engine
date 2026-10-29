@@ -327,7 +327,28 @@ def test_cli_setup_delegates(
         "config_dir": config_dir,
         "skip_service": True,
         "assume_yes": True,
+        "reprompt_tokens": False,
     }
+
+
+def test_cli_setup_passes_reprompt_tokens(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_setup(**kwargs: Any) -> int:
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(cli, "run_setup", fake_setup)
+
+    code = cli.main(
+        ["setup", "--source-dir", str(tmp_path), "--reprompt-tokens"]
+    )
+
+    assert code == 0
+    assert captured["reprompt_tokens"] is True
 
 
 def test_provision_failure_detail_does_not_expose_passwords() -> None:
@@ -350,3 +371,199 @@ def test_provision_failure_detail_uses_stderr_without_json() -> None:
     detail = wizard._provision_failure_detail("", "connection refused")
 
     assert "connection refused" in detail
+
+
+def _capture_ok(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    verified: dict[str, tuple[bool | None, str]] | None = None,
+) -> list[str]:
+    """Stub provisioning/checks and record every token prompt."""
+
+    def fake_capture(
+        command: list[str], *, env: dict[str, str], cwd: Path
+    ) -> tuple[int, str, str]:
+        if "provision" in command:
+            return 0, json.dumps({"writes": 0, "passwords": {}}), ""
+        return 0, "", ""
+
+    prompts: list[str] = []
+
+    def fake_secret(prompt: str) -> str:
+        prompts.append(prompt)
+        return "typed-token"
+
+    def fake_verify(
+        base_url: str, token: str, expected_login: str
+    ) -> tuple[bool | None, str]:
+        if verified and token in verified:
+            return verified[token]
+        return True, f"verified as {expected_login}"
+
+    monkeypatch.setattr(wizard, "_run_capture", fake_capture)
+    monkeypatch.setattr(wizard, "_secret_prompt", fake_secret)
+    monkeypatch.setattr(wizard, "_verify_token", fake_verify)
+    return prompts
+
+
+RESUME_ENV = """\
+OP_BASE_URL=https://openproject.example.com
+OP_PROVISION_TOKEN=admin-secret-token
+OP_ENGINE_TOKEN=stored-engine-token
+OP_TOKEN_FRONTEND=stored-frontend-token
+WORKSPACE_ROOT=/tmp/op-agent-engine/agents
+"""
+
+
+def test_rerun_reuses_stored_tokens_without_prompting(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Re-running install.sh after a failed install must resume rather than
+    # interviewing the operator for tokens that are already stored.
+    source = _source_tree(tmp_path, env_text=RESUME_ENV)
+    prompts = _capture_ok(monkeypatch)
+
+    output = io.StringIO()
+    code = run_setup(
+        source_dir=source,
+        config_dir=tmp_path / "config",
+        skip_service=True,
+        assume_yes=True,
+        ui=UI(stream=output),
+    )
+
+    assert code == 0
+    assert prompts == []
+    text_output = output.getvalue()
+    assert "OP_ENGINE_TOKEN: reusing the existing token" in text_output
+    assert "OP_TOKEN_FRONTEND: reusing the existing token" in text_output
+    assert "reused 2 existing token(s)" in text_output
+    for path in (tmp_path / "config" / "engine.env", source / "engine.env"):
+        text = path.read_text(encoding="utf-8")
+        assert "OP_ENGINE_TOKEN=stored-engine-token" in text
+        assert "OP_TOKEN_FRONTEND=stored-frontend-token" in text
+
+
+def test_rerun_reprompts_only_the_rejected_token(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _source_tree(tmp_path, env_text=ENV.replace(
+        "OP_ENGINE_TOKEN=replace-with-agent-engine-api-token",
+        "OP_ENGINE_TOKEN=stored-engine-token",
+    ).replace(
+        "OP_TOKEN_FRONTEND=replace-with-frontend-api-token",
+        "OP_TOKEN_FRONTEND=stored-frontend-token",
+    ))
+    prompts = _capture_ok(
+        monkeypatch,
+        verified={"stored-frontend-token": (False, "token rejected (HTTP 401)")},
+    )
+
+    output = io.StringIO()
+    code = run_setup(
+        source_dir=source,
+        config_dir=tmp_path / "config",
+        skip_service=True,
+        assume_yes=True,
+        ui=UI(stream=output),
+    )
+
+    assert code == 0
+    assert len(prompts) == 1
+    assert "OP_TOKEN_FRONTEND" in prompts[0]
+    text_output = output.getvalue()
+    assert "the existing token token rejected (HTTP 401)" in text_output
+    text = (tmp_path / "config" / "engine.env").read_text(encoding="utf-8")
+    assert "OP_ENGINE_TOKEN=stored-engine-token" in text
+    assert "OP_TOKEN_FRONTEND=typed-token" in text
+
+
+def test_reprompt_tokens_flag_asks_for_every_token(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _source_tree(tmp_path, env_text=RESUME_ENV)
+    prompts = _capture_ok(monkeypatch)
+
+    code = run_setup(
+        source_dir=source,
+        config_dir=tmp_path / "config",
+        skip_service=True,
+        assume_yes=True,
+        reprompt_tokens=True,
+        ui=UI(stream=io.StringIO()),
+    )
+
+    assert code == 0
+    assert len(prompts) == 2
+    assert "reusing the existing token" not in " ".join(prompts)
+    text = (tmp_path / "config" / "engine.env").read_text(encoding="utf-8")
+    assert "OP_ENGINE_TOKEN=typed-token" in text
+    assert "OP_TOKEN_FRONTEND=typed-token" in text
+
+
+def test_rerun_keeps_token_when_verification_is_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _source_tree(tmp_path, env_text=RESUME_ENV)
+    prompts = _capture_ok(
+        monkeypatch,
+        verified={
+            "stored-engine-token": (None, "could not verify token: timeout"),
+            "stored-frontend-token": (None, "could not verify token: timeout"),
+        },
+    )
+
+    output = io.StringIO()
+    code = run_setup(
+        source_dir=source,
+        config_dir=tmp_path / "config",
+        skip_service=True,
+        assume_yes=True,
+        ui=UI(stream=output),
+    )
+
+    assert code == 0
+    assert prompts == []
+    assert "reusing the existing token (could not verify token: timeout)" in (
+        output.getvalue()
+    )
+    text = (tmp_path / "config" / "engine.env").read_text(encoding="utf-8")
+    assert "OP_ENGINE_TOKEN=stored-engine-token" in text
+
+
+def test_rerun_restores_tokens_over_checkout_placeholders(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A re-run copies the checkout's engine.env (still the example, with
+    # placeholders) over the config copy. Tokens entered by the previous run
+    # must survive that copy, otherwise the operator is interviewed again.
+    source = _source_tree(tmp_path)
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "engine.env").write_text(RESUME_ENV, encoding="utf-8")
+    prompts = _capture_ok(monkeypatch)
+
+    output = io.StringIO()
+    code = run_setup(
+        source_dir=source,
+        config_dir=config_dir,
+        skip_service=True,
+        assume_yes=True,
+        ui=UI(stream=output),
+    )
+
+    assert code == 0
+    assert prompts == []
+    text_output = output.getvalue()
+    assert "OP_ENGINE_TOKEN: restored from the previous install" in text_output
+    assert "OP_TOKEN_FRONTEND: restored from the previous install" in text_output
+    assert "reused 2 existing token(s)" in text_output
+    for path in (config_dir / "engine.env", source / "engine.env"):
+        text = path.read_text(encoding="utf-8")
+        assert "OP_ENGINE_TOKEN=stored-engine-token" in text
+        assert "OP_TOKEN_FRONTEND=stored-frontend-token" in text

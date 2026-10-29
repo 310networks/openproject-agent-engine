@@ -216,6 +216,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="answer yes to the systemd installation prompt",
     )
+    setup.add_argument(
+        "--reprompt-tokens",
+        action="store_true",
+        help=(
+            "ask for every API token again instead of reusing the valid "
+            "tokens already stored in engine.env"
+        ),
+    )
 
     uninstall = subparsers.add_parser(
         "uninstall",
@@ -755,13 +763,19 @@ def _cleanup(*, days: int | None, as_json: bool, dry_run: bool) -> int:
 
 
 def _setup(
-    *, source_dir: Path, config_dir: Path, skip_service: bool, assume_yes: bool
+    *,
+    source_dir: Path,
+    config_dir: Path,
+    skip_service: bool,
+    assume_yes: bool,
+    reprompt_tokens: bool = False,
 ) -> int:
     return run_setup(
         source_dir=source_dir,
         config_dir=config_dir,
         skip_service=skip_service,
         assume_yes=assume_yes,
+        reprompt_tokens=reprompt_tokens,
     )
 
 
@@ -826,6 +840,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             config_dir=config_dir,
             skip_service=bool(args.skip_service),
             assume_yes=bool(args.yes),
+            reprompt_tokens=bool(getattr(args, "reprompt_tokens", False)),
         )
 
     config_path = (getattr(args, "config", None) or default_config_path()).expanduser()

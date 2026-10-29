@@ -61,8 +61,32 @@ Tokens are written back to both `engine.env` copies with mode `600` and are
 never printed. Re-running `./install.sh` is safe: identical config files are
 left alone and changed ones are backed up first.
 
+### Re-running after a failed install
+
+`./install.sh` resumes where the previous run stopped. On step 5 every token
+that is already stored in `engine.env` is re-verified instead of re-prompted:
+
+- still authenticates as the expected login → reused silently
+  (`ok OP_TOKEN_FRONTEND: reusing the existing token (verified as ...)`);
+- cannot be checked (OpenProject unreachable) → kept, with a warning, so you
+  still reach `check-config`;
+- rejected (401) or bound to a different login → only that account is asked
+  again, and you can no longer press Enter to keep a rejected token.
+
+This also survives step 3's config copy: if the checkout's `engine.env` still
+holds example placeholders while `~/.config/op-agent-engine/engine.env` has
+tokens from the previous run, those tokens are restored (and written back to
+the checkout's `engine.env`) instead of being clobbered.
+
+Tokens entered for accounts you did not reach the first time are still
+prompted for. To deliberately re-enter every token, run
+`./install.sh --reprompt-tokens`. Provisioning (step 4) is idempotent — it
+creates only what is missing — and the config copy in step 3 keeps existing
+files, so a full re-run is cheap.
+
 `op-agent-engine setup` is the same orchestration without the shell intro, if
-you prefer to run it directly. Useful flags: `--skip-service` and `--yes`.
+you prefer to run it directly. Useful flags: `--skip-service`, `--yes` and
+`--reprompt-tokens`.
 
 ## Manual uv install
 

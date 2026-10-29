@@ -13,6 +13,11 @@
 # over to `op-agent-engine setup`, which provisions the OpenProject users,
 # prompts for one API token per account, verifies them, installs the systemd
 # service and runs a dry poll.
+#
+# Re-running is safe and resumes: tokens already stored in engine.env are
+# re-verified and reused instead of being prompted for again. Pass
+# --reprompt-tokens to re-enter them anyway; extra flags are forwarded to
+# `op-agent-engine setup` (e.g. --skip-service, --yes).
 
 set -euo pipefail
 
@@ -59,7 +64,7 @@ robot_frame() {
     '---------------'
           |   |
  ${hand} .----+---+----. ${hand}
-  Y  |    AGENT    |  Y
+  Y  |  OP Agent   |  Y
   |__|   o  o  o   |__|
      '-------------'
 EOF

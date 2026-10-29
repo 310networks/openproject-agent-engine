@@ -344,6 +344,32 @@ def _ask_yes_no(text: str, *, default: bool, assume_yes: bool) -> bool:
     return answer in {"y", "yes"}
 
 
+def _reuse_token(
+    request: TokenRequest,
+    existing: str,
+    base_url: str,
+    ui: UI,
+) -> bool:
+    """Keep an already stored token without prompting.
+
+    Re-running ``install.sh`` after a failed install must resume, not repeat the
+    token interview. A stored token is reused when it still authenticates as the
+    expected login; when it cannot be checked (network down, unroutable
+    OpenProject) it is kept with a warning so the operator can still get to
+    ``check-config``. A token that is actively rejected is dropped so a new one
+    must be entered.
+    """
+    verified, message = _verify_token(base_url, existing, request.login)
+    if verified is False:
+        ui.warn(f"{request.env_var}: the existing token {message}")
+        return False
+    if verified is True:
+        ui.ok(f"{request.env_var}: reusing the existing token ({message})")
+    else:
+        ui.warn(f"{request.env_var}: reusing the existing token ({message})")
+    return True
+
+
 def _prompt_token(
     request: TokenRequest,
     existing: str | None,
@@ -482,6 +508,7 @@ def run_setup(
     config_dir: Path,
     skip_service: bool = False,
     assume_yes: bool = False,
+    reprompt_tokens: bool = False,
     ui: UI | None = None,
 ) -> int:
     """Run the interactive installer; return a process exit code."""
@@ -492,6 +519,7 @@ def run_setup(
             config_dir=config_dir.expanduser(),
             skip_service=skip_service,
             assume_yes=assume_yes,
+            reprompt_tokens=reprompt_tokens,
             ui=ui,
         )
         return OK_EXIT
@@ -510,6 +538,7 @@ def _run_setup(
     skip_service: bool,
     assume_yes: bool,
     ui: UI,
+    reprompt_tokens: bool = False,
 ) -> None:
     source_workflow = source_dir / "workflow.yaml"
     source_env = source_dir / "engine.env"
@@ -540,6 +569,21 @@ def _run_setup(
     # Copy first so ``init`` sees existing files and keeps them; this avoids
     # pointless backups of the freshly generated examples.
     ui.step(1, "Installing configuration and scaffolding")
+    # Snapshot the tokens of the previous run before the checkout's engine.env
+    # (often still the example, with placeholders) replaces it. Without this a
+    # re-run after a failed install would throw away tokens that were already
+    # entered, which is exactly what resuming is supposed to avoid.
+    config_env_path = config_dir / "engine.env"
+    previous_tokens: dict[str, str] = {}
+    if config_env_path.is_file():
+        previous = install.load_env_file(config_env_path)
+        wanted = {request.env_var for request in requests}
+        previous_tokens = {
+            name: value
+            for name, value in previous.items()
+            if name in wanted and _usable(value) and value is not None
+        }
+
     report = install.install_source_config(source_dir, config_dir)
     for path in report.copied:
         ui.ok(f"installed {path}")
@@ -561,6 +605,22 @@ def _run_setup(
 
     config_env_path = config_dir / "engine.env"
     file_env = install.load_env_file(config_env_path)
+
+    restored = {
+        name: value
+        for name, value in previous_tokens.items()
+        if not _usable(file_env.get(name))
+    }
+    if restored:
+        install.update_env_file(config_env_path, restored)
+        if source_env.resolve() != config_env_path.resolve():
+            install.update_env_file(source_env, restored)
+        file_env.update(restored)
+        for name in sorted(restored):
+            ui.info(
+                f"{name}: restored from the previous install "
+                "(the checkout's engine.env has a placeholder)"
+            )
 
     # 2. Provision users and memberships.
     ui.step(2, "Provisioning OpenProject users and memberships")
@@ -591,9 +651,19 @@ def _run_setup(
 
     updates: dict[str, str] = {}
     warned_logins: set[str] = set()
+    reused = 0
     for request in requests:
         existing = file_env.get(request.env_var)
         password = passwords.get(request.login)
+
+        # Resuming a previous run: keep tokens that are already stored and
+        # still valid instead of interviewing the operator again.
+        if not reprompt_tokens and _usable(existing) and existing is not None:
+            if _reuse_token(request, existing, base_url, ui):
+                reused += 1
+                continue
+            existing = None
+
         if password:
             ui.credential(request.label, request.login, password)
         elif not _usable(existing) and request.login not in warned_logins:
@@ -614,6 +684,11 @@ def _run_setup(
             request, existing, base_url, ui
         )
 
+    if reused:
+        ui.info(
+            f"reused {reused} existing token(s); pass --reprompt-tokens to "
+            "enter them again"
+        )
     install.update_env_file(config_env_path, updates)
     if source_env.resolve() != config_env_path.resolve():
         install.update_env_file(source_env, updates)
