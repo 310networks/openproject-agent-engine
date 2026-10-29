@@ -79,11 +79,13 @@ dispatch always uses the least-privilege `OP_ENGINE_TOKEN`.
 
 **OpenProject API limit:** roles cannot be created and their permissions
 cannot be read through the API (verified; see `docs/VERIFICATION.md` item 13).
-Create the two roles manually first. `provision` fails with a specific message
-if a role is missing and prints a manual-verification note for permissions.
-API tokens are also minted only in the UI; `provision` reports missing
-`OP_TOKEN_*` variables and `check-config` fails if a configured token belongs
-to a different login.
+Create the two roles manually first using
+[`docs/OPENPROJECT_ADMIN_SETUP.md`](docs/OPENPROJECT_ADMIN_SETUP.md), which
+lists the exact role permissions and workflow transitions. `provision` fails
+with a specific message if a role is missing and prints a manual-verification
+note for permissions. API tokens are also minted only in the UI; `provision`
+reports missing `OP_TOKEN_*` variables and `check-config` fails if a configured
+token belongs to a different login.
 
 ## Operations
 
