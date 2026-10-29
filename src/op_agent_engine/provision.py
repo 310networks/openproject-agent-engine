@@ -364,10 +364,9 @@ def _resolve_roles(
     config: WorkflowConfig, roles: Mapping[str, int]
 ) -> tuple[dict[str, int], list[str]]:
     provisioning = config.openproject.provisioning
-    wanted = {
-        "agent": provisioning.agent_role,
-        "engine": provisioning.engine_role,
-    }
+    wanted = {"agent": provisioning.agent_role}
+    if provisioning.engine_role:
+        wanted["engine"] = provisioning.engine_role
     resolved: dict[str, int] = {}
     missing: list[str] = []
     for kind, name in wanted.items():
@@ -599,8 +598,11 @@ async def _reconcile_memberships(
     for agent in config.agents.values():
         for project in config.projects_for_agent(agent):
             targets.append((agent.op_login, project.identifier, "agent"))
-    for project in config.enabled_projects():
-        targets.append((config.openproject.engine_user, project.identifier, "engine"))
+    if config.openproject.provisioning.engine_role:
+        for project in config.enabled_projects():
+            targets.append(
+                (config.openproject.engine_user, project.identifier, "engine")
+            )
 
     for login, identifier, role_kind in targets:
         role_id = role_ids[role_kind]

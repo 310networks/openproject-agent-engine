@@ -37,7 +37,7 @@ chmod 600 ./engine.env
 # edit workflow.yaml (project, repo, statuses) and engine.env
 # (OP_BASE_URL and OP_PROVISION_TOKEN — an admin token).
 # One-time OpenProject setup first: docs/OPENPROJECT_SETUP.md
-# (statuses, AGENT field, roles, workflows).
+# (statuses, AGENT field, Agent Worker role).
 ./install.sh
 ```
 
@@ -47,7 +47,9 @@ installs the package with `uv`, copies your two files into
 new user's generated password, then prompts for that user's API token one at
 a time, verifies each token, installs the systemd service and runs a dry
 poll. Passwords are shown once; tokens are written to both `engine.env` files
-with mode `600` and are never printed.
+with mode `600` and are never printed. At the `agent-engine` token prompt it
+reminds you to make that user an administrator, which is required for the
+engine to list users and edit work packages.
 
 The service starts immediately and autostarts on boot. Follow it with
 `journalctl -u op-agent-engine -f`.
@@ -74,7 +76,7 @@ layer; `--purge-agent-repos` also deletes `WORKSPACE_ROOT/*/repositories`.
 | Doc | Contents |
 |---|---|
 | [docs/INSTALL.md](docs/INSTALL.md) | install options, systemd service, updates |
-| [docs/OPENPROJECT_SETUP.md](docs/OPENPROJECT_SETUP.md) | one-time instance setup: statuses, `AGENT` field, roles, workflows, tokens |
+| [docs/OPENPROJECT_SETUP.md](docs/OPENPROJECT_SETUP.md) | one-time instance setup: statuses, `AGENT` field, Agent Worker role, admin engine user, tokens |
 | [docs/CONFIG.md](docs/CONFIG.md) | `workflow.yaml`, environment variables, CLI reference |
 | [docs/RUNBOOK.md](docs/RUNBOOK.md) | status, pause, run inspection, `On Hold` handling, recovery, security |
 | [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md) | fake-agent test and manual acceptance checklist |

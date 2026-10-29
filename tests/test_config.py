@@ -67,6 +67,30 @@ def test_example_config_summary_mentions_entities() -> None:
     assert "REVIEWER: codeReviewer (reviewer)" in summary
 
 
+def test_example_config_uses_administrator_engine_user() -> None:
+    config = WorkflowConfig.load(EXAMPLE, environ=EXAMPLE_ENV)
+
+    assert config.openproject.provisioning.engine_role is None
+
+
+def test_blank_engine_role_is_treated_as_none() -> None:
+    raw = base_mapping()
+    raw["openproject"] = {"provisioning": {"engine_role": "  "}}
+
+    config = WorkflowConfig.from_mapping(raw, environ={})
+
+    assert config.openproject.provisioning.engine_role is None
+
+
+def test_engine_role_name_is_kept_for_a_least_privilege_engine() -> None:
+    raw = base_mapping()
+    raw["openproject"] = {"provisioning": {"engine_role": "Agent Engine"}}
+
+    config = WorkflowConfig.from_mapping(raw, environ={})
+
+    assert config.openproject.provisioning.engine_role == "Agent Engine"
+
+
 def test_missing_environment_variable_is_reported_with_location() -> None:
     environ = {key: value for key, value in EXAMPLE_ENV.items() if key != "OP_TOKEN_BACKEND"}
 

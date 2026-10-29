@@ -19,8 +19,8 @@ chmod 600 ./engine.env
 ```
 
 Before running it, complete the one-time instance setup in
-[docs/OPENPROJECT_SETUP.md](OPENPROJECT_SETUP.md) (statuses, `AGENT` field,
-roles and workflows). In `engine.env`, set `OP_BASE_URL` and
+[docs/OPENPROJECT_SETUP.md](OPENPROJECT_SETUP.md) (statuses, `AGENT` field
+and the Agent Worker role). In `engine.env`, set `OP_BASE_URL` and
 `OP_PROVISION_TOKEN` (an administrator token); leave the per-account tokens
 (`OP_ENGINE_TOKEN` and the `OP_TOKEN_*` values) as placeholders — the
 installer collects them later.
@@ -48,7 +48,11 @@ installer collects them later.
    Passwords are shown once and never written to disk; store them if you may
    need to sign in again. Accounts that already existed keep their old
    password, so the installer tells you to reset it in **Administration →
-   Users** instead; alternatively paste a token you already created;
+   Users** instead; alternatively paste a token you already created. When it
+   prompts for the `agent-engine` token it also reminds you to make that
+   user an administrator first (**Administration → Users → agent-engine →
+   Administrator**), which is what lets the engine list users and edit work
+   packages without a project role;
 6. runs `op-agent-engine check-config`, installs the systemd service
    (`install-service --apply`, sudo), and finishes with a read-only
    `op-agent-engine dry-run`.

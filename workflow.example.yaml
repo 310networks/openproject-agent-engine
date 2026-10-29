@@ -24,7 +24,6 @@ openproject:
   provisioning:                   # M8; used only by provision/check-config
     enabled: true
     agent_role: "Agent Worker"     # role name on this instance (create manually)
-    engine_role: "Agent Engine"    # role name on this instance (create manually)
     email_domain: "agent-engine.local"   # only used when creating a missing user
   dispatch_priority: [ready_for_review, rejected, new]   # finish work before starting new work
   eligible_types: ["Task", "Bug", "Feature"]

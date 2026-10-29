@@ -168,15 +168,27 @@ class ProvisioningConfig(BaseModel):
 
     enabled: bool = True
     agent_role: str = "Agent Worker"
-    engine_role: str = "Agent Engine"
+    # ``None`` is the default because the engine user is an administrator: it
+    # already has every project permission, so provisioning neither needs an
+    # engine role nor creates its membership. Set a role name only for a
+    # least-privilege, non-administrator engine.
+    engine_role: str | None = None
     email_domain: str = "agent-engine.local"
 
-    @field_validator("agent_role", "engine_role", "email_domain")
+    @field_validator("agent_role", "email_domain")
     @classmethod
     def _non_empty(cls, value: str) -> str:
         if not value.strip():
             raise ValueError("must not be empty")
         return value
+
+    @field_validator("engine_role")
+    @classmethod
+    def _optional_role(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        return stripped or None
 
 
 class OpenProjectConfig(BaseModel):
@@ -496,10 +508,15 @@ class WorkflowConfig(BaseModel):
                 f"runner={agent.runner}, projects={','.join(agent.projects)}"
             )
         provisioning = self.openproject.provisioning
+        engine_role = (
+            repr(provisioning.engine_role)
+            if provisioning.engine_role
+            else "none (administrator engine user)"
+        )
         lines.append(
             f"provisioning: {'enabled' if provisioning.enabled else 'disabled'}, "
             f"agent role={provisioning.agent_role!r}, "
-            f"engine role={provisioning.engine_role!r}"
+            f"engine role={engine_role}"
         )
         lines.append(f"runners: {len(self.runners)}")
         for key, runner in self.runners.items():

@@ -579,6 +579,10 @@ def _run_setup(
     )
     ui.info("Log in as each account below and create a token under:")
     ui.info("  My account -> Access tokens")
+    ui.info(
+        "The agent-engine runtime user must be an administrator in "
+        "OpenProject."
+    )
     if passwords:
         ui.info(
             f"Generated passwords are shown once, at that account's token "
@@ -599,6 +603,12 @@ def _run_setup(
                 "show its password. Reset it in OpenProject "
                 f"(Administration -> Users -> {request.login}) or paste a "
                 "token you already created for it."
+            )
+        if request.kind == "engine":
+            ui.warn(
+                f"make {request.login} an administrator before creating this "
+                "token: Administration -> Users -> "
+                f"{request.login} -> Administrator"
             )
         updates[request.env_var] = _prompt_token(
             request, existing, base_url, ui

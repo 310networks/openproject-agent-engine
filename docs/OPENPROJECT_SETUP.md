@@ -1,8 +1,8 @@
 # OpenProject setup (one-time)
 
 Do this once per instance. `provision --apply` handles users and
-memberships; the API cannot create roles, custom fields, statuses or
-workflows, so the rest is manual in the UI. Role names must match
+memberships; the API cannot create roles, custom fields or statuses, so the
+rest is manual in the UI. The Agent Worker role name must match
 `openproject.provisioning` in `workflow.yaml`.
 
 ## 1. Statuses
@@ -36,55 +36,26 @@ routing but must exist: startup resolves one option per agent key.
 
 ## 4. Roles
 
-Create exactly two project roles — **Administration → Users and permissions
-→ Roles and permissions** (the API is read-only for roles):
+Create one project role — **Administration → Users and permissions → Roles
+and permissions** (the API is read-only for roles):
 
 - **Agent Worker** (shared by all four agent users): *View work packages*,
   *Add comments*, *Become assignee/responsible*. No other write permissions —
   agents can never change status.
-- **Agent Engine** (the `agent-engine` user): *View work packages*, *Edit
-  work packages*, *Change work package status*, *Add comments*, plus the
-  **global** permission *Manage users*. The engine token lists users with
-  `GET /api/v3/users` at startup (to assign work packages and attribute
-  comments), so without *Manage users* (or an administrator account)
-  `check-config` and `run` fail with "the engine token needs the global
-  'manage_user' permission".
 
-  Keep **Agent Engine** as a *project* role — a global-only role cannot
-  carry the work-package permissions above. In the role editor, *Manage
-  users* lives on the **Global permissions** tab, separate from the project
-  permissions. Do not confuse it with *Manage members* under the project
-  permissions: that only manages a project's memberships and does not allow
-  listing users. If your version does not offer global permissions on
-  project roles, create a separate **global role** (like the instance's
-  *Standard global role*) with only *Manage users* and assign it to
-  `agent-engine` under *Administration → Users → agent-engine → Global
-  role*; keep the project role as-is. Changing the role takes effect
-  immediately; the token does not need to be regenerated.
-
-  A simpler but broader alternative is to make `agent-engine` an
-  **administrator** (*Administration → Users → agent-engine → Administrator*).
-  That satisfies `manage_user` without a global role, and `provision` can
-  then fall back to `OP_ENGINE_TOKEN` instead of a separate
-  `OP_PROVISION_TOKEN`. It also gives the long-running service full instance
-  administration, so prefer the global permission on a shared instance.
+The `agent-engine` user is an **administrator** instead of a project role:
+*Administration → Users → agent-engine → Administrator*. An administrator
+has every project permission and can list users, so it needs no project role
+and no project membership. `provision` creates only the agents'
+memberships.
 
 ## 5. Workflow transitions
 
-**Administration → Workflows.** For each eligible type and the **Agent
-Engine** role allow exactly:
-
-| From | To |
-|---|---|
-| `New` | `In Progress`, `On Hold` |
-| `In Progress` | `Ready for Review`, `On Hold` |
-| `Ready for Review` | `In Testing`, `On Hold` |
-| `In Testing` | `Closed`, `Rejected`, `On Hold` |
-| `Rejected` | `In Progress`, `On Hold` |
-
-For the **Agent Worker** role leave every transition unchecked. `On Hold` is
-terminal for the engine. Some instances do not enforce workflows
-server-side; the engine enforces them client-side either way.
+Nothing to configure for the engine user: it is an administrator and is not
+restricted by project-role workflows. The engine enforces its own status
+transitions client-side, and `On Hold` is terminal for it. For the **Agent
+Worker** role leave every transition unchecked so agents cannot change
+status.
 
 ## 6. Users and tokens
 
@@ -92,9 +63,11 @@ Only an admin token is needed before this step: set `OP_BASE_URL` and
 `OP_PROVISION_TOKEN` in `engine.env`. `op-agent-engine provision --apply`
 (run by the installer, or manually) creates the five users
 (`frontendEngineer`, `backendEngineer`, `leadDesigner`, `codeReviewer`,
-`agent-engine`) and one membership per agent per scoped project. It never
-deletes, deactivates or renames logins, and it exits successfully while the
-agent tokens are still placeholders — it just lists the variables to fill in.
+`agent-engine`) and one membership per agent per scoped project. The engine
+user is created as a regular user; **make it an administrator** as described
+in [section 4](#4-roles) before using its token. It never deletes,
+deactivates or renames logins, and it exits successfully while the agent
+tokens are still placeholders — it just lists the variables to fill in.
 
 The users' passwords are randomly generated. Administrators cannot mint API
 tokens for other users, so log in as each user and create the token under
@@ -116,6 +89,8 @@ again; a later installer run cannot recover them for an existing account.
 | `OP_PROVISION_TOKEN` | an administrator — `provision`/`check-config` only |
 | `OP_TOKEN_FRONTEND` / `OP_TOKEN_BACKEND` / `OP_TOKEN_DESIGNER` / `OP_TOKEN_REVIEWER` | the four agent users — passed into agent runs |
 
-`OP_ENGINE_TOKEN` needs `manage_user` (or admin) because startup resolves
-agent logins via `GET /api/v3/users`; keep it on the service host only.
+`OP_ENGINE_TOKEN` belongs to the administrator `agent-engine` user, which is
+what lets startup list agent logins via `GET /api/v3/users`; keep it on the
+service host only. Because that token is admin-capable, `OP_PROVISION_TOKEN`
+may be omitted after setup and `provision`/`check-config` fall back to it.
 `check-config` verifies every token belongs to the right login.

@@ -179,6 +179,10 @@ def test_run_setup_happy_path(
     assert "engine-secret" not in text_output
     assert "frontend-secret" not in text_output
     assert "My account -> Access tokens" in text_output
+    assert "Administration -> Users -> agent-engine -> Administrator" in text_output
+    assert text_output.index("agent-engine -> Administrator") < text_output.index(
+        "frontend-password"
+    )
     # Each password is shown once, at its account's token prompt.
     assert text_output.count("engine-password") == 1
     assert text_output.count("frontend-password") == 1

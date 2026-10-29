@@ -256,6 +256,45 @@ async def test_wildcard_expands_to_enabled_projects_only() -> None:
     assert len(fake.memberships) == 3
 
 
+async def test_admin_engine_user_needs_no_engine_role_or_membership() -> None:
+    fake = make_fake(
+        users=USERS,
+        roles=[{"id": 5, "name": "Agent Worker"}],
+        memberships=[],
+    )
+    config = make_config(
+        provisioning={
+            "enabled": True,
+            "agent_role": "Agent Worker",
+            "email_domain": "agent-engine.local",
+        },
+        agents={
+            "IMPL": agent_config("IMPL", projects=["demo"]),
+            "REVIEWER": agent_config("REVIEWER", kind="reviewer", projects=["demo"]),
+        },
+    )
+    client = client_for(fake)
+    try:
+        report = await provision_workflow(
+            client, config, apply=True, environ={}, base_url=BASE_URL
+        )
+    finally:
+        await client.aclose()
+
+    assert report.ok
+    assert report.missing_roles == []
+    # Only the agents get memberships; the administrator engine user needs none.
+    assert len(fake.memberships) == 2
+    engine_id = next(
+        user["id"] for user in USERS if user["login"] == "agent-engine"
+    )
+    assert all(
+        membership["_links"]["principal"]["href"]
+        != f"/api/v3/users/{engine_id}"
+        for membership in fake.memberships
+    )
+
+
 async def test_dry_run_plans_without_writing() -> None:
     fake = make_fake()
     config = make_config()

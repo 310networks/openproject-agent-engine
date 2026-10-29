@@ -42,8 +42,8 @@ cycle, or back the run with a real branch/PR when testing live.
       (the admin token owner is skipped).
 - [ ] `check-config` resolves every status, user, project, type, role and
       `AGENT` option.
-- [ ] `provision --apply` creates the five users and memberships; a second
-      run makes no changes.
+- [ ] `provision --apply` creates the five users and the four agent
+      memberships; a second run makes no changes.
 - [ ] `dry-run` logs a plausible plan and writes nothing.
 - [ ] A `New` ticket with `AGENT=FRONTEND`: `once` claims it
       (`In Progress`), the agent pushes `op-<project>-<wp>`, and the ticket
