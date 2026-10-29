@@ -55,11 +55,25 @@ fi
 if [[ -z "$ENGINE_BIN" ]]; then
     ENGINE_BIN="$(command -v op-agent-engine || true)"
 fi
-if [[ -z "$ENGINE_BIN" ]]; then
-    die "op-agent-engine is not installed; nothing to uninstall"
+# Use the installed command when it knows about 'uninstall'. Otherwise fall
+# back to the checkout, so an older tool install can still be removed.
+RUNNER=()
+if [[ -n "$ENGINE_BIN" ]] && "$ENGINE_BIN" uninstall --help >/dev/null 2>&1; then
+    RUNNER=("$ENGINE_BIN")
+elif [[ -x "$ROOT_DIR/.venv/bin/python" ]] && \
+     "$ROOT_DIR/.venv/bin/python" -m op_agent_engine uninstall --help >/dev/null 2>&1; then
+    printf '%s\n' "note: installed op-agent-engine is stale; using the checkout" >&2
+    RUNNER=("$ROOT_DIR/.venv/bin/python" -m op_agent_engine)
+elif [[ -n "$UV_BIN" ]] && \
+     "$UV_BIN" run --quiet --project "$ROOT_DIR" python -m op_agent_engine uninstall --help >/dev/null 2>&1; then
+    printf '%s\n' "note: installed op-agent-engine is stale; using the checkout via uv" >&2
+    RUNNER=("$UV_BIN" run --quiet --project "$ROOT_DIR" python -m op_agent_engine)
 fi
-if ! "$ENGINE_BIN" uninstall --help >/dev/null 2>&1; then
-    die "the selected op-agent-engine ($ENGINE_BIN) is too old to uninstall"
+if [[ ${#RUNNER[@]} -eq 0 ]]; then
+    if [[ -z "$ENGINE_BIN" ]]; then
+        die "op-agent-engine is not installed and the checkout cannot run it"
+    fi
+    die "op-agent-engine at $ENGINE_BIN is older than this checkout; run 'uv tool install --force .' and retry"
 fi
 
 APPLY_EXPLICIT=0
@@ -96,7 +110,7 @@ printf '\n%s\n' "${BOLD}${CYAN}OpenProject Agent Engine uninstall${RESET}"
 printf '%s\n' "${BOLD}-----------------------------------${RESET}"
 
 set +e
-"$ENGINE_BIN" uninstall --source-dir "$ROOT_DIR" "${ARGS[@]}"
+"${RUNNER[@]}" uninstall --source-dir "$ROOT_DIR" "${ARGS[@]}"
 STATUS=$?
 set -e
 
