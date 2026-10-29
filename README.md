@@ -43,10 +43,11 @@ chmod 600 ./engine.env
 
 `install.sh` is an interactive installer. It plays a short robot intro,
 installs the package with `uv`, copies your two files into
-`~/.config/op-agent-engine/`, provisions the OpenProject users, then prompts
-for one API token per account (engine plus each agent), verifies each token,
-installs the systemd service and runs a dry poll. Tokens are written to both
-`engine.env` files with mode `600` and are never printed.
+`~/.config/op-agent-engine/`, provisions the OpenProject users, prints each
+new user's generated password, then prompts for that user's API token one at
+a time, verifies each token, installs the systemd service and runs a dry
+poll. Passwords are shown once; tokens are written to both `engine.env` files
+with mode `600` and are never printed.
 
 The service starts immediately and autostarts on boot. Follow it with
 `journalctl -u op-agent-engine -f`.

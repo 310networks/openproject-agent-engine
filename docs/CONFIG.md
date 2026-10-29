@@ -91,4 +91,6 @@ Field notes:
 | `cleanup` | remove run dirs older than the retention period (`--days`, `--json`) |
 
 `--config` and `--log-level` work before or after the subcommand.
-`check-config` never prints token values.
+`check-config` never prints token values. `provision --json` includes the
+generated passwords for users it created (so the installer can display them
+one at a time); treat that output as secret.

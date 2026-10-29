@@ -7,14 +7,15 @@ account, verifies every token through ``/api/v3/users/me``, and then runs the
 configuration check, the systemd installation and a dry run.
 
 Terminal I/O is isolated in small wrappers (``_prompt``, ``_secret_prompt``,
-``_run_command`` and ``_verify_token``) so the orchestration is testable without
-a TTY or a live OpenProject instance.
+``_run_capture`` and ``_verify_token``) so the orchestration is testable
+without a TTY or a live OpenProject instance.
 """
 
 from __future__ import annotations
 
 import asyncio
 import getpass
+import json
 import os
 import re
 import subprocess
@@ -99,6 +100,13 @@ class UI:
     def error(self, text: str) -> None:
         self._write(self._style("31", f"    error: {text}"))
 
+    def credential(self, label: str, login: str, password: str) -> None:
+        self._write(
+            self._style(
+                "1;33", f"    {label}: login {login} / password {password}"
+            )
+        )
+
 
 # ---------------------------------------------------------------------------
 # Injectable terminal and process helpers
@@ -113,21 +121,23 @@ def _secret_prompt(text: str) -> str:
     return getpass.getpass(text)
 
 
-def _run_command(
+def _run_capture(
     command: Sequence[str], *, env: Mapping[str, str], cwd: Path
-) -> int:
+) -> tuple[int, str, str]:
     try:
         completed = subprocess.run(
             list(command),
             env=dict(env),
             cwd=cwd,
             check=False,
+            capture_output=True,
+            text=True,
         )
     except OSError as error:
         raise SetupError(
             f"cannot run {' '.join(command)}: {error}"
         ) from error
-    return completed.returncode
+    return completed.returncode, completed.stdout or "", completed.stderr or ""
 
 
 def _verify_token(
@@ -383,19 +393,87 @@ def _engine_command() -> list[str]:
     return [sys.executable, "-m", "op_agent_engine"]
 
 
-def _run_checked(
+def _failure_detail(stdout: str, stderr: str) -> str:
+    detail = stderr.strip() or stdout.strip()
+    return f"\n{detail}" if detail else ""
+
+
+def _provision_failure_detail(stdout: str, stderr: str) -> str:
+    """Describe a failed provision without echoing generated passwords."""
+    try:
+        payload = json.loads(stdout)
+    except json.JSONDecodeError:
+        return _failure_detail("", stderr)
+    if not isinstance(payload, dict):
+        return _failure_detail("", stderr)
+    parts: list[str] = []
+    errors = payload.get("errors")
+    if isinstance(errors, list):
+        parts.extend(str(error) for error in errors)
+    missing = payload.get("missing_roles")
+    if isinstance(missing, list) and missing:
+        parts.append("missing roles: " + ", ".join(str(role) for role in missing))
+    return ("\n" + "\n".join(parts)) if parts else _failure_detail("", stderr)
+
+
+def _run_captured(
     args: Sequence[str],
     *,
     env: Mapping[str, str],
     cwd: Path,
     ui: UI,
     purpose: str,
-) -> None:
+) -> tuple[str, str]:
     command = [*_engine_command(), *args]
-    ui.info("$ " + " ".join(command))
-    code = _run_command(command, env=env, cwd=cwd)
+    code, stdout, stderr = _run_capture(command, env=env, cwd=cwd)
     if code != 0:
-        raise SetupError(f"{purpose} failed with exit code {code}")
+        raise SetupError(
+            f"{purpose} failed with exit code {code}"
+            + _failure_detail(stdout, stderr)
+        )
+    return stdout, stderr
+
+
+def _provision_users(
+    *,
+    env: Mapping[str, str],
+    cwd: Path,
+    config_path: Path,
+    ui: UI,
+) -> dict[str, str]:
+    command = [
+        *_engine_command(),
+        "provision",
+        "--apply",
+        "--json",
+        "--log-level",
+        "CRITICAL",
+        "--config",
+        str(config_path),
+    ]
+    code, stdout, stderr = _run_capture(command, env=env, cwd=cwd)
+    if code != 0:
+        raise SetupError(
+            "op-agent-engine provision --apply failed with exit code "
+            f"{code}{_provision_failure_detail(stdout, stderr)}"
+        )
+    try:
+        payload = json.loads(stdout)
+    except json.JSONDecodeError as error:
+        raise SetupError(f"provision returned invalid JSON: {error}") from error
+    if not isinstance(payload, dict):
+        raise SetupError("provision returned an unexpected JSON payload")
+    writes = payload.get("writes")
+    if isinstance(writes, int):
+        ui.ok(f"provisioned {writes} change(s)")
+    passwords = payload.get("passwords")
+    if not isinstance(passwords, dict):
+        return {}
+    return {
+        str(login): str(password)
+        for login, password in passwords.items()
+        if isinstance(password, str)
+    }
 
 
 def run_setup(
@@ -456,8 +534,7 @@ def _run_setup(
     base_url = _require_provisioning_values(file_env)
 
     ui.title("OpenProject Agent Engine")
-    ui.info(f"checkout: {source_dir}")
-    ui.info(f"config:   {config_dir}")
+    ui.info(f"config: {config_dir}")
 
     # 1. Install the operator-edited files and scaffold the config directory.
     # Copy first so ``init`` sees existing files and keeps them; this avoids
@@ -474,7 +551,7 @@ def _run_setup(
         raise SetupError("; ".join(report.errors))
 
     init_env = _build_env(file_env, config_dir)
-    _run_checked(
+    _run_captured(
         ["init", "--config-dir", str(config_dir)],
         env=init_env,
         cwd=source_dir,
@@ -488,28 +565,33 @@ def _run_setup(
     # 2. Provision users and memberships.
     ui.step(2, "Provisioning OpenProject users and memberships")
     provision_env = _provision_env(file_env, config_dir, requests)
-    _run_checked(
-        [
-            "provision",
-            "--apply",
-            "--config",
-            str(config_dir / "workflow.yaml"),
-        ],
+    passwords = _provision_users(
         env=provision_env,
         cwd=source_dir,
+        config_path=config_dir / "workflow.yaml",
         ui=ui,
-        purpose="op-agent-engine provision --apply",
     )
 
     # 3. Collect one API token per account.
     ui.step(3, "Collecting OpenProject API tokens")
-    ui.info("Create one token per user in the OpenProject UI:")
-    ui.info("Administration -> Users -> [user] -> API tokens")
-    ui.info("The values are hidden while you type and are never printed.")
+    if passwords:
+        ui.info(
+            "Admins cannot mint tokens for other users. Log in as each user "
+            "(My account -> Access tokens)."
+        )
     updates: dict[str, str] = {}
     for request in requests:
+        existing = file_env.get(request.env_var)
+        password = passwords.get(request.login)
+        if password:
+            ui.credential(request.label, request.login, password)
+        elif not _usable(existing):
+            ui.warn(
+                f"{request.label}: user already exists; reset its password "
+                "in OpenProject if you need to log in"
+            )
         updates[request.env_var] = _prompt_token(
-            request, file_env.get(request.env_var), base_url, ui
+            request, existing, base_url, ui
         )
 
     install.update_env_file(config_env_path, updates)
@@ -521,13 +603,14 @@ def _run_setup(
     # 4. Validate the complete configuration against the live instance.
     ui.step(4, "Validating the configuration")
     verify_env = _build_env(file_env, config_dir)
-    _run_checked(
+    _run_captured(
         ["check-config", "--config", str(config_dir / "workflow.yaml")],
         env=verify_env,
         cwd=source_dir,
         ui=ui,
         purpose="op-agent-engine check-config",
     )
+    ui.ok("configuration verified")
 
     # 5. Install the systemd service.
     ui.step(5, "Installing the systemd service")
@@ -538,25 +621,27 @@ def _run_setup(
         default=True,
         assume_yes=assume_yes,
     ):
-        _run_checked(
+        _run_captured(
             ["install-service", "--apply"],
             env=verify_env,
             cwd=source_dir,
             ui=ui,
             purpose="op-agent-engine install-service --apply",
         )
+        ui.ok("service installed and enabled")
     else:
         ui.info("skipped; run: op-agent-engine install-service --apply")
 
     # 6. One poll, without writing anything.
     ui.step(6, "Running a dry poll")
-    _run_checked(
+    _run_captured(
         ["dry-run", "--config", str(config_dir / "workflow.yaml")],
         env=verify_env,
         cwd=source_dir,
         ui=ui,
         purpose="op-agent-engine dry-run",
     )
+    ui.ok("dry run completed")
 
     ui.title("Installation complete")
     ui.info("Follow the service with: journalctl -u op-agent-engine -f")

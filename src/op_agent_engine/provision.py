@@ -10,9 +10,8 @@ Verified API constraints (docs/VERIFICATION.md items 9-11):
 * ``GET /api/v3/roles`` lists roles but the roles endpoint is read-only; a
   role cannot be created through the API. ``provision`` therefore requires the
   configured roles to exist and reports a specific error when one is missing.
-* Role permissions are not exposed by the API, so permission drift cannot be
-  checked mechanically. ``provision`` and ``check-config`` print a manual
-  verification note instead of claiming to have validated the permissions.
+* Role permissions are not exposed by the API; the administrator is assumed
+  to have created the roles with the required permissions.
 * Users are created with ``POST /api/v3/users`` (administrator or
   ``manage_user``); memberships with ``POST /api/v3/memberships`` and updated
   with ``PATCH /api/v3/memberships/{id}``.
@@ -41,11 +40,6 @@ from op_agent_engine.openproject.client import (
 )
 
 TOKEN_ENV_PREFIX = "OP_TOKEN_"
-ROLE_PERMISSION_NOTE = (
-    "OpenProject does not expose role permissions through the API: verify the "
-    "configured roles manually (work package view/comment for agents; view, "
-    "edit, comment and the workflow transitions for the engine role)"
-)
 
 
 class ProvisioningError(OpenProjectError):
@@ -115,6 +109,10 @@ class ProvisionReport:
     errors: list[str] = field(default_factory=list)
     missing_roles: list[str] = field(default_factory=list)
     tokens: TokenReport = field(default_factory=TokenReport)
+    # Passwords generated for users created by this run, keyed by login. They
+    # are surfaced to the installer so the operator can log in and mint the
+    # user's API token; they never appear in ``summary()`` or logs.
+    generated_passwords: dict[str, str] = field(default_factory=dict)
 
     @property
     def ok(self) -> bool:
@@ -177,6 +175,7 @@ class ProvisionReport:
             "missing_roles": list(self.missing_roles),
             "errors": list(self.errors),
             "warnings": list(self.warnings),
+            "passwords": dict(self.generated_passwords),
             "tokens": [
                 {
                     "agent": status.agent_key,
@@ -278,8 +277,6 @@ async def provision_workflow(
                 + ". Create them in the OpenProject UI (the roles API is read-only)."
             )
 
-    report.warnings.append(ROLE_PERMISSION_NOTE)
-
     project_ids = await _resolve_project_ids(client, config)
     users = await _reconcile_users(client, config, report, apply=apply)
 
@@ -327,8 +324,6 @@ async def audit_workflow(
             + ", ".join(missing_roles)
             + "; the roles API is read-only, so create them manually"
         )
-    report.warnings.append(ROLE_PERMISSION_NOTE)
-
     project_ids = await _resolve_project_ids(client, config)
     users = await _reconcile_users(client, config, report, apply=False)
     if not missing_roles:
@@ -441,7 +436,10 @@ async def _reconcile_users(
     for login, display_name, email in targets:
         existing = await _find_user(client, login)
         if existing is None:
-            payload = _create_user_payload(login, display_name, email)
+            password = _generate_password()
+            payload = _create_user_payload(
+                login, display_name, email, password=password
+            )
             if apply:
                 created = await client.post_json("/api/v3/users", json_body=payload)
                 if not isinstance(created, dict) or not isinstance(
@@ -451,6 +449,7 @@ async def _reconcile_users(
                         f"OpenProject did not return the created user for '{login}'"
                     )
                 users[login] = created
+                report.generated_passwords[login] = password
                 report.add(
                     "create_user",
                     login,
@@ -505,10 +504,10 @@ async def _reconcile_users(
 def _generate_password() -> str:
     """Generate a random password satisfying the instance password policy.
 
-    The password is discarded after user creation (the user authenticates
-    with an API token), but OpenProject requires at least one lowercase,
-    one uppercase, one numeric and one special character, and
-    ``secrets.token_urlsafe()`` does not guarantee that.
+    OpenProject requires at least one lowercase, one uppercase, one numeric
+    and one special character; ``secrets.token_urlsafe()`` does not guarantee
+    that. The installer surfaces generated passwords so the operator can log
+    in as each user and mint its API token.
     """
     special = "!%*+=?"
     required = (
@@ -523,11 +522,17 @@ def _generate_password() -> str:
     return "".join(chars)
 
 
-def _create_user_payload(login: str, display_name: str, email: str) -> dict[str, Any]:
+def _create_user_payload(
+    login: str,
+    display_name: str,
+    email: str,
+    *,
+    password: str | None = None,
+) -> dict[str, Any]:
     first_name, last_name = _split_name(display_name)
-    # The password is generated only because OpenProject requires one for an
-    # active user; tokens are minted separately in the UI. It is never logged
-    # or written to the report.
+    # OpenProject requires a password for an active user; tokens are minted
+    # separately in the UI. The generated password is returned to the installer
+    # in ProvisionReport.generated_passwords, never in logs or summary().
     return {
         "login": login,
         "email": email,
@@ -536,7 +541,7 @@ def _create_user_payload(login: str, display_name: str, email: str) -> dict[str,
         "admin": False,
         "status": "active",
         "language": "en",
-        "password": _generate_password(),
+        "password": password or _generate_password(),
     }
 
 

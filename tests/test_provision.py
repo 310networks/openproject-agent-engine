@@ -176,6 +176,12 @@ async def test_apply_creates_five_users_and_scoped_memberships_idempotently() ->
         "agent-engine",
     }
     assert len(fake.memberships) == 5
+    assert set(report.generated_passwords) == created_logins
+    assert all(len(password) >= 36 for password in report.generated_passwords.values())
+    assert all(
+        password not in "\n".join(report.summary())
+        for password in report.generated_passwords.values()
+    )
     engine_id = next(
         user["id"] for user in fake.users if user["login"] == "agent-engine"
     )
@@ -218,6 +224,7 @@ async def test_apply_creates_five_users_and_scoped_memberships_idempotently() ->
     finally:
         await client.aclose()
     assert second.actions == []
+    assert second.generated_passwords == {}
     assert second.writes == 0
     assert all(request.method == "GET" for request in fake.requests[before:])
     assert len(fake.users) == 5

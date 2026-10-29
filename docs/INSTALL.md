@@ -35,9 +35,11 @@ installer collects them later.
    existing files;
 4. runs `op-agent-engine provision --apply` to create the engine and agent
    users;
-5. prompts for one API token per account — the `agent-engine` runtime token
-   and one token for each agent in `workflow.yaml` — and verifies each token
-   through `/api/v3/users/me`;
+5. prints each newly created user's generated password, then prompts for
+   that user's API token one at a time — the `agent-engine` runtime token and
+   one per agent in `workflow.yaml` — verifying each through
+   `/api/v3/users/me`; log in as the user and create the token under
+   **My account → Access tokens**;
 6. runs `op-agent-engine check-config`, installs the systemd service
    (`install-service --apply`, sudo), and finishes with a read-only
    `op-agent-engine dry-run`.

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import json
 from pathlib import Path
 from typing import Any
 
@@ -130,12 +131,22 @@ def test_run_setup_happy_path(
     commands: list[list[str]] = []
     environments: list[dict[str, str]] = []
 
-    def fake_run(
+    def fake_capture(
         command: list[str], *, env: dict[str, str], cwd: Path
-    ) -> int:
+    ) -> tuple[int, str, str]:
         commands.append(command)
         environments.append(env)
-        return 0
+        if "provision" in command:
+            return 0, json.dumps(
+                {
+                    "writes": 5,
+                    "passwords": {
+                        "agent-engine": "engine-password",
+                        "frontendEngineer": "frontend-password",
+                    },
+                }
+            ), ""
+        return 0, "", ""
 
     answers = iter(["engine-secret", "frontend-secret"])
     queried: list[tuple[str, str, str]] = []
@@ -149,7 +160,7 @@ def test_run_setup_happy_path(
         queried.append((base_url, token, expected_login))
         return True, f"verified as {expected_login}"
 
-    monkeypatch.setattr(wizard, "_run_command", fake_run)
+    monkeypatch.setattr(wizard, "_run_capture", fake_capture)
     monkeypatch.setattr(wizard, "_secret_prompt", fake_secret)
     monkeypatch.setattr(wizard, "_verify_token", fake_verify)
 
@@ -164,8 +175,12 @@ def test_run_setup_happy_path(
 
     assert code == 0
     assert [command[3] for command in commands] == ["init", "provision", "check-config", "dry-run"]
-    assert "engine-secret" not in output.getvalue()
-    assert "frontend-secret" not in output.getvalue()
+    text_output = output.getvalue()
+    assert "engine-secret" not in text_output
+    assert "frontend-secret" not in text_output
+    assert "engine-password" in text_output
+    assert "frontend-password" in text_output
+    assert text_output.index("engine-password") < text_output.index("frontend-password")
     assert [entry[1] for entry in queried] == ["engine-secret", "frontend-secret"]
 
     provision_env = environments[1]
@@ -177,6 +192,8 @@ def test_run_setup_happy_path(
         assert "OP_ENGINE_TOKEN=engine-secret" in text
         assert "OP_TOKEN_FRONTEND=frontend-secret" in text
         assert "OP_PROVISION_TOKEN=admin-secret-token" in text
+        assert "engine-password" not in text
+        assert "frontend-password" not in text
         assert path.stat().st_mode & 0o777 == 0o600
 
     assert (config_dir / "workflow.yaml").is_file()
@@ -199,13 +216,13 @@ def test_run_setup_rejects_placeholder_admin_token(
     )
     commands: list[list[str]] = []
 
-    def fake_run(
+    def fake_capture(
         command: list[str], *, env: dict[str, str], cwd: Path
-    ) -> int:
+    ) -> tuple[int, str, str]:
         commands.append(command)
-        return 0
+        return 0, "", ""
 
-    monkeypatch.setattr(wizard, "_run_command", fake_run)
+    monkeypatch.setattr(wizard, "_run_capture", fake_capture)
 
     code = run_setup(
         source_dir=source,
@@ -264,3 +281,25 @@ def test_cli_setup_delegates(
         "skip_service": True,
         "assume_yes": True,
     }
+
+
+def test_provision_failure_detail_does_not_expose_passwords() -> None:
+    payload = json.dumps(
+        {
+            "errors": ["missing role"],
+            "missing_roles": ["Agent Worker"],
+            "passwords": {"frontendEngineer": "super-secret-password"},
+        }
+    )
+
+    detail = wizard._provision_failure_detail(payload, "")
+
+    assert "missing role" in detail
+    assert "Agent Worker" in detail
+    assert "super-secret-password" not in detail
+
+
+def test_provision_failure_detail_uses_stderr_without_json() -> None:
+    detail = wizard._provision_failure_detail("", "connection refused")
+
+    assert "connection refused" in detail

@@ -71,15 +71,16 @@ Only an admin token is needed before this step: set `OP_BASE_URL` and
 deletes, deactivates or renames logins, and it exits successfully while the
 agent tokens are still placeholders — it just lists the variables to fill in.
 
-The users' passwords are randomly generated and never shown, so mint their
-API tokens as an administrator: **Administration → Users → [user] → API
-tokens** (one per user).
+The users' passwords are randomly generated. Administrators cannot mint API
+tokens for other users, so log in as each user and create the token under
+**My account → Access tokens**.
 
-The interactive installer (`./install.sh`, or `op-agent-engine setup`) pauses
-here and asks for each token one at a time — the `agent-engine` runtime token
-plus one per agent — verifies it against `/api/v3/users/me`, and writes it to
-`engine.env` (mode `600`). If you install manually, put the values in
-`engine.env` yourself:
+The interactive installer (`./install.sh`, or `op-agent-engine setup`) prints
+each generated password, asks for that user's token one at a time — the
+`agent-engine` runtime token plus one per agent — verifies it against
+`/api/v3/users/me`, and writes it to `engine.env` (mode `600`). If you install
+manually, use `op-agent-engine provision --json` to obtain the generated
+passwords, then put the token values in `engine.env` yourself:
 
 | Variable | Owner |
 |---|---|
