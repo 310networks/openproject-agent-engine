@@ -28,11 +28,27 @@ Enable `Task`, `Bug`, `Feature` in the project (or set
 
 ## 3. The `AGENT` custom field
 
-**Administration → Custom fields → Work packages → New → List.** Name it
-`AGENT`, add one option per agent key in `workflow.yaml` (default:
-`FRONTEND`, `BACKEND`, `LEAD_DESIGNER`, `REVIEWER`), enable it for the
-eligible types and the monitored projects. `REVIEWER` is never used for
-routing but must exist: startup resolves one option per agent key.
+The engine reads each work package's agent from a work-package custom field
+named `AGENT` (configurable as `openproject.agent_field`). It must be a
+single-select **List** field whose option titles match the `agents` keys in
+`workflow.yaml`.
+
+1. **Administration → Custom fields → Work packages → New custom field**.
+2. **Name**: `AGENT`. **Format**: **List** (single value, not multi-select).
+3. Add one option per agent key — default `FRONTEND`, `BACKEND`,
+   `LEAD_DESIGNER`, `REVIEWER`. The titles are case-sensitive and must match
+   the config keys exactly. Save.
+4. Open the field's **Settings** tab and enable it for:
+   - the eligible types (`Task`, `Bug`, `Feature` by default), and
+   - the monitored project(s) (or all projects).
+
+   `AGENT` must be enabled for every eligible type/project pair, otherwise
+   startup fails with `custom field 'AGENT' not found in schema
+   <project>-<type>`. `REVIEWER` is never used for routing but must exist as
+   an option: startup resolves one option per agent key.
+5. Verify with `op-agent-engine check-config`; it should resolve the field to
+   a `customField<N>` id and list one option id per agent. The installer runs
+   this check as step 4.
 
 ## 4. Roles
 
