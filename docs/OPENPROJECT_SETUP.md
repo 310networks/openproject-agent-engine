@@ -62,6 +62,13 @@ Create exactly two project roles — **Administration → Users and permissions
   role*; keep the project role as-is. Changing the role takes effect
   immediately; the token does not need to be regenerated.
 
+  A simpler but broader alternative is to make `agent-engine` an
+  **administrator** (*Administration → Users → agent-engine → Administrator*).
+  That satisfies `manage_user` without a global role, and `provision` can
+  then fall back to `OP_ENGINE_TOKEN` instead of a separate
+  `OP_PROVISION_TOKEN`. It also gives the long-running service full instance
+  administration, so prefer the global permission on a shared instance.
+
 ## 5. Workflow transitions
 
 **Administration → Workflows.** For each eligible type and the **Agent
