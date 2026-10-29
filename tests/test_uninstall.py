@@ -342,3 +342,22 @@ def test_cli_uninstall_delegates(
         apply=True,
         assume_yes=True,
     )
+
+
+async def test_remove_users_is_idempotent_for_locked_accounts() -> None:
+    fake = make_fake()
+    for user in fake.users:
+        if user["login"] != "admin":
+            user["status"] = "locked"
+    client = client_for(fake)
+    try:
+        report = await remove_openproject_users(client, make_config(), apply=True)
+    finally:
+        await client.aclose()
+
+    assert report.ok
+    assert {action.action for action in report.actions} == {"already-locked"}
+    assert len(fake.memberships) == 3
+    assert all(
+        request.method == "GET" for request in fake.requests
+    )

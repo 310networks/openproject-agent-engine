@@ -221,6 +221,11 @@ async def remove_openproject_users(
         if not isinstance(user_id, int):
             report.errors.append(f"{login}: user has no integer id")
             continue
+        if user.get("status") == "locked":
+            report.actions.append(
+                UserAction(login, "already-locked", f"id {user_id}")
+            )
+            continue
         if not apply:
             report.actions.append(UserAction(login, "would-delete", f"id {user_id}"))
             continue
@@ -235,7 +240,7 @@ async def remove_openproject_users(
             except OpenProjectNotFoundError:
                 continue
             except OpenProjectError as error:
-                report.errors.append(
+                report.warnings.append(
                     f"{login}: membership cleanup failed: {error}"
                 )
 
@@ -486,7 +491,18 @@ def _run_uninstall(options: UninstallOptions, ui: UI) -> int:
         if report.errors:
             ui.error("OpenProject cleanup failed; local configuration was kept")
             return UNINSTALL_ERROR_EXIT
-        ui.ok("OpenProject users removed or locked")
+        locked = [
+            action for action in report.actions if action.action == "locked"
+        ]
+        if locked:
+            ui.warn(
+                "this instance forbids deleting users (HTTP 403); they were "
+                "locked instead"
+            )
+            ui.info(
+                "delete them manually in OpenProject if you need them removed"
+            )
+        ui.ok("OpenProject users deleted, locked or skipped")
 
     remove_service_files(ui)
     workspace_root = None

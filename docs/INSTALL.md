@@ -96,6 +96,12 @@ permits it; if deletion returns HTTP 403 they are locked instead. The token
 owner and any administrator account are never touched. Finally the script
 runs `uv tool uninstall op-agent-engine`.
 
+OpenProject disables user deletion on some instances
+(`users_deletable_by_admin`). In that case the API returns 403 and the script
+locks the accounts. Locked accounts are left in place; enable deletion in the
+OpenProject administration or delete them manually in the UI if they must be
+removed permanently.
+
 Retain specific layers with `--keep-config`, `--keep-data`, `--keep-users`
 or `--keep-tool`. Agent repository clones under
 `WORKSPACE_ROOT/*/repositories` are kept unless `--purge-agent-repos` is
