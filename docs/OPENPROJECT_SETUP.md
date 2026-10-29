@@ -63,13 +63,17 @@ server-side; the engine enforces them client-side either way.
 
 ## 6. Users and tokens
 
-`provision --apply` creates the five users (`frontendEngineer`,
-`backendEngineer`, `leadDesigner`, `codeReviewer`, `agent-engine`) and one
-membership per agent per scoped project. It never deletes, deactivates or
-renames logins.
+Only an admin token is needed before this step: set `OP_BASE_URL` and
+`OP_PROVISION_TOKEN` in `engine.env`, then run
+`op-agent-engine provision --apply`. It creates the five users
+(`frontendEngineer`, `backendEngineer`, `leadDesigner`, `codeReviewer`,
+`agent-engine`) and one membership per agent per scoped project. It never
+deletes, deactivates or renames logins, and it exits successfully while the
+agent tokens are still placeholders — it just lists the variables to fill in.
 
-API tokens cannot be minted through the API: sign in as each user →
-**My account → Access tokens → API**, then put the values in `engine.env`:
+The users' passwords are randomly generated and never shown, so mint their
+API tokens as an administrator: **Administration → Users → [user] → API
+tokens** (one per user). Then put the values in `engine.env`:
 
 | Variable | Owner |
 |---|---|

@@ -33,11 +33,16 @@ and every engine comment starts with `ENGINE:`. Failed runs are retried up to
 git clone <engine-repo> ~/op-agent-engine && cd ~/op-agent-engine
 uv tool install .                        # venv fallback: docs/INSTALL.md
 op-agent-engine init                     # scaffolds ~/.config/op-agent-engine/
-# edit workflow.yaml + engine.env; do the one-time OpenProject setup
-# (docs/OPENPROJECT_SETUP.md) and mint the five API tokens in the UI
+# edit workflow.yaml (project, repo, statuses); in engine.env set OP_BASE_URL
+# and OP_PROVISION_TOKEN (an admin token) — agent tokens come later
+# one-time OpenProject setup: docs/OPENPROJECT_SETUP.md (statuses, AGENT
+# field, roles, workflows)
 set -a; . ~/.config/op-agent-engine/engine.env; set +a
+op-agent-engine provision --apply        # creates the five users; lists the
+                                         # token variables still to fill in
+# mint one API token per user (as admin: Administration → Users → user →
+# API tokens) and put the values in engine.env
 op-agent-engine check-config
-op-agent-engine provision --apply
 op-agent-engine install-service --apply  # installs + enables the systemd service (sudo)
 op-agent-engine dry-run                  # logs the dispatch plan, writes nothing
 ```

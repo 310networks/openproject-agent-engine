@@ -579,14 +579,17 @@ def _init(config_dir: Path) -> int:
     env_file = config_dir / "engine.env"
     print(
         "Next steps:\n"
-        f"  1. Edit {config_dir / 'workflow.yaml'} (project, repo, status names)\n"
-        f"     and {env_file} (URLs, tokens).\n"
+        f"  1. Edit {config_dir / 'workflow.yaml'} (project, repo, status names);\n"
+        f"     in {env_file} set OP_BASE_URL and OP_PROVISION_TOKEN (an admin\n"
+        "     token) — the agent tokens come after provisioning.\n"
         "  2. One-time OpenProject setup: docs/OPENPROJECT_SETUP.md\n"
-        "     (statuses, AGENT field, roles, workflows, tokens).\n"
+        "     (statuses, AGENT field, roles, workflows).\n"
         f"  3. set -a; . {env_file}; set +a\n"
-        "     op-agent-engine check-config\n"
-        "     op-agent-engine provision --apply\n"
-        "  4. op-agent-engine install-service --apply\n"
+        "     op-agent-engine provision --apply   # creates the five users\n"
+        "  4. Mint one API token per user (Administration → Users → user →\n"
+        "     API tokens) and put the values in engine.env.\n"
+        "  5. op-agent-engine check-config\n"
+        "     op-agent-engine install-service --apply\n"
         "     op-agent-engine dry-run"
     )
     return OK_EXIT
