@@ -1,6 +1,6 @@
-"""Outcome verification for implementer and reviewer runs (PLAN section 4).
+"""Outcome verification for implementer, fix and reviewer runs (PLAN section 4).
 
-Implement and fix runs (fix is M6):
+Implement and fix runs (M6):
 
 * ``RESULT: BLOCKED <reason>`` -> blocked: the work package moves to On
   Hold and the reason is posted as an engine comment.
@@ -15,12 +15,18 @@ Review runs (M5):
 
 * A merged PR is authoritative: approved, the work package moves to Closed.
 * ``RESULT: REJECTED`` **and** a comment by the reviewer user posted since the
-  run started -> rejected: the work package moves to Rejected. The reviewer
-  wrote the comment, so the engine does not duplicate it.
+  run started -> rejected: the work package moves to Rejected (unless the
+  rejection cap is exceeded, see M6 below). The reviewer wrote the comment,
+  so the engine does not duplicate it.
 * ``RESULT: REJECTED`` without such a comment -> failure (the rejection is not
   verifiable), so it counts as a crash retry.
 * Anything else (non-zero exit, timeout, no merged PR) -> failure, crash
   retry; the work package stays In Testing for a later review run.
+
+Rejection loop (M6): the rejection count is read from the work package
+history (status changes to Rejected). When the next rejection would exceed
+``MAX_REJECTIONS`` the work package moves to On Hold and the engine posts a
+comment summarising the cap instead of applying ``Rejected``.
 """
 
 from __future__ import annotations
@@ -186,6 +192,21 @@ def no_pr_comment(branch: str) -> str:
 def blocked_comment(reason: str) -> str:
     """Engine comment posted when the agent reports a genuine blocker."""
     return f"ENGINE: blocked\n\n{reason}"
+
+
+def rejection_cap_comment(*, rejection_number: int, max_rejections: int) -> str:
+    """Engine comment posted when a rejection would exceed the cap.
+
+    With ``MAX_REJECTIONS=3`` the third rejection is still applied (the cap is
+    exceeded, not reached); the fourth moves the work package to On Hold so a
+    human can intervene instead of another automatic fix pass.
+    """
+    return (
+        "ENGINE: rejection cap reached\n\n"
+        f"This review would be rejection {rejection_number} of the ticket, "
+        f"which exceeds MAX_REJECTIONS={max_rejections}. Putting the ticket on "
+        "hold for a human instead of starting another fix pass."
+    )
 
 
 def escalation_comment(

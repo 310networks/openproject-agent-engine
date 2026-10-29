@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -179,6 +179,14 @@ async def make_dispatcher(
         "pr={{ pr.url }} review={{ review_number }} agent={{ agent.name }} "
         "repo={{ repo.github }} desc={{ wp.description }}"
     ),
+    fix_template: str = (
+        "FIXPROMPT subject={{ wp.subject }} attempt={{ attempt }} "
+        "of {{ max_rejections }} branch={{ branch }} repo={{ repo.github }} "
+        "agent={{ agent.name }} feedback={{ feedback.author }}|"
+        "{{ feedback.created_at }}|{{ feedback.text }} "
+        "human={% for c in later_human_comments %}"
+        "[{{ c.author }}|{{ c.created_at }}|{{ c.text }}]{% endfor %}"
+    ),
 ) -> tuple[Dispatcher, FakeOpenProject, Store, OpenProjectClient, EngineSettings]:
     if fake is None:
         fake = make_fake(
@@ -225,6 +233,7 @@ async def make_dispatcher(
     prompts_dir.mkdir()
     (prompts_dir / "implement.txt.j2").write_text(prompts_template, encoding="utf-8")
     (prompts_dir / "review.txt.j2").write_text(review_template, encoding="utf-8")
+    (prompts_dir / "fix.txt.j2").write_text(fix_template, encoding="utf-8")
 
     dispatcher = Dispatcher(
         config=config,
@@ -254,6 +263,14 @@ def make_review_item(work_package_id: int) -> DispatchItem:
         work_package=work_package,
         agent_key="REVIEWER",
         status_key="ready_for_review",
+    )
+
+
+def make_fix_item(work_package_id: int) -> DispatchItem:
+    entry = wp(work_package_id, status=STATUS_IN_PROGRESS, agent=11)
+    work_package = parse_work_package(entry, "customField3", OPTION_ID_TO_VALUE)
+    return DispatchItem(
+        work_package=work_package, agent_key="IMPL", status_key="rejected"
     )
 
 
@@ -553,25 +570,42 @@ async def test_crash_cap_escalates_to_on_hold(
         store.close()
 
 
-# -- not executed yet / dry run ---------------------------------------------------
+# -- fix runs (M6) and dry run ----------------------------------------------------
 
 
-async def test_fix_kind_is_claimed_but_not_executed(
+async def test_fix_kind_is_executed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     runner = FakeRunner(make_result(tmp_path))
+    fake = make_fake(
+        work_packages=[wp(100, status=STATUS_IN_PROGRESS, agent=11)],
+        priorities=PRIORITIES,
+        activities=[
+            activity_comment(100, "Please fix the failing test.", author_id=REVIEWER_USER_ID),
+            status_change(100, "Rejected"),
+        ],
+    )
     dispatcher, _fake, store, client, _ = await make_dispatcher(
-        tmp_path, monkeypatch, runner=runner
+        tmp_path, monkeypatch, runner=runner, gh=FakeGitHub(pr=PR), fake=fake
     )
     try:
-        claimed = claim(store, make_item(100), kind="fix")
+        claimed = claim(store, make_fix_item(100), kind="fix")
         await dispatcher.execute(claimed)
 
-        # The run stays active; the runner was never called.
         run = store.get_run(1)
         assert run is not None
-        assert run.state == RUNNING
-        assert runner.requests == []
+        assert run.state == SUCCEEDED
+        assert run.outcome == "ready_for_review"
+        assert run.kind == "fix"
+        # The fix pass number equals the rejection count in the history.
+        assert run.attempt == 1
+
+        prompt = (store.runs_dir / "1" / "prompt.txt").read_text()
+        assert "FIXPROMPT" in prompt
+        assert "attempt=1 of 3" in prompt
+        assert "Please fix the failing test." in prompt
+        assert "(reviewer)" in prompt
+        assert status_href(fake, 100) == f"/api/v3/statuses/{STATUS_READY_FOR_REVIEW}"
     finally:
         await client.aclose()
         store.close()
@@ -830,6 +864,51 @@ MERGED_PR = PullRequest(
 )
 
 
+def activity_comment(
+    work_package_id: int,
+    text: str,
+    *,
+    author_id: int = REVIEWER_USER_ID,
+    created_at: datetime | None = None,
+    activity_id: int | None = None,
+    author_title: str | None = None,
+) -> dict[str, Any]:
+    """A comment activity shaped like the live API (docs/VERIFICATION.md)."""
+    user: dict[str, Any] = {"href": f"/api/v3/users/{author_id}"}
+    if author_title is not None:
+        user["title"] = author_title
+    return {
+        "id": activity_id if activity_id is not None else 900 + work_package_id,
+        "workPackageId": work_package_id,
+        "_type": "Activity::Comment",
+        "comment": {"raw": text},
+        "details": [],
+        "createdAt": (created_at or datetime.now(UTC)).isoformat(),
+        "_links": {"user": user},
+    }
+
+
+def status_change(
+    work_package_id: int,
+    target: str,
+    *,
+    previous: str = "In Testing",
+    activity_id: int | None = None,
+    created_at: datetime | None = None,
+) -> dict[str, Any]:
+    """A status-change activity shaped like the live API."""
+    return {
+        "id": activity_id if activity_id is not None else 800 + work_package_id,
+        "workPackageId": work_package_id,
+        "_type": "Activity",
+        "details": [
+            {"format": "custom", "raw": f"Status changed from {previous} to {target}"}
+        ],
+        "createdAt": (created_at or datetime.now(UTC)).isoformat(),
+        "_links": {"user": {"href": "/api/v3/users/10"}},
+    }
+
+
 def reviewer_comment(
     work_package_id: int,
     text: str = "Rejected: the tests do not cover the new branch.",
@@ -838,15 +917,12 @@ def reviewer_comment(
     created_at: datetime | None = None,
 ) -> dict[str, Any]:
     """An activity entry shaped like the live API (docs/VERIFICATION.md)."""
-    return {
-        "id": 900 + work_package_id,
-        "workPackageId": work_package_id,
-        "_type": "Activity::Comment",
-        "comment": {"raw": text},
-        "details": [],
-        "createdAt": (created_at or datetime.now(UTC)).isoformat(),
-        "_links": {"user": {"href": f"/api/v3/users/{author_id}"}},
-    }
+    return activity_comment(
+        work_package_id,
+        text,
+        author_id=author_id,
+        created_at=created_at,
+    )
 
 
 async def make_review_dispatcher(
@@ -1281,6 +1357,290 @@ async def test_review_dry_run_claim_is_not_executed(
         assert fake.patches == []
         assert fake.comments == []
         assert store.active_run_count() == 0
+    finally:
+        await client.aclose()
+        store.close()
+
+
+# -- rejection loop (M6) -------------------------------------------------------------
+
+
+async def test_fix_pass_uses_latest_reviewer_and_later_human_comments(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Comment selection (PLAN section 10): latest reviewer feedback, later
+    human comments, no other agent or engine comments, at most 5 human ones."""
+    start = datetime(2026, 2, 10, 12, 0, tzinfo=UTC)
+    human_comments = [
+        activity_comment(
+            100,
+            f"human note {index}",
+            author_id=99,
+            created_at=start + timedelta(minutes=10 + index),
+            activity_id=120 + index,
+            author_title="Jane Human",
+        )
+        for index in range(7)
+    ]
+    activities = [
+        status_change(
+            100, "Rejected", activity_id=101, created_at=start - timedelta(days=2)
+        ),
+        activity_comment(
+            100,
+            "old human note before the feedback",
+            author_id=99,
+            created_at=start - timedelta(minutes=5),
+            activity_id=102,
+        ),
+        activity_comment(
+            100,
+            "First review: fix A",
+            created_at=start,
+            activity_id=103,
+        ),
+        activity_comment(
+            100,
+            "agent chatter",
+            author_id=11,
+            created_at=start + timedelta(minutes=1),
+            activity_id=104,
+        ),
+        activity_comment(
+            100,
+            "ENGINE: escalated",
+            author_id=10,
+            created_at=start + timedelta(minutes=2),
+            activity_id=105,
+        ),
+        status_change(
+            100, "Rejected", activity_id=106, created_at=start + timedelta(minutes=3)
+        ),
+        activity_comment(
+            100,
+            "Latest review: fix B",
+            created_at=start + timedelta(minutes=5),
+            activity_id=107,
+        ),
+        *human_comments,
+    ]
+    fake = make_fake(
+        work_packages=[wp(100, status=STATUS_IN_PROGRESS, agent=11)],
+        priorities=PRIORITIES,
+        activities=activities,
+    )
+    runner = FakeRunner(make_result(tmp_path))
+    dispatcher, _fake, store, client, _ = await make_dispatcher(
+        tmp_path, monkeypatch, runner=runner, gh=FakeGitHub(pr=PR), fake=fake
+    )
+    try:
+        claimed = claim(store, make_fix_item(100), kind="fix")
+        await dispatcher.execute(claimed)
+
+        run = store.get_run(1)
+        assert run is not None
+        assert run.state == SUCCEEDED
+        assert run.attempt == 2
+
+        prompt = (store.runs_dir / "1" / "prompt.txt").read_text()
+        assert "attempt=2 of 3" in prompt
+        assert "Latest review: fix B" in prompt
+        assert "Jane Human (human)" in prompt
+        # Only the newest five human comments after the feedback are included.
+        assert "human note 0" not in prompt
+        assert "human note 1" not in prompt
+        for index in range(2, 7):
+            assert f"human note {index}" in prompt
+        # Comments before the feedback, from agents, or from the engine are
+        # excluded.
+        assert "old human note before the feedback" not in prompt
+        assert "First review: fix A" not in prompt
+        assert "agent chatter" not in prompt
+        assert "ENGINE: escalated" not in prompt
+    finally:
+        await client.aclose()
+        store.close()
+
+
+async def test_fix_pass_without_reviewer_feedback_fails_before_the_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = make_fake(
+        work_packages=[wp(100, status=STATUS_IN_PROGRESS, agent=11)],
+        priorities=PRIORITIES,
+        activities=[status_change(100, "Rejected")],
+    )
+    runner = FakeRunner(make_result(tmp_path))
+    dispatcher, _fake, store, client, _ = await make_dispatcher(
+        tmp_path, monkeypatch, runner=runner, gh=FakeGitHub(pr=PR), fake=fake
+    )
+    try:
+        claimed = claim(store, make_fix_item(100), kind="fix")
+        await dispatcher.execute(claimed)
+
+        # The agent is never started; the failure counts as a crash retry.
+        assert runner.requests == []
+        run = store.get_run(1)
+        assert run is not None
+        assert run.state == FAILED
+        assert run.outcome == "fix_feedback_missing"
+        assert store.crash_count(100) == 1
+        assert status_href(fake, 100) == f"/api/v3/statuses/{STATUS_IN_PROGRESS}"
+    finally:
+        await client.aclose()
+        store.close()
+
+
+async def test_fix_pass_without_a_pr_counts_as_crash_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = make_fake(
+        work_packages=[wp(100, status=STATUS_IN_PROGRESS, agent=11)],
+        priorities=PRIORITIES,
+        activities=[activity_comment(100, "Please fix the failing test.")],
+    )
+    runner = FakeRunner(make_result(tmp_path))
+    dispatcher, _fake, store, client, _ = await make_dispatcher(
+        tmp_path, monkeypatch, runner=runner, gh=FakeGitHub(pr=None), fake=fake
+    )
+    try:
+        claimed = claim(store, make_fix_item(100), kind="fix")
+        await dispatcher.execute(claimed)
+
+        run = store.get_run(1)
+        assert run is not None
+        assert run.state == FAILED
+        assert run.outcome == "no_pr"
+        assert store.crash_count(100) == 1
+        assert status_href(fake, 100) == f"/api/v3/statuses/{STATUS_IN_PROGRESS}"
+    finally:
+        await client.aclose()
+        store.close()
+
+
+def rejection_history(count: int) -> list[dict[str, Any]]:
+    start = datetime(2026, 2, 1, 12, 0, tzinfo=UTC)
+    return [
+        status_change(
+            100,
+            "Rejected",
+            activity_id=200 + index,
+            created_at=start + timedelta(days=index),
+        )
+        for index in range(count)
+    ]
+
+
+async def test_third_rejection_is_allowed_with_default_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = make_fake(
+        work_packages=[wp(100, status=STATUS_IN_TESTING, agent=22)],
+        priorities=PRIORITIES,
+        activities=rejection_history(2),
+    )
+
+    def post_reviewer_comment() -> None:
+        fake.activities.append(reviewer_comment(100, "Still failing: fix C"))
+
+    runner = FakeRunner(
+        make_result(tmp_path, result_line="RESULT: REJECTED fix C"),
+        on_run=post_reviewer_comment,
+    )
+    dispatcher, fake, store, client, _ = await make_review_dispatcher(
+        tmp_path, monkeypatch, runner=runner, gh=FakeGitHub(pr=PR), fake=fake
+    )
+    try:
+        claimed = claim(store, make_review_item(100), kind="review")
+        await dispatcher.execute(claimed)
+
+        # Rejection 3 of 3: still applied.
+        run = store.get_run(1)
+        assert run is not None
+        assert run.state == SUCCEEDED
+        assert run.outcome == "rejected"
+        assert status_href(fake, 100) == f"/api/v3/statuses/{STATUS_REJECTED}"
+        # The reviewer wrote the comment; the engine adds none.
+        assert posted_comments(fake, 100) == []
+    finally:
+        await client.aclose()
+        store.close()
+
+
+async def test_fourth_rejection_escalates_to_on_hold(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = make_fake(
+        work_packages=[wp(100, status=STATUS_IN_TESTING, agent=22)],
+        priorities=PRIORITIES,
+        activities=rejection_history(3),
+    )
+
+    def post_reviewer_comment() -> None:
+        fake.activities.append(reviewer_comment(100, "Still failing: fix D"))
+
+    runner = FakeRunner(
+        make_result(tmp_path, result_line="RESULT: REJECTED fix D"),
+        on_run=post_reviewer_comment,
+    )
+    dispatcher, fake, store, client, _ = await make_review_dispatcher(
+        tmp_path, monkeypatch, runner=runner, gh=FakeGitHub(pr=PR), fake=fake
+    )
+    try:
+        claimed = claim(store, make_review_item(100), kind="review")
+        await dispatcher.execute(claimed)
+
+        # Rejection 4 exceeds MAX_REJECTIONS=3: On Hold, not Rejected.
+        run = store.get_run(1)
+        assert run is not None
+        assert run.state == SUCCEEDED
+        assert run.outcome == "rejection_cap_reached"
+        assert status_href(fake, 100) == f"/api/v3/statuses/{STATUS_ON_HOLD}"
+        comments = posted_comments(fake, 100)
+        assert len(comments) == 1
+        assert comments[0].startswith("ENGINE: rejection cap reached")
+        assert "rejection 4" in comments[0]
+        assert "MAX_REJECTIONS=3" in comments[0]
+
+        meta = json.loads((store.runs_dir / "1" / "meta.json").read_text())
+        assert meta["outcome"] == "rejection_cap_reached"
+        assert meta["transition"] == "on_hold"
+    finally:
+        await client.aclose()
+        store.close()
+
+
+async def test_engine_comments_use_the_activities_endpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verified live shape: POST /activities with ``{"comment": {"raw": ...}}``."""
+    runner = FakeRunner(
+        make_result(tmp_path, result_line="RESULT: BLOCKED missing credentials")
+    )
+    dispatcher, fake, store, client, _ = await make_dispatcher(
+        tmp_path, monkeypatch, runner=runner, gh=FakeGitHub(pr=PR)
+    )
+    try:
+        claimed = claim(store, make_item(100))
+        await dispatcher.execute(claimed)
+
+        comment_requests = [
+            request
+            for request in fake.requests
+            if request.method == "POST"
+            and request.url.path == "/api/v3/work_packages/100/activities"
+        ]
+        assert len(comment_requests) == 1
+        body = json.loads(comment_requests[0].content.decode())
+        assert body == {"comment": {"raw": "ENGINE: blocked\n\nmissing credentials"}}
+        # The fake mirrors posted comments into the activity history under the
+        # posting (engine) user.
+        posted = [
+            activity
+            for activity in fake.activities
+            if activity.get("comment", {}).get("raw", "").startswith("ENGINE:")
+        ]
+        assert posted[-1]["_links"]["user"]["href"] == "/api/v3/users/10"
     finally:
         await client.aclose()
         store.close()

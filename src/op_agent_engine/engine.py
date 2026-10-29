@@ -9,8 +9,8 @@ The loop (PLAN section 3):
 3. Resolve the workflow against OpenProject (statuses, users, projects,
    types, agent field).
 4. Repeat until stopped: poll for eligible work packages, schedule (claim)
-   as many as the slot rules allow, and execute each claimed implement (M4)
-   or review (M5) run. Fix runs are claimed but not executed yet (M6).
+   as many as the slot rules allow, and execute each claimed implement (M4),
+   fix (M6) or review (M5) run. Resume runs are M7.
 
 At a clean stop the engine waits for in-flight runs up to
 ``STOP_GRACE_SECONDS``; runs still going are cancelled and their rows stay
@@ -216,7 +216,7 @@ class Engine:
                     for claimed in report.claimed:
                         if claimed.kind not in EXECUTED_KINDS:
                             logger.info(
-                                "claim for %s has kind %s; execution is M6/M7",
+                                "claim for %s has kind %s; execution is M7",
                                 claimed.item.work_package.display_id,
                                 claimed.kind,
                                 extra={
@@ -376,8 +376,7 @@ async def _run_once_async(
                 for claimed in report.claimed:
                     if claimed.kind not in EXECUTED_KINDS:
                         logger.info(
-                            "once: claim for %s has kind %s; execution is "
-                            "M6/M7",
+                            "once: claim for %s has kind %s; execution is M7",
                             claimed.item.work_package.display_id,
                             claimed.kind,
                         )

@@ -11,6 +11,9 @@ previous runs.
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -23,12 +26,15 @@ from jinja2 import (
 )
 
 from op_agent_engine.config import ConfigError, EngineSettings
+from op_agent_engine.openproject.activities import ActivityComment, comment_from_activity
 
 PROMPTS_DIR_NAME = "prompts"
 
-#: Kinds the engine can render (M4 implements implement; fix/resume are M5,
-#: review is M6 — the templates ship with all of them).
+#: Kinds the engine can render (implement/fix/review; resume is M7).
 KINDS = ("implement", "fix", "resume", "review")
+
+#: PLAN section 10: cap on later human comments in a fix prompt.
+MAX_LATER_HUMAN_COMMENTS = 5
 
 
 class PromptRenderer:
@@ -82,6 +88,105 @@ def resolve_template_dir(settings: EngineSettings) -> Path:
         + ", ".join(str(candidate) for candidate in candidates)
         + "; set PROMPTS_DIR to override)"
     )
+
+
+@dataclass(frozen=True)
+class PromptComment:
+    """A comment rendered into the fix prompt (author labelled with its role)."""
+
+    author: str
+    created_at: str
+    text: str
+
+
+@dataclass(frozen=True)
+class FixContext:
+    """Reviewer feedback and later human comments for a fix run."""
+
+    feedback: PromptComment | None
+    later_human_comments: tuple[PromptComment, ...] = ()
+
+
+def select_fix_context(
+    activities: Iterable[dict[str, Any]],
+    *,
+    reviewer_id: int,
+    agent_user_ids: frozenset[int],
+    engine_user_id: int,
+    author_names: Mapping[int, str] | None = None,
+    max_human_comments: int = MAX_LATER_HUMAN_COMMENTS,
+) -> FixContext:
+    """Select the comments a fix pass needs (PLAN section 10).
+
+    * ``feedback``: the latest comment authored by the reviewer user.
+    * ``later_human_comments``: comments authored by humans (not an agent user
+      and not ``agent-engine``) posted after the feedback, newest last, at
+      most ``max_human_comments``.
+
+    All other agent and engine comments are excluded. Authors are labelled
+    with their name and role; unknown human authors fall back to the name the
+    API includes on the activity link, or ``user <id>``.
+    """
+    names = author_names or {}
+    comments = [
+        comment
+        for comment in (comment_from_activity(activity) for activity in activities)
+        if comment is not None
+    ]
+    comments.sort(
+        key=lambda comment: (
+            comment.created_at or datetime.min.replace(tzinfo=UTC),
+            comment.activity_id or 0,
+        )
+    )
+
+    feedback_index: int | None = None
+    for index, comment in enumerate(comments):
+        if comment.author_id == reviewer_id:
+            feedback_index = index
+    if feedback_index is None:
+        return FixContext(feedback=None)
+
+    feedback_comment = comments[feedback_index]
+    human_comments: list[PromptComment] = []
+    for comment in comments[feedback_index + 1 :]:
+        if comment.author_id is None:
+            continue
+        if comment.author_id in agent_user_ids or comment.author_id == engine_user_id:
+            continue
+        human_comments.append(
+            PromptComment(
+                author=_author_label(comment, "human", names),
+                created_at=comment.created_at_raw or "unknown",
+                text=comment.text,
+            )
+        )
+
+    human_comments = (
+        human_comments[-max_human_comments:] if max_human_comments >= 1 else []
+    )
+
+    return FixContext(
+        feedback=PromptComment(
+            author=_author_label(feedback_comment, "reviewer", names),
+            created_at=feedback_comment.created_at_raw or "unknown",
+            text=feedback_comment.text,
+        ),
+        later_human_comments=tuple(human_comments),
+    )
+
+
+def _author_label(
+    comment: ActivityComment, role: str, names: Mapping[int, str]
+) -> str:
+    name = names.get(comment.author_id) if comment.author_id is not None else None
+    if name is None:
+        name = comment.author_title
+    if name is None and comment.author_id is not None:
+        name = f"user {comment.author_id}"
+    if name is None:
+        name = "unknown author"
+    return f"{name} ({role})"
 
 
 def with_standard(prompt: str, standard_path: Path) -> str:

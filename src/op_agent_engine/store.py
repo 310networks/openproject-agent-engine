@@ -217,6 +217,10 @@ class Store:
             )
             self._conn.commit()
 
+    def set_attempt(self, run_id: int, attempt: int) -> None:
+        """Record the run's attempt number (fix passes count rejections)."""
+        self._update_run(run_id, attempt=attempt)
+
     def finish_run(
         self,
         run_id: int,

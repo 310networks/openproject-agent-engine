@@ -1,4 +1,4 @@
-"""Execution of claimed runs (PLAN section 4; milestones M4 and M5).
+"""Execution of claimed runs (PLAN section 4; milestones M4, M5 and M6).
 
 The dispatcher takes one claimed run to completion:
 
@@ -15,19 +15,25 @@ engine comment and the reviewer is not started), then verify that the PR was
 merged (approved) or that the reviewer reported ``RESULT: REJECTED`` together
 with a comment the reviewer user posted during the run (rejected).
 
+Fix runs (M6) are implementer runs for a Rejected work package. Their prompt
+carries the latest reviewer feedback and later human comments (selected from
+the work package history), and the fix pass number equals the number of
+status changes to Rejected. When a review would produce a rejection beyond
+``MAX_REJECTIONS`` the work package moves to On Hold instead and the engine
+posts a comment about the cap.
+
 Crash handling: a failed run increments the work package's crash counter.
 When the counter exceeds ``MAX_CRASH_RETRIES`` the work package moves to On
 Hold with an engine comment (escalation). Otherwise it stays In Progress
-(implement) or In Testing (review) and a resume/review run may be dispatched
-on a later poll (M7).
+(implement/fix) or In Testing (review) and a resume/review run may be
+dispatched on a later poll (M7).
 
-Fix runs are claimed (M3) but not executed yet (M6); resume dispatch is M7.
+Resume dispatch is M7.
 """
 
 from __future__ import annotations
 
 import json
-import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
@@ -39,6 +45,18 @@ from op_agent_engine.config import (
 )
 from op_agent_engine.github import GitHub, GitHubError, PullRequest
 from op_agent_engine.logging import get_logger, redact_mapping
+from op_agent_engine.openproject.activities import (
+    author_id as activity_author_id,
+)
+from op_agent_engine.openproject.activities import (
+    comment_text as activity_comment_text,
+)
+from op_agent_engine.openproject.activities import (
+    count_status_changes,
+)
+from op_agent_engine.openproject.activities import (
+    created_at as activity_created_at,
+)
 from op_agent_engine.openproject.client import (
     OpenProjectClient,
     OpenProjectError,
@@ -55,8 +73,9 @@ from op_agent_engine.outcomes import (
     is_rejection,
     no_pr_comment,
     read_tail,
+    rejection_cap_comment,
 )
-from op_agent_engine.prompts import PromptRenderer, with_standard
+from op_agent_engine.prompts import FixContext, PromptRenderer, select_fix_context, with_standard
 from op_agent_engine.runners.base import OnSpawned, RunRequest, RunResult
 from op_agent_engine.runners.generic import GenericRunner
 from op_agent_engine.scheduler import ClaimedRun
@@ -65,8 +84,8 @@ from op_agent_engine.workspace import Workspace, WorkspaceError, prepare_workspa
 
 logger = get_logger(__name__)
 
-#: Run kinds the dispatcher executes. ``fix`` and ``resume`` are M6/M7.
-EXECUTED_KINDS = frozenset({"implement", "review"})
+#: Run kinds the dispatcher executes. ``resume`` is M7.
+EXECUTED_KINDS = frozenset({"implement", "fix", "review"})
 
 #: The status a run was claimed in; transitions must start from there.
 EXPECTED_STATUS_KEY_BY_KIND = {
@@ -74,72 +93,6 @@ EXPECTED_STATUS_KEY_BY_KIND = {
     "fix": "in_progress",
     "review": "in_testing",
 }
-
-
-_HREF_ID_RE = re.compile(r"/(\d+)/?$")
-
-
-def _id_from_href(href: Any) -> int | None:
-    if not isinstance(href, str):
-        return None
-    match = _HREF_ID_RE.search(href)
-    return int(match.group(1)) if match else None
-
-
-def _comment_text(activity: dict[str, Any]) -> str | None:
-    """The comment text of an activity entry (None for non-comment entries)."""
-    comment = activity.get("comment")
-    raw: Any = None
-    if isinstance(comment, dict):
-        raw = comment.get("raw")
-    elif isinstance(comment, str):
-        raw = comment
-    if not isinstance(raw, str) or not raw.strip():
-        return None
-    return raw
-
-
-def _comment_author_id(activity: dict[str, Any]) -> int | None:
-    """The author id of an activity.
-
-    The live API (docs/VERIFICATION.md) exposes ``_links.user``; a plain
-    ``author`` reference is tolerated for fixtures that shape it that way.
-    """
-    for candidate in (activity.get("author"), activity.get("user")):
-        if isinstance(candidate, dict):
-            value = candidate.get("id")
-            if isinstance(value, int) and not isinstance(value, bool):
-                return value
-            links = candidate.get("_links")
-            if isinstance(links, dict):
-                self_link = links.get("self")
-                if isinstance(self_link, dict):
-                    found = _id_from_href(self_link.get("href"))
-                    if found is not None:
-                        return found
-    links = activity.get("_links")
-    if isinstance(links, dict):
-        for key in ("user", "author"):
-            link = links.get(key)
-            if isinstance(link, dict):
-                found = _id_from_href(link.get("href"))
-                if found is not None:
-                    return found
-    return None
-
-
-def _parse_timestamp(value: Any) -> datetime | None:
-    """Parse a HAL timestamp (``2026-02-10T12:00:00Z``) into an aware datetime."""
-    if not isinstance(value, str) or not value:
-        return None
-    text = value.strip().replace("Z", "+00:00")
-    try:
-        parsed = datetime.fromisoformat(text)
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=UTC)
-    return parsed
 
 
 class TransitionAborted(Exception):
@@ -224,7 +177,7 @@ class Dispatcher:
 
         if claimed.kind not in EXECUTED_KINDS:
             logger.info(
-                "run kind %r is claimed but not executed yet (M6/M7); "
+                "run kind %r is claimed but not executed yet (M7); "
                 "leaving the run active",
                 claimed.kind,
                 extra=log_extra,
@@ -266,8 +219,52 @@ class Dispatcher:
         if workspace is None:
             return
 
+        # A fix pass needs the reviewer feedback and the rejection number
+        # (PLAN section 10); both come from the work package history.
+        fix_context: FixContext | None = None
+        attempt = 1
+        if claimed.kind == "fix":
+            try:
+                activities = await self._fetch_activities(wp.id)
+            except OpenProjectError as error:
+                await self._fail_before_run(
+                    run_id,
+                    claimed,
+                    detail=f"cannot read work package activities: {error}",
+                    outcome="fix_context_error",
+                )
+                return
+            attempt = max(
+                1, count_status_changes(activities, self._rejected_status_name())
+            )
+            self._store.set_attempt(run_id, attempt)
+            fix_context = select_fix_context(
+                activities,
+                reviewer_id=self._reviewer_user_id(),
+                agent_user_ids=self._agent_user_ids(),
+                engine_user_id=self._resolution.engine_user.id,
+                author_names=self._author_names(),
+            )
+            if fix_context.feedback is None:
+                await self._fail_before_run(
+                    run_id,
+                    claimed,
+                    detail=(
+                        "the work package history has no reviewer feedback "
+                        "comment for the fix pass"
+                    ),
+                    outcome="fix_feedback_missing",
+                )
+                return
+
         request = self._build_request(
-            claimed, workspace, run_id, run_dir, self._render_prompt(claimed, workspace)
+            claimed,
+            workspace,
+            run_id,
+            run_dir,
+            self._render_prompt(
+                claimed, workspace, fix_context=fix_context, attempt=attempt
+            ),
         )
         result = await self._run(request, run_id)
 
@@ -409,6 +406,10 @@ class Dispatcher:
             pr_merged=merged is not None,
             rejection_comment_found=rejection_comment_found,
         )
+        if decision.transition == "rejected":
+            decision = await self._apply_rejection_cap(
+                claimed, run_id, decision, started_at=started_at
+            )
         await self._apply_decision(
             run_id,
             claimed,
@@ -417,6 +418,78 @@ class Dispatcher:
             decision,
             pr=merged,
             started_at=started_at,
+        )
+
+    async def _apply_rejection_cap(
+        self,
+        claimed: ClaimedRun,
+        run_id: int,
+        decision: OutcomeDecision,
+        *,
+        started_at: datetime,
+    ) -> OutcomeDecision:
+        """Escalate to On Hold when the next rejection exceeds the cap.
+
+        The rejection count is derived from the work package history (status
+        changes to Rejected). The current rejection has not been applied yet,
+        so ``previous + 1`` is the number this review would produce. With the
+        default ``MAX_REJECTIONS=3`` rejection 3 is allowed and rejection 4
+        moves the work package to On Hold (PLAN section 4).
+        """
+        wp = claimed.item.work_package
+        try:
+            activities = await self._fetch_activities(wp.id)
+        except OpenProjectError as error:
+            self._write_meta(
+                claimed, None, None, state="running", outcome="error",
+                transition=None, pr=None, started_at=started_at,
+            )
+            logger.error(
+                "could not read the work package history for rejection "
+                "counting (%s); run %d left active: %s",
+                wp.display_id,
+                run_id,
+                error,
+                extra={"run_id": run_id, "work_package_id": wp.id},
+            )
+            raise
+
+        previous = count_status_changes(activities, self._rejected_status_name())
+        rejection_number = previous + 1
+        if rejection_number <= self._settings.max_rejections:
+            logger.info(
+                "rejection %d/%d allowed for work package %s",
+                rejection_number,
+                self._settings.max_rejections,
+                wp.display_id,
+                extra={
+                    "run_id": run_id,
+                    "work_package_id": wp.id,
+                    "rejection_number": rejection_number,
+                },
+            )
+            return decision
+
+        logger.warning(
+            "rejection %d exceeds MAX_REJECTIONS=%d for work package %s; "
+            "escalating to On Hold",
+            rejection_number,
+            self._settings.max_rejections,
+            wp.display_id,
+            extra={
+                "run_id": run_id,
+                "work_package_id": wp.id,
+                "rejection_number": rejection_number,
+            },
+        )
+        return OutcomeDecision(
+            run_state=decision.run_state,
+            outcome="rejection_cap_reached",
+            transition="on_hold",
+            comment=rejection_cap_comment(
+                rejection_number=rejection_number,
+                max_rejections=self._settings.max_rejections,
+            ),
         )
 
     async def _apply_decision(
@@ -586,24 +659,27 @@ class Dispatcher:
         )
 
     async def _fail_before_run(
-        self, run_id: int, claimed: ClaimedRun, detail: str
+        self,
+        run_id: int,
+        claimed: ClaimedRun,
+        detail: str,
+        *,
+        outcome: str = "workspace_error",
     ) -> None:
-        """A workspace (or similar) failure before the process started."""
+        """A workspace or prompt-context failure before the process started."""
         wp = claimed.item.work_package
         await self._crash_escalate(
             wp.id,
-            outcome="workspace_error",
+            outcome=outcome,
             detail=detail,
             exit_code=None,
             tail_lines=None,
             run_id=run_id,
             expected_status_key=EXPECTED_STATUS_KEY_BY_KIND[claimed.kind],
         )
-        self._store.finish_run(
-            run_id, state=FAILED, outcome="workspace_error"
-        )
+        self._store.finish_run(run_id, state=FAILED, outcome=outcome)
         self._write_meta(
-            claimed, None, None, state=FAILED, outcome="workspace_error",
+            claimed, None, None, state=FAILED, outcome=outcome,
             transition=None, pr=None, started_at=datetime.now(UTC),
         )
 
@@ -758,9 +834,12 @@ class Dispatcher:
                     ) from None
 
     async def _post_comment(self, work_package_id: int, comment: str) -> None:
+        # Verified live (docs/VERIFICATION.md section 11): comments are created
+        # through the activities collection with a nested ``raw`` comment.
+        # ``/work_packages/<id>/comments`` does not exist (HTTP 404).
         await self._client.post_json(
-            f"/api/v3/work_packages/{work_package_id}/comments",
-            json_body={"comment": comment},
+            f"/api/v3/work_packages/{work_package_id}/activities",
+            json_body={"comment": {"raw": comment}},
         )
         logger.info(
             "engine comment posted for work package %s",
@@ -810,11 +889,11 @@ class Dispatcher:
         async for activity in self._client.iter_collection(
             f"/api/v3/work_packages/{work_package_id}/activities"
         ):
-            if _comment_text(activity) is None:
+            if activity_comment_text(activity) is None:
                 continue
-            if _comment_author_id(activity) != reviewer_id:
+            if activity_author_id(activity) != reviewer_id:
                 continue
-            created_at = _parse_timestamp(activity.get("createdAt"))
+            created_at = activity_created_at(activity)
             if created_at is not None and created_at >= since:
                 logger.info(
                     "reviewer comment found for work package %s",
@@ -827,9 +906,38 @@ class Dispatcher:
                 return True
         return False
 
-    def _reviewer_user_id(self, agent_key: str) -> int:
-        agent = self._config.agents[agent_key]
+    def _reviewer_user_id(self, agent_key: str | None = None) -> int:
+        """The reviewer user id (default: the configured reviewer agent)."""
+        agent = (
+            self._config.agents[agent_key]
+            if agent_key is not None
+            else self._config.reviewer
+        )
         return self._resolution.users[agent.op_login].id
+
+    async def _fetch_activities(
+        self, work_package_id: int
+    ) -> list[dict[str, Any]]:
+        """The full activity history of a work package (oldest first)."""
+        return await self._client.get_collection(
+            f"/api/v3/work_packages/{work_package_id}/activities"
+        )
+
+    def _rejected_status_name(self) -> str:
+        return self._resolution.statuses["rejected"].name
+
+    def _agent_user_ids(self) -> frozenset[int]:
+        ids: set[int] = set()
+        for agent in self._config.agents.values():
+            user = self._resolution.users.get(agent.op_login)
+            if user is not None:
+                ids.add(user.id)
+        return frozenset(ids)
+
+    def _author_names(self) -> dict[int, str]:
+        names = {user.id: user.name for user in self._resolution.users.values()}
+        names[self._resolution.engine_user.id] = self._resolution.engine_user.name
+        return names
 
     # -- workspace, prompt and runner -------------------------------------------
 
@@ -896,10 +1004,12 @@ class Dispatcher:
         workspace: Workspace,
         *,
         pr: PullRequest | None = None,
+        fix_context: FixContext | None = None,
+        attempt: int = 1,
     ) -> str:
         wp = claimed.item.work_package
         agent = self._config.agents[claimed.item.agent_key]
-        kind = "review" if claimed.kind == "review" else "implement"
+        kind = claimed.kind if claimed.kind in ("implement", "fix", "review") else "implement"
         base_url = (self._settings.op_base_url or "").rstrip("/")
         context: dict[str, Any] = {
             "agent": {"name": agent.name},
@@ -922,9 +1032,21 @@ class Dispatcher:
                 "number": pr.number if pr is not None else None,
                 "url": pr.url if pr is not None else None,
             },
-            # No rejection history is tracked before M6.
             "review_number": 1,
         }
+        if kind == "fix":
+            context.update(
+                {
+                    "attempt": attempt,
+                    "max_rejections": self._settings.max_rejections,
+                    "feedback": fix_context.feedback if fix_context is not None else None,
+                    "later_human_comments": (
+                        fix_context.later_human_comments
+                        if fix_context is not None
+                        else ()
+                    ),
+                }
+            )
         prompt = self._prompts.render(kind, context)
         if self._config.runners[agent.runner].inject_standard:
             prompt = with_standard(prompt, workspace.standard_path)

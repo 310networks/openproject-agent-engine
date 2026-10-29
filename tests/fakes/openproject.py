@@ -33,7 +33,6 @@ _PROJECT = re.compile(r"^/api/v3/projects/(?P<identifier>[^/]+)$")
 _PROJECT_TYPES = re.compile(r"^/api/v3/projects/(?P<project_id>[^/]+)/types$")
 _SCHEMA = re.compile(r"^/api/v3/work_packages/schemas/(?P<identifier>[^/]+)$")
 _WP_BY_ID = re.compile(r"^/api/v3/work_packages/(?P<id>\d+)$")
-_WP_COMMENTS = re.compile(r"^/api/v3/work_packages/(?P<id>\d+)/comments$")
 _WP_ACTIVITIES = re.compile(r"^/api/v3/work_packages/(?P<id>\d+)/activities$")
 _HREF_ID = re.compile(r"/(\d+)$")
 
@@ -92,6 +91,7 @@ class FakeOpenProject:
         priorities: list[dict[str, JSON]] | None = None,
         comments: list[dict[str, JSON]] | None = None,
         activities: list[dict[str, JSON]] | None = None,
+        posting_user_id: int | None = 10,
         patch_error: tuple[int, str] | None = None,
     ) -> None:
         self.statuses = statuses or []
@@ -120,10 +120,17 @@ class FakeOpenProject:
         # ``_links.user``. Posted engine comments are mirrored here so a
         # reviewer-comment check sees a realistic history.
         self.activities: list[dict[str, JSON]] = list(activities or [])
+        # The user the API token belongs to; posted comments are authored by
+        # this user (the engine user in the real deployment).
+        self.posting_user_id = posting_user_id
         self._next_comment_id = (
             max((int(c["id"]) for c in self.comments if isinstance(c.get("id"), int)), default=0)
             + 1
         )
+        self._next_activity_id = max(
+            (int(a["id"]) for a in self.activities if isinstance(a.get("id"), int)),
+            default=0,
+        ) + 1
         self.requests: list[httpx.Request] = []
         # Bodies of every successful PATCH /api/v3/work_packages/<id>.
         self.patches: list[dict[str, JSON]] = []
@@ -148,22 +155,12 @@ class FakeOpenProject:
                 return self._patch_work_package(int(wp_by_id.group("id")), request)
             return self._error(404, "The requested resource could not be found.")
         if request.method == "POST":
-            comments_match = _WP_COMMENTS.match(path)
-            if comments_match:
-                return self._post_comment(int(comments_match.group("id")), request)
+            activities_match = _WP_ACTIVITIES.match(path)
+            if activities_match:
+                return self._post_comment(int(activities_match.group("id")), request)
             return self._error(404, "The requested resource could not be found.")
         if request.method != "GET":
             return self._error(405, "Method not allowed")
-
-        comments_match = _WP_COMMENTS.match(path)
-        if comments_match:
-            work_package_id = int(comments_match.group("id"))
-            elements = [
-                self._comment_element(comment)
-                for comment in self.comments
-                if int(comment.get("workPackageId", -1)) == work_package_id
-            ]
-            return self._collection(request, elements, path)
 
         activities_match = _WP_ACTIVITIES.match(path)
         if activities_match:
@@ -485,59 +482,47 @@ class FakeOpenProject:
     def _post_comment(
         self, work_package_id: int, request: httpx.Request
     ) -> httpx.Response:
-        """Mirror the live POST /work_packages/<id>/comments behaviour."""
+        """Mirror the live POST /work_packages/<id>/activities behaviour.
+
+        Verified live (docs/VERIFICATION.md section 11): the body is
+        ``{"comment": {"raw": "..."}}``; ``/work_packages/<id>/comments``
+        does not exist.
+        """
         if not any(wp.get("id") == work_package_id for wp in self.work_packages):
             return self._error(404, "The requested resource could not be found.")
         try:
             body = json.loads(request.content.decode("utf-8") or "{}")
         except json.JSONDecodeError:
             return self._error(400, "Malformed request body")
-        # The live API takes the text under the ``comment`` key.
-        content = body.get("comment")
+        comment = body.get("comment")
+        content = comment.get("raw") if isinstance(comment, dict) else None
         if not isinstance(content, str) or not content:
-            return self._error(422, "Comment is required")
-        comment: dict[str, JSON] = {
-            "id": self._next_comment_id,
-            "workPackageId": work_package_id,
-            "authorId": body.get("authorId"),
-            "createdAt": body.get("createdAt") or "2026-02-10T12:00:00Z",
-            "content": content,
-        }
-        self._next_comment_id += 1
-        self.comments.append(comment)
-        # Mirror the comment as an activity entry (the live API exposes
-        # comments through the activities collection).
-        self.activities.append(
-            {
-                "id": comment["id"],
-                "workPackageId": work_package_id,
-                "_type": "Activity::Comment",
-                "comment": {"raw": content},
-                "details": [],
-                "createdAt": comment["createdAt"],
-                "_links": (
-                    {"user": {"href": f"/api/v3/users/{comment['authorId']}"}}
-                    if comment.get("authorId") is not None
-                    else {}
-                ),
-            }
-        )
-        return self._json(
-            self._comment_element(comment), status_code=201
-        )
+            return self._error(422, "Comment can't be blank")
 
-    def _comment_element(self, comment: dict[str, JSON]) -> dict[str, JSON]:
-        """Shape a stored comment fixture like a live HAL comment entry."""
-        element: dict[str, JSON] = {
-            "id": comment.get("id"),
-            "_type": "XAPian::Comment",
-            "workPackage": {"id": comment.get("workPackageId")},
-            "createdAt": comment.get("createdAt"),
-            "updatedAt": comment.get("createdAt"),
-            "content": comment.get("content", ""),
+        created_at = "2026-02-10T12:00:00Z"
+        activity: dict[str, JSON] = {
+            "id": self._next_activity_id,
+            "workPackageId": work_package_id,
+            "_type": "Activity::Comment",
+            "comment": {"format": "markdown", "raw": content},
+            "details": [],
+            "createdAt": created_at,
+            "updatedAt": created_at,
             "_links": {},
         }
-        author_id = comment.get("authorId")
-        if author_id is not None:
-            element["author"] = {"id": author_id}
-        return element
+        if self.posting_user_id is not None:
+            activity["_links"] = {
+                "user": {"href": f"/api/v3/users/{self.posting_user_id}"}
+            }
+        self._next_activity_id += 1
+        self.activities.append(activity)
+        self.comments.append(
+            {
+                "id": activity["id"],
+                "workPackageId": work_package_id,
+                "authorId": self.posting_user_id,
+                "createdAt": created_at,
+                "content": content,
+            }
+        )
+        return self._json(activity, status_code=201)

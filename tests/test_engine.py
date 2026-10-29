@@ -173,8 +173,13 @@ async def make_engine(
     runner: FakeRunner,
     gh: FakeGitHub | None = None,
     settings_overrides: dict[str, Any] | None = None,
+    activities: list[dict[str, Any]] | None = None,
 ) -> tuple[Engine, FakeOpenProject, OpenProjectClient, Path]:
-    fake = make_fake(work_packages=work_packages, priorities=PRIORITIES)
+    fake = make_fake(
+        work_packages=work_packages,
+        priorities=PRIORITIES,
+        activities=activities or [],
+    )
     config = make_config()
     settings = make_settings(tmp_path, **(settings_overrides or {}))
     client = OpenProjectClient(
@@ -205,6 +210,11 @@ async def make_engine(
     )
     (prompts_dir / "review.txt.j2").write_text(
         "REVIEW {{ wp.subject }} pr={{ pr.url }} review={{ review_number }}",
+        encoding="utf-8",
+    )
+    (prompts_dir / "fix.txt.j2").write_text(
+        "FIX {{ wp.subject }} attempt={{ attempt }} of {{ max_rejections }} "
+        "feedback={{ feedback.text }}",
         encoding="utf-8",
     )
     prompts = PromptRenderer(prompts_dir)
@@ -355,10 +365,34 @@ async def test_engine_waits_for_in_flight_runs_on_stop(
         await client.aclose()
 
 
-# -- claimed but not executed yet (M5/M6) -----------------------------------------
+# -- the M6 fix pass --------------------------------------------------------------
 
 
-async def test_fix_claim_is_not_executed(
+def fix_history() -> list[dict[str, Any]]:
+    return [
+        {
+            "id": 201,
+            "workPackageId": 100,
+            "_type": "Activity",
+            "details": [
+                {"raw": "Status changed from In Testing to Rejected"}
+            ],
+            "createdAt": "2026-02-09T12:00:00Z",
+            "_links": {"user": {"href": "/api/v3/users/10"}},
+        },
+        {
+            "id": 202,
+            "workPackageId": 100,
+            "_type": "Activity::Comment",
+            "comment": {"raw": "Please fix the failing test."},
+            "details": [],
+            "createdAt": "2026-02-09T12:01:00Z",
+            "_links": {"user": {"href": f"/api/v3/users/{REVIEWER_USER_ID}"}},
+        },
+    ]
+
+
+async def test_fix_claim_is_executed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     runner = FakeRunner(make_result(tmp_path))
@@ -367,25 +401,31 @@ async def test_fix_claim_is_not_executed(
         monkeypatch,
         work_packages=[wp(100, status=STATUS_REJECTED, agent=11)],
         runner=runner,
+        gh=FakeGitHub(pr=PR),
+        activities=fix_history(),
     )
     try:
         exit_code = await engine.run(max_polls=1)
         assert exit_code == 0
 
-        # Claimed: moved to In Progress and assigned to the agent user.
-        assert status_href(fake, 100) == f"/api/v3/statuses/{STATUS_IN_PROGRESS}"
+        # Claimed (In Progress, assigned to the agent user) and executed.
+        assert status_href(fake, 100) == f"/api/v3/statuses/{STATUS_READY_FOR_REVIEW}"
         assert assignee_href(fake, 100) == f"/api/v3/users/{AGENT_USER_ID}"
+        assert len(runner.requests) == 1
 
-        # Not executed: the runner was never called.
-        assert runner.requests == []
-
-        # The claimed-but-unexecuted run is marked interrupted on stop.
         store = Store(store_path)
         try:
             runs = runs_for(store, 100)
             assert len(runs) == 1
-            assert runs[0].state == INTERRUPTED
+            assert runs[0].state == SUCCEEDED
+            assert runs[0].outcome == "ready_for_review"
             assert runs[0].kind == "fix"
+            assert runs[0].attempt == 1
+            prompt = (
+                Path(runs[0].run_dir) / "prompt.txt"
+            ).read_text()
+            assert "FIX wp 100 attempt=1 of 3" in prompt
+            assert "feedback=Please fix the failing test." in prompt
         finally:
             store.close()
     finally:
