@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 import op_agent_engine.cli as cli
-from op_agent_engine.cli import CONFIG_ERROR_EXIT, NOT_IMPLEMENTED_EXIT, OK_EXIT, main
+from op_agent_engine.cli import CONFIG_ERROR_EXIT, OK_EXIT, main
 from op_agent_engine.openproject.resolve import (
     OpenProjectResolution,
     OpenProjectResolutionError,
@@ -251,15 +252,60 @@ def test_run_requires_valid_config(
     assert "configuration file not found" in capsys.readouterr().err
 
 
-def test_stub_commands_load_config_then_report_not_implemented(
+def test_status_without_data_dir_reports_no_history(
+    tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # ``status`` is still a stub; ``run``/``once``/``dry-run`` are implemented
-    # (M3) and drive a real (mocked) poll instead.
-    assert main(["status", "--config", str(EXAMPLE)]) == NOT_IMPLEMENTED_EXIT
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
 
-    error = capsys.readouterr().err
-    assert "'status' is not implemented yet" in error
+    assert main(["status", "--config", str(EXAMPLE)]) == OK_EXIT
+
+    output = capsys.readouterr().out
+    assert "heartbeat: missing" in output
+    assert "paused: no" in output
+    assert "active runs: 0" in output
+    assert "last 0 finished run(s)" in output
+    assert "(none)" in output
+
+
+def test_status_json_reports_heartbeat_and_recent_runs(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from op_agent_engine.store import SUCCEEDED, Store
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True)
+    (data_dir / "heartbeat").write_text(
+        datetime.now(UTC).isoformat() + "\n", encoding="utf-8"
+    )
+    store = Store(data_dir / "engine.db")
+    try:
+        run_id = store.begin_run(
+            work_package_id=100,
+            project_id=4,
+            agent="IMPL",
+            kind="implement",
+            attempt=1,
+            branch="op-4-100",
+            run_dir_template=str(store.runs_dir / "{id}"),
+        )
+        store.finish_run(run_id, state=SUCCEEDED, outcome="ready_for_review")
+    finally:
+        store.close()
+    monkeypatch.setenv("DATA_DIR", str(data_dir))
+
+    assert main(["status", "--json"]) == OK_EXIT
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["heartbeat_age_seconds"] is not None
+    assert payload["heartbeat_age_seconds"] >= 0
+    assert payload["active_runs"] == []
+    assert len(payload["finished_runs"]) == 1
+    assert payload["finished_runs"][0]["work_package_id"] == 100
+    assert payload["finished_runs"][0]["state"] == SUCCEEDED
 
 
 def test_run_refuses_to_start_when_the_lock_is_held(

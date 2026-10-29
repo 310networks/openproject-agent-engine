@@ -10,12 +10,15 @@ The loop (PLAN section 3):
    types, agent field).
 4. Repeat until stopped: poll for eligible work packages, schedule (claim)
    as many as the slot rules allow, and execute each claimed implement (M4),
-   fix (M6) or review (M5) run. Resume runs are M7.
+   fix (M6), resume (M7) or review (M5) run.
+
+On startup, leftover process groups from a crashed engine are terminated (PID
+reuse safe) and every ``running`` row is marked ``interrupted``; In Progress
+and In Testing work packages are then recovered by the poller (M7).
 
 At a clean stop the engine waits for in-flight runs up to
-``STOP_GRACE_SECONDS``; runs still going are cancelled and their rows stay
-``running`` until the next start marks them ``interrupted`` (M7 then resumes
-them).
+``STOP_GRACE_SECONDS``; runs still going are terminated and their rows are
+marked ``interrupted`` so the next start resumes them.
 """
 
 from __future__ import annotations
@@ -24,6 +27,7 @@ import asyncio
 import contextlib
 import signal
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 
 from op_agent_engine.config import EngineSettings, WorkflowConfig
@@ -35,13 +39,17 @@ from op_agent_engine.openproject.client import (
 )
 from op_agent_engine.openproject.resolve import OpenProjectResolution, resolve_workflow
 from op_agent_engine.poller import Poller
+from op_agent_engine.recovery import recover_interrupted_runs
 from op_agent_engine.scheduler import ClaimedRun, Scheduler
 from op_agent_engine.store import EngineLock, Store
+from op_agent_engine.systemd import notify
 
 logger = get_logger(__name__)
 
 LOCK_FILE_NAME = "engine.lock"
 STORE_FILE_NAME = "engine.db"
+HEARTBEAT_FILE_NAME = "heartbeat"
+PAUSE_FILE_NAME = "PAUSE"
 
 DispatcherFactory = Callable[
     [OpenProjectResolution, Store, OpenProjectClient], Dispatcher
@@ -71,6 +79,14 @@ class Engine:
     @property
     def store_path(self) -> Path:
         return self._settings.data_dir / STORE_FILE_NAME
+
+    @property
+    def heartbeat_path(self) -> Path:
+        return self._settings.data_dir / HEARTBEAT_FILE_NAME
+
+    @property
+    def pause_path(self) -> Path:
+        return self._settings.data_dir / PAUSE_FILE_NAME
 
     def _make_dispatcher(
         self,
@@ -109,12 +125,12 @@ class Engine:
         )
         try:
             if not dry_run:
-                interrupted = store.mark_all_running_interrupted()
-                if interrupted:
+                recovery = recover_interrupted_runs(store)
+                if recovery.interrupted:
                     logger.warning(
                         "crash recovery: marked %d running run(s) interrupted",
-                        interrupted,
-                        extra={"interrupted": interrupted},
+                        recovery.interrupted,
+                        extra={"recovery": recovery.to_dict()},
                     )
             if self._client is not None:
                 return await self._loop(
@@ -131,9 +147,9 @@ class Engine:
                 )
         finally:
             if not dry_run:
-                # Runs still in flight (grace exceeded) have no child process
-                # to stop here; mark them interrupted so the state is
-                # consistent right away (M7 resumes them on the next start).
+                # A run left active by an unexpected failure is marked
+                # interrupted so the next start recovers it (the in-flight
+                # tasks were already waited for or terminated above).
                 with contextlib.suppress(Exception):
                     store.mark_all_running_interrupted()
             with contextlib.suppress(Exception):
@@ -154,6 +170,8 @@ class Engine:
         except OpenProjectError as error:
             logger.error("workflow resolution failed: %s", error)
             return 1
+
+        notify("READY=1")
 
         poller = Poller(
             client,
@@ -201,10 +219,20 @@ class Engine:
                     error,
                     extra={"poll_number": poll_number},
                 )
+                if not dry_run:
+                    self._write_heartbeat()
                 await self._sleep_or_stop(stop)
                 continue
 
-            if self._settings.engine_paused:
+            if not dry_run:
+                self._write_heartbeat()
+                notify("WATCHDOG=1")
+
+            # A stop signal that arrived during the poll must not dispatch.
+            if stop.is_set():
+                break
+
+            if self._is_paused():
                 logger.info(
                     "engine paused: %d item(s) not claimed",
                     len(plan.items),
@@ -215,8 +243,9 @@ class Engine:
                 if dispatcher is not None:
                     for claimed in report.claimed:
                         if claimed.kind not in EXECUTED_KINDS:
-                            logger.info(
-                                "claim for %s has kind %s; execution is M7",
+                            logger.warning(
+                                "claim for %s has unsupported kind %s; leaving "
+                                "the run active",
                                 claimed.item.work_package.display_id,
                                 claimed.kind,
                                 extra={
@@ -245,13 +274,32 @@ class Engine:
             _, pending = await asyncio.wait(
                 in_flight, timeout=self._settings.stop_grace_seconds
             )
-            for task in pending:
-                task.cancel()
             if pending:
+                logger.warning(
+                    "grace period expired; terminating %d run(s)",
+                    len(pending),
+                )
+                for task in pending:
+                    task.cancel()
                 await asyncio.wait(pending)
+            # Runs cancelled here were terminated by the runner and are still
+            # ``running`` in the store; mark them so the next start recovers
+            # them instead of treating them as live.
+            store.mark_all_running_interrupted()
 
+        notify("STOPPING=1")
         logger.info("engine stopped", extra={"polls": poll_number})
         return 0
+
+    # -- pause and health ---------------------------------------------------
+
+    def _is_paused(self) -> bool:
+        """Pause from ``ENGINE_PAUSED`` or the ``DATA_DIR/PAUSE`` file."""
+        return is_paused(self._settings)
+
+    def _write_heartbeat(self) -> None:
+        """Record the time of the last completed poll (PLAN section 15)."""
+        write_heartbeat(self._settings)
 
     async def _execute_claimed(
         self, dispatcher: Dispatcher, claimed: ClaimedRun
@@ -277,6 +325,23 @@ class Engine:
             await asyncio.wait_for(
                 stop.wait(), timeout=self._settings.poll_interval_seconds
             )
+
+
+def is_paused(settings: EngineSettings) -> bool:
+    """Whether new dispatches are paused (``ENGINE_PAUSED`` or PAUSE file)."""
+    return settings.engine_paused or (
+        settings.data_dir / PAUSE_FILE_NAME
+    ).exists()
+
+
+def write_heartbeat(settings: EngineSettings) -> None:
+    """Write the ``DATA_DIR/heartbeat`` timestamp atomically."""
+    settings.data_dir.mkdir(parents=True, exist_ok=True)
+    heartbeat = settings.data_dir / HEARTBEAT_FILE_NAME
+    timestamp = datetime.now(UTC).isoformat()
+    temporary = heartbeat.with_suffix(".tmp")
+    temporary.write_text(timestamp + "\n", encoding="utf-8")
+    temporary.replace(heartbeat)
 
 
 def run_engine(
@@ -323,6 +388,8 @@ async def _run_once_async(
             max_concurrent_runs=settings.max_concurrent_runs,
         )
         plan = await poller.poll()
+        if not dry_run:
+            write_heartbeat(settings)
 
         if dry_run:
             store_path = settings.data_dir / STORE_FILE_NAME
@@ -345,11 +412,22 @@ async def _run_once_async(
 
         store = Store(settings.data_dir / STORE_FILE_NAME)
         try:
-            # Crash recovery from a previous start: runs claimed but never
-            # executed become interrupted. Runs claimed by this call that
-            # fail to execute stay active; the next engine start recovers
-            # them the same way.
-            store.mark_all_running_interrupted()
+            # Crash recovery from a previous start: leftover processes are
+            # terminated and runs claimed but never executed become
+            # interrupted. Runs claimed by this call that fail to execute
+            # stay active; the next engine start recovers them the same way.
+            recovery = recover_interrupted_runs(store)
+            if recovery.interrupted:
+                logger.warning(
+                    "recovery: marked %d running run(s) interrupted",
+                    recovery.interrupted,
+                    extra={"recovery": recovery.to_dict()},
+                )
+            if is_paused(settings):
+                logger.info(
+                    "engine paused: %d item(s) not claimed", len(plan.items)
+                )
+                return 0
             scheduler = Scheduler(
                 client,
                 config,
@@ -375,8 +453,9 @@ async def _run_once_async(
                 )
                 for claimed in report.claimed:
                     if claimed.kind not in EXECUTED_KINDS:
-                        logger.info(
-                            "once: claim for %s has kind %s; execution is M7",
+                        logger.warning(
+                            "once: claim for %s has unsupported kind %s; "
+                            "leaving the run active",
                             claimed.item.work_package.display_id,
                             claimed.kind,
                         )

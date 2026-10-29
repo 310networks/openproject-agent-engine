@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import IO
 
 from op_agent_engine.logging import get_logger
+from op_agent_engine.recovery import process_start_identity
 
 logger = get_logger(__name__)
 
@@ -149,7 +150,11 @@ async def run_command(
 
     started_at = time.monotonic()
     if on_spawned is not None:
-        on_spawned(process.pid, process.pid, datetime.now(UTC).isoformat())
+        # The process start identity (boot id + starttime ticks) makes later
+        # cleanup PID-reuse safe (PLAN section 13). Fall back to a timestamp
+        # on platforms without /proc; recovery then refuses to kill the PID.
+        identity = process_start_identity(process.pid) or datetime.now(UTC).isoformat()
+        on_spawned(process.pid, process.pid, identity)
 
     assert process.stdout is not None
     assert process.stderr is not None
@@ -158,42 +163,67 @@ async def run_command(
 
     timed_out = False
     try:
-        await asyncio.wait_for(process.wait(), timeout=request.timeout_seconds)
-    except TimeoutError:
-        timed_out = True
-        logger.warning(
-            "run timed out after %.0fs; sending SIGTERM to process group %d",
-            request.timeout_seconds,
-            process.pid,
-            extra={
-                "run_id": request.run_id,
-                "work_package_id": request.work_package_id,
-                "agent": request.agent,
-            },
-        )
-        _kill_process_group(process.pid, signal.SIGTERM)
         try:
-            await asyncio.wait_for(process.wait(), timeout=KILL_GRACE_SECONDS)
+            await asyncio.wait_for(process.wait(), timeout=request.timeout_seconds)
         except TimeoutError:
+            timed_out = True
             logger.warning(
-                "process group %d did not exit after SIGTERM; sending SIGKILL",
+                "run timed out after %.0fs; sending SIGTERM to process group %d",
+                request.timeout_seconds,
+                process.pid,
+                extra={
+                    "run_id": request.run_id,
+                    "work_package_id": request.work_package_id,
+                    "agent": request.agent,
+                },
+            )
+            _kill_process_group(process.pid, signal.SIGTERM)
+            try:
+                await asyncio.wait_for(process.wait(), timeout=KILL_GRACE_SECONDS)
+            except TimeoutError:
+                logger.warning(
+                    "process group %d did not exit after SIGTERM; sending SIGKILL",
+                    process.pid,
+                    extra={"run_id": request.run_id},
+                )
+                _kill_process_group(process.pid, signal.SIGKILL)
+                await process.wait()
+        except asyncio.CancelledError:
+            # Graceful shutdown exceeded or the engine is stopping: terminate
+            # the whole group and re-raise so the engine marks the run
+            # interrupted (PLAN section 13).
+            logger.warning(
+                "run cancelled; sending SIGTERM to process group %d",
                 process.pid,
                 extra={"run_id": request.run_id},
             )
-            _kill_process_group(process.pid, signal.SIGKILL)
-            await process.wait()
+            _kill_process_group(process.pid, signal.SIGTERM)
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(process.wait()), timeout=KILL_GRACE_SECONDS
+                )
+            except TimeoutError:
+                logger.warning(
+                    "process group %d did not exit after SIGTERM; sending SIGKILL",
+                    process.pid,
+                    extra={"run_id": request.run_id},
+                )
+                _kill_process_group(process.pid, signal.SIGKILL)
+                with contextlib.suppress(Exception):
+                    await asyncio.shield(process.wait())
+            raise
+    finally:
+        # The pumps finish when every pipe writer is gone; guard against a
+        # grandchild in another group holding a pipe end.
+        await asyncio.wait({stdout_task, stderr_task}, timeout=PUMP_GRACE_SECONDS)
+        for task in (stdout_task, stderr_task):
+            if not task.done():
+                task.cancel()
+        for task in (stdout_task, stderr_task):
+            with contextlib.suppress(BaseException):
+                await task
 
     exit_code = process.returncode if process.returncode is not None else -signal.SIGKILL
-
-    # The pumps finish when every pipe writer is gone; guard against a
-    # grandchild in another group holding a pipe end.
-    await asyncio.wait({stdout_task, stderr_task}, timeout=PUMP_GRACE_SECONDS)
-    for task in (stdout_task, stderr_task):
-        if not task.done():
-            task.cancel()
-    for task in (stdout_task, stderr_task):
-        with contextlib.suppress(BaseException):
-            await task
 
     duration = time.monotonic() - started_at
     result = RunResult(

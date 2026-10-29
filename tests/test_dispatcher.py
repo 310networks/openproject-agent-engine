@@ -1182,6 +1182,40 @@ async def test_ready_for_review_without_pr_moves_to_on_hold(
         store.close()
 
 
+async def test_review_closes_an_already_merged_pr_without_running_the_agent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M7 recovery: merge landed just before the engine crashed."""
+    runner = FakeRunner(make_result(tmp_path))
+    dispatcher, fake, store, client, _ = await make_review_dispatcher(
+        tmp_path,
+        monkeypatch,
+        runner=runner,
+        gh=FakeGitHub(pr=None, merged=MERGED_PR),
+    )
+    try:
+        claimed = claim(store, make_review_item(100), kind="review")
+        await dispatcher.execute(claimed)
+
+        # The reviewer was never started; the merged PR is authoritative.
+        assert runner.requests == []
+        assert status_href(fake, 100) == f"/api/v3/statuses/{STATUS_CLOSED}"
+
+        run = store.get_run(1)
+        assert run is not None
+        assert run.state == SUCCEEDED
+        assert run.outcome == "approved"
+        assert run.result_line is None
+
+        meta = json.loads((store.runs_dir / "1" / "meta.json").read_text())
+        assert meta["transition"] == "closed"
+        assert meta["pr_url"] == MERGED_PR.url
+        assert meta["argv"] is None
+    finally:
+        await client.aclose()
+        store.close()
+
+
 async def test_merged_pr_wins_over_a_rejection_result(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

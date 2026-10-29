@@ -90,18 +90,63 @@ CASES: list[dict[str, Any]] = [
         "eligible": False,
         "reason": "type 'Milestone' is not eligible",
     },
-    # Rule 3: status not dispatchable.
+    # Rule 3: recovery statuses need an agent assignee (M7).
     {
-        "id": "rule3_in_progress",
+        "id": "rule3_in_progress_unassigned",
         "wp": {"status_id": 2, "status_name": "In Progress"},
         "eligible": False,
-        "reason": "status 'In Progress' is not dispatchable",
+        "reason": "status 'In Progress' recovery requires an agent assignee",
     },
     {
-        "id": "rule3_in_testing",
+        "id": "rule3_in_progress_assigned_to_agent",
+        "wp": {
+            "status_id": 2,
+            "status_name": "In Progress",
+            "assignee_id": 11,
+        },
+        "eligible": True,
+        "agent_key": "IMPL",
+        "status_key": "in_progress",
+    },
+    {
+        "id": "rule3_in_progress_assigned_to_human",
+        "wp": {
+            "status_id": 2,
+            "status_name": "In Progress",
+            "assignee_id": 99,
+        },
+        "eligible": False,
+        "reason": (
+            "status 'In Progress' is assigned to a user that is not a "
+            "configured agent"
+        ),
+    },
+    {
+        "id": "rule3_in_testing_unassigned",
         "wp": {"status_id": 4, "status_name": "In Testing"},
         "eligible": False,
-        "reason": "status 'In Testing' is not dispatchable",
+        "reason": "status 'In Testing' recovery requires an agent assignee",
+    },
+    {
+        "id": "rule3_in_testing_assigned_to_reviewer",
+        "wp": {
+            "status_id": 4,
+            "status_name": "In Testing",
+            "assignee_id": 12,
+        },
+        "eligible": True,
+        "agent_key": "REVIEWER",
+        "status_key": "in_testing",
+    },
+    {
+        "id": "rule3_in_testing_assigned_to_implementer",
+        "wp": {
+            "status_id": 4,
+            "status_name": "In Testing",
+            "assignee_id": 11,
+        },
+        "eligible": False,
+        "reason": "status 'In Testing' can only be recovered by the reviewer agent",
     },
     {
         "id": "rule3_on_hold",
@@ -267,6 +312,7 @@ async def test_build_context_derives_eligible_types_and_agent_users() -> None:
     assert ctx.eligible_type_ids == {4: frozenset({1, 4, 7})}
     # impl=11, reviewer=12, engine=10.
     assert ctx.agent_user_ids == frozenset({10, 11, 12})
+    assert ctx.agent_key_by_user_id == {11: "IMPL", 12: "REVIEWER"}
     assert ctx.reviewer_agent_key == "REVIEWER"
     assert ctx.agent_field_id == "customField3"
     assert ctx.option_id_to_value == {11: "IMPL", 22: "REVIEWER"}

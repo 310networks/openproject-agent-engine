@@ -1,6 +1,8 @@
 """Tests for the runner abstraction (PLAN section 6)."""
 
+import asyncio
 import dataclasses
+import os
 from pathlib import Path
 
 import pytest
@@ -233,6 +235,35 @@ async def test_run_command_on_spawned_called(tmp_path: Path) -> None:
     assert pid > 0
     assert pid == pgid  # own process group (start_new_session)
     assert proc_start
+
+
+async def test_cancelling_a_run_kills_the_process_group(tmp_path: Path) -> None:
+    spawned = asyncio.Event()
+    pid_holder: list[int] = []
+
+    def on_spawned(pid: int, pgid: int, proc_start: str) -> None:
+        pid_holder.append(pid)
+        spawned.set()
+
+    request = _request(tmp_path, ("sh", "-c", "sleep 30 & wait"))
+    task = asyncio.create_task(run_command(request, on_spawned=on_spawned))
+    await asyncio.wait_for(spawned.wait(), timeout=10)
+    assert pid_holder
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # The whole group is gone (SIGTERM was enough for ``sleep``); allow the
+    # kernel a moment to reap it.
+    for _ in range(100):
+        try:
+            os.kill(pid_holder[0], 0)
+        except ProcessLookupError:
+            break
+        await asyncio.sleep(0.05)
+    else:
+        pytest.fail("process group survived cancellation")
 
 
 async def test_run_command_missing_binary_raises(tmp_path: Path) -> None:

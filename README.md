@@ -14,8 +14,9 @@ The implementation plan, workflow state machine and acceptance criteria live in
 
 Milestones M0 (skeleton), M1 (OpenProject client and startup resolution),
 M2 (polling and eligibility), M3 (store and claim protocol),
-M4 (runner and implementer flow), M5 (reviewer flow) and M6 (rejection loop and
-comments) are implemented: package layout, validated configuration models,
+M4 (runner and implementer flow), M5 (reviewer flow), M6 (rejection loop and
+comments) and M7 (recovery, shutdown and pause) are implemented: package
+layout, validated configuration models,
 JSON logging with secret redaction, CLI entry points, example deployment
 files, an async OpenProject API client with retries and pagination, startup
 resolution of statuses, users, projects, types and the `AGENT` custom field,
@@ -30,10 +31,32 @@ rejection to `Rejected`, and `On Hold` for a missing PR or a `BLOCKED`
 result), and the rejection loop: fix-pass dispatch with the latest reviewer
 feedback and later human comments, rejection counting from the work package
 history, and escalation to `On Hold` (with an engine comment) when a
-rejection would exceed `MAX_REJECTIONS`.
+rejection would exceed `MAX_REJECTIONS`. M7 adds startup reconciliation of
+`In Progress` and `In Testing` work packages (resume and re-review runs),
+PID-reuse-safe cleanup of leftover agent process groups, graceful shutdown
+with `STOP_GRACE_SECONDS`, pause controls, the heartbeat file and the
+`status` command.
 
-Recovery and shutdown (M7) are not implemented yet; a `resume` run is
-logged and its row is marked `interrupted` on stop.
+## Operations
+
+The engine writes `DATA_DIR/heartbeat` after every poll. Inspect it with:
+
+```bash
+op-agent-engine status          # heartbeat age, active runs, last 10 runs
+op-agent-engine status --json
+```
+
+Pause new dispatches without stopping running agents by setting
+`ENGINE_PAUSED=true` in `engine.env` (restart required) or by creating an
+empty `DATA_DIR/PAUSE` file (picked up on the next poll; delete it to resume).
+On `SIGTERM` the engine stops polling and dispatching, waits up to
+`STOP_GRACE_SECONDS` for running agents, then terminates the remaining
+process groups and marks their runs `interrupted`. The next start resumes
+those work packages from `In Progress` / `In Testing`.
+
+The unit can optionally use the systemd watchdog: uncomment `Type=notify` and
+`WatchdogSec=` in `deploy/op-agent-engine.service`. The engine sends
+`READY=1` after startup resolution and `WATCHDOG=1` after every poll.
 
 ## Development setup
 

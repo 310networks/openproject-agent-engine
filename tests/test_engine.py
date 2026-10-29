@@ -24,7 +24,7 @@ from op_agent_engine.openproject.client import OpenProjectClient
 from op_agent_engine.openproject.resolve import OpenProjectResolution
 from op_agent_engine.prompts import PromptRenderer
 from op_agent_engine.runners.base import OnSpawned, RunRequest, RunResult
-from op_agent_engine.store import INTERRUPTED, SUCCEEDED, Store
+from op_agent_engine.store import FAILED, INTERRUPTED, SUCCEEDED, Store
 from op_agent_engine.workspace import Workspace
 from tests.fakes.openproject import FakeOpenProject
 from tests.test_poller import PRIORITIES, wp
@@ -33,6 +33,7 @@ from tests.test_resolve import BASE_URL, TOKEN, make_config, make_fake
 STATUS_NEW = 1
 STATUS_IN_PROGRESS = 2
 STATUS_READY_FOR_REVIEW = 3
+STATUS_IN_TESTING = 4
 STATUS_ON_HOLD = 5
 STATUS_REJECTED = 6
 STATUS_CLOSED = 7
@@ -216,6 +217,9 @@ async def make_engine(
         "FIX {{ wp.subject }} attempt={{ attempt }} of {{ max_rejections }} "
         "feedback={{ feedback.text }}",
         encoding="utf-8",
+    )
+    (prompts_dir / "resume.txt.j2").write_text(
+        "RESUME {{ wp.subject }} branch={{ branch }}", encoding="utf-8"
     )
     prompts = PromptRenderer(prompts_dir)
 
@@ -678,5 +682,199 @@ async def test_engine_review_without_pr_moves_to_on_hold(
         ]
         assert len(comments) == 1
         assert comments[0].startswith("ENGINE: no PR found")
+    finally:
+        await client.aclose()
+
+
+# -- M7: recovery, shutdown, pause and health ---------------------------------------
+
+
+async def test_startup_recovers_in_progress_with_a_resume_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = FakeRunner(make_result(tmp_path))
+    engine, fake, client, store_path = await make_engine(
+        tmp_path,
+        monkeypatch,
+        work_packages=[
+            wp(100, status=STATUS_IN_PROGRESS, agent=11, assignee=AGENT_USER_ID)
+        ],
+        runner=runner,
+        gh=FakeGitHub(pr=PR),
+    )
+    try:
+        assert await engine.run(max_polls=1) == 0
+
+        # The claim keeps the recovery status and the implementation is
+        # verified as usual.
+        assert status_href(fake, 100) == f"/api/v3/statuses/{STATUS_READY_FOR_REVIEW}"
+        assert assignee_href(fake, 100) == f"/api/v3/users/{AGENT_USER_ID}"
+        assert len(runner.requests) == 1
+
+        store = Store(store_path)
+        try:
+            runs = runs_for(store, 100)
+            assert len(runs) == 1
+            assert runs[0].kind == "resume"
+            assert runs[0].state == SUCCEEDED
+            assert runs[0].outcome == "ready_for_review"
+            prompt = (Path(runs[0].run_dir) / "prompt.txt").read_text()
+            assert "RESUME wp 100" in prompt
+        finally:
+            store.close()
+    finally:
+        await client.aclose()
+
+
+async def test_startup_recovers_in_testing_with_a_re_review(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = FakeRunner(make_result(tmp_path, result_line="RESULT: APPROVED"))
+    engine, fake, client, store_path = await make_engine(
+        tmp_path,
+        monkeypatch,
+        work_packages=[
+            wp(100, status=STATUS_IN_TESTING, agent=22, assignee=REVIEWER_USER_ID)
+        ],
+        runner=runner,
+        gh=FakeGitHub(pr=PR, merged=MERGED_PR),
+    )
+    try:
+        assert await engine.run(max_polls=1) == 0
+
+        assert status_href(fake, 100) == f"/api/v3/statuses/{STATUS_CLOSED}"
+        assert assignee_href(fake, 100) == f"/api/v3/users/{REVIEWER_USER_ID}"
+
+        store = Store(store_path)
+        try:
+            runs = runs_for(store, 100)
+            assert len(runs) == 1
+            assert runs[0].kind == "review"
+            assert runs[0].state == SUCCEEDED
+            assert runs[0].outcome == "approved"
+            prompt = (Path(runs[0].run_dir) / "prompt.txt").read_text()
+            assert "REVIEW wp 100" in prompt
+        finally:
+            store.close()
+    finally:
+        await client.aclose()
+
+
+async def test_interrupted_run_does_not_count_as_a_crash_but_the_resume_failure_does(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = FakeRunner(make_result(tmp_path))  # no PR -> failure
+    engine, _fake, client, store_path = await make_engine(
+        tmp_path,
+        monkeypatch,
+        work_packages=[
+            wp(100, status=STATUS_IN_PROGRESS, agent=11, assignee=AGENT_USER_ID)
+        ],
+        runner=runner,
+        gh=FakeGitHub(pr=None),
+    )
+    # Simulate an engine crash: a run was claimed but never finished.
+    store = Store(store_path)
+    stale_run_id = store.begin_run(
+        work_package_id=100,
+        project_id=4,
+        agent="IMPL",
+        kind="implement",
+        attempt=1,
+        branch="op-4-100",
+        run_dir_template=str(store.runs_dir / "{id}"),
+    )
+    store.close()
+
+    try:
+        assert await engine.run(max_polls=1) == 0
+
+        store = Store(store_path)
+        try:
+            stale = store.get_run(stale_run_id)
+            assert stale is not None
+            assert stale.state == INTERRUPTED
+            # Only the failed resume run counts; interruption did not.
+            assert store.crash_count(100) == 1
+            runs = [
+                run
+                for run in store.finished_runs()
+                if run.work_package_id == 100
+            ]
+            assert any(run.kind == "resume" and run.state == FAILED for run in runs)
+        finally:
+            store.close()
+    finally:
+        await client.aclose()
+
+
+async def test_shutdown_marks_in_flight_runs_interrupted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The run is still sleeping when the grace period (0s) expires.
+    runner = FakeRunner(make_result(tmp_path), delay=30.0)
+    engine, _fake, client, store_path = await make_engine(
+        tmp_path,
+        monkeypatch,
+        work_packages=[wp(100, status=STATUS_NEW, agent=11)],
+        runner=runner,
+        gh=FakeGitHub(pr=PR),
+        settings_overrides={"stop_grace_seconds": 0},
+    )
+    try:
+        assert await engine.run(max_polls=1) == 0
+
+        store = Store(store_path)
+        try:
+            runs = runs_for(store, 100)
+            assert len(runs) == 1
+            assert runs[0].state == INTERRUPTED
+            # An interrupted run must not count towards the crash cap.
+            assert store.crash_count(100) == 0
+        finally:
+            store.close()
+    finally:
+        await client.aclose()
+
+
+async def test_pause_file_stops_new_dispatches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = FakeRunner(make_result(tmp_path))
+    engine, fake, client, store_path = await make_engine(
+        tmp_path,
+        monkeypatch,
+        work_packages=[wp(100, status=STATUS_NEW, agent=11)],
+        runner=runner,
+        gh=FakeGitHub(pr=PR),
+    )
+    data_dir = store_path.parent
+    data_dir.mkdir(parents=True, exist_ok=True)
+    (data_dir / "PAUSE").write_text("paused\n", encoding="utf-8")
+    try:
+        assert await engine.run(max_polls=1) == 0
+
+        assert fake.patches == []
+        assert runner.requests == []
+        assert status_href(fake, 100) == f"/api/v3/statuses/{STATUS_NEW}"
+    finally:
+        await client.aclose()
+
+
+async def test_engine_writes_a_heartbeat_after_each_poll(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = FakeRunner(make_result(tmp_path))
+    engine, _fake, client, store_path = await make_engine(
+        tmp_path,
+        monkeypatch,
+        work_packages=[],
+        runner=runner,
+    )
+    try:
+        assert await engine.run(max_polls=1) == 0
+        heartbeat = store_path.parent / "heartbeat"
+        assert heartbeat.is_file()
+        datetime.fromisoformat(heartbeat.read_text().strip())
     finally:
         await client.aclose()

@@ -28,7 +28,9 @@ Hold with an engine comment (escalation). Otherwise it stays In Progress
 (implement/fix) or In Testing (review) and a resume/review run may be
 dispatched on a later poll (M7).
 
-Resume dispatch is M7.
+Resume runs (M7) are implementer runs for a work package left In Progress by
+an interrupted or retryable failed run; their prompt is ``resume.txt.j2`` and
+they use the same external verification as implement and fix runs.
 """
 
 from __future__ import annotations
@@ -79,18 +81,19 @@ from op_agent_engine.prompts import FixContext, PromptRenderer, select_fix_conte
 from op_agent_engine.runners.base import OnSpawned, RunRequest, RunResult
 from op_agent_engine.runners.generic import GenericRunner
 from op_agent_engine.scheduler import ClaimedRun
-from op_agent_engine.store import FAILED, Store
+from op_agent_engine.store import FAILED, SUCCEEDED, Store
 from op_agent_engine.workspace import Workspace, WorkspaceError, prepare_workspace
 
 logger = get_logger(__name__)
 
-#: Run kinds the dispatcher executes. ``resume`` is M7.
-EXECUTED_KINDS = frozenset({"implement", "fix", "review"})
+#: Run kinds the dispatcher executes.
+EXECUTED_KINDS = frozenset({"implement", "fix", "resume", "review"})
 
 #: The status a run was claimed in; transitions must start from there.
 EXPECTED_STATUS_KEY_BY_KIND = {
     "implement": "in_progress",
     "fix": "in_progress",
+    "resume": "in_progress",
     "review": "in_testing",
 }
 
@@ -176,8 +179,8 @@ class Dispatcher:
         }
 
         if claimed.kind not in EXECUTED_KINDS:
-            logger.info(
-                "run kind %r is claimed but not executed yet (M7); "
+            logger.warning(
+                "run kind %r is not supported by this engine version; "
                 "leaving the run active",
                 claimed.kind,
                 extra=log_extra,
@@ -308,6 +311,28 @@ class Dispatcher:
             )
             return
         if pr is None:
+            # Recovery can find a review that merged just before the engine
+            # crashed: the PR is no longer open, but the merge is
+            # authoritative and must close the work package without running
+            # the reviewer again.
+            try:
+                merged = await self._gh.find_pr(
+                    repo, claimed.branch, state="merged"
+                )
+            except GitHubError as error:
+                await self._fail_after_run(
+                    run_id,
+                    claimed,
+                    None,
+                    None,
+                    detail=f"merged PR lookup failed: {error}",
+                )
+                return
+            if merged is not None:
+                await self._review_already_merged(
+                    claimed, run_id, merged, started_at
+                )
+                return
             await self._review_without_pr(claimed, run_id, started_at)
             return
 
@@ -543,7 +568,7 @@ class Dispatcher:
             else:
                 logger.warning(
                     "run failed (%s); crash retry %d/%d allowed; work package "
-                    "stays %s for a later run (M7)",
+                    "stays %s and is resumed by a later poll",
                     outcome,
                     crash_count,
                     self._settings.max_crash_retries,
@@ -569,7 +594,7 @@ class Dispatcher:
             )
         except OpenProjectError as error:
             # Transient API failure: leave the run 'running' so the next
-            # engine start recovers it (interrupted -> M7 resume).
+            # engine start recovers it (interrupted -> resume/re-review).
             self._write_meta(
                 claimed, request, result, state="running", outcome="error",
                 transition=transition, pr=pr, started_at=started_at,
@@ -599,6 +624,65 @@ class Dispatcher:
             outcome,
             transition,
             extra={**log_extra, "state": state, "outcome": outcome},
+        )
+
+    async def _review_already_merged(
+        self,
+        claimed: ClaimedRun,
+        run_id: int,
+        merged: PullRequest,
+        started_at: datetime,
+    ) -> None:
+        """Close a review whose PR was already merged before it started."""
+        wp = claimed.item.work_package
+        log_extra = {
+            "run_id": run_id,
+            "work_package_id": wp.id,
+            "agent": claimed.item.agent_key,
+            "kind": claimed.kind,
+            "pr": merged.url,
+        }
+        transition: str | None = "closed"
+        try:
+            await self._transition(
+                wp.id, "closed", expected_status_key="in_testing"
+            )
+        except TransitionAborted as error:
+            state, outcome, transition = (
+                FAILED,
+                f"transition_aborted: {error}",
+                None,
+            )
+            logger.error(
+                "transition aborted for run %d: %s", run_id, error, extra=log_extra
+            )
+        except OpenProjectError as error:
+            self._write_meta(
+                claimed, None, None, state="running", outcome="error",
+                transition=transition, pr=merged, started_at=started_at,
+            )
+            logger.error(
+                "OpenProject error closing an already merged PR for run %d; "
+                "run left active: %s",
+                run_id,
+                error,
+                extra=log_extra,
+            )
+            raise
+        else:
+            state, outcome = SUCCEEDED, "approved"
+            logger.info(
+                "PR for branch %s was already merged; work package %s closed "
+                "without a new review run",
+                claimed.branch,
+                wp.display_id,
+                extra=log_extra,
+            )
+
+        self._store.finish_run(run_id, state=state, outcome=outcome)
+        self._write_meta(
+            claimed, None, None, state=state, outcome=outcome,
+            transition=transition, pr=merged, started_at=started_at,
         )
 
     async def _review_without_pr(
@@ -1009,7 +1093,11 @@ class Dispatcher:
     ) -> str:
         wp = claimed.item.work_package
         agent = self._config.agents[claimed.item.agent_key]
-        kind = claimed.kind if claimed.kind in ("implement", "fix", "review") else "implement"
+        kind = (
+            claimed.kind
+            if claimed.kind in ("implement", "fix", "resume", "review")
+            else "implement"
+        )
         base_url = (self._settings.op_base_url or "").rstrip("/")
         context: dict[str, Any] = {
             "agent": {"name": agent.name},

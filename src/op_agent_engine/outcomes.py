@@ -7,9 +7,9 @@ Implement and fix runs (M6):
 * Otherwise an open PR for the branch (external check via GitHub) ->
   success: the work package moves to Ready for Review.
 * No PR (or non-zero exit, or timeout) -> failure; the crash retry counter
-  increments and a resume run may be dispatched on a later poll (M7). When
-  the cap (``MAX_CRASH_RETRIES``) is reached the work package moves to On
-  Hold with an engine comment (escalation).
+  increments and a resume run is dispatched on a later poll (M7). When the
+  cap (``MAX_CRASH_RETRIES``) is reached the work package moves to On Hold
+  with an engine comment (escalation).
 
 Review runs (M5):
 

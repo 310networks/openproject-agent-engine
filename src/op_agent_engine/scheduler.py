@@ -43,11 +43,14 @@ from op_agent_engine.store import Store
 logger = get_logger(__name__)
 
 # Run kind per candidate status (PLAN section 12: implement | fix | resume |
-# review). "resume" is M7.
+# review). In Progress and In Testing are the crash-recovery candidates of
+# PLAN section 13.
 KIND_BY_STATUS_KEY = {
     "new": "implement",
     "rejected": "fix",
     "ready_for_review": "review",
+    "in_progress": "resume",
+    "in_testing": "review",
 }
 
 
@@ -312,7 +315,9 @@ class Scheduler:
         """Target status id and assignee user id for a claim."""
         agent = self._config.agents[item.agent_key]
         status_key = (
-            "in_testing" if item.status_key == "ready_for_review" else "in_progress"
+            "in_testing"
+            if item.status_key in ("ready_for_review", "in_testing")
+            else "in_progress"
         )
         return (
             self._resolution.statuses[status_key].id,

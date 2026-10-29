@@ -24,8 +24,13 @@ from op_agent_engine.openproject.workpackage import WorkPackage, parse_work_pack
 
 logger = get_logger(__name__)
 
-# Candidate statuses for M2 (matches eligibility.DISPATCH_STATUS_KEYS).
+# Statuses that start a fresh workflow step (PLAN section 8).
 CANDIDATE_STATUS_KEYS = ("new", "rejected", "ready_for_review")
+
+# Statuses recovered after a crash or a retryable failure (PLAN section 13).
+# They are only queried when assigned to an agent user, so a work package that
+# a human put into In Progress/In Testing is never touched.
+RECOVERY_STATUS_KEYS = ("in_progress", "in_testing")
 
 
 @dataclass(frozen=True)
@@ -141,11 +146,36 @@ class Poller:
         return positions
 
     async def _fetch_candidates(self, ctx: EligibilityContext) -> list[WorkPackage]:
+        candidates = await self._fetch_candidates_for(
+            ctx, CANDIDATE_STATUS_KEYS
+        )
+        recovery_agent_user_ids = sorted(
+            ctx.agent_user_ids - {ctx.resolution.engine_user.id}
+        )
+        if recovery_agent_user_ids:
+            candidates.extend(
+                await self._fetch_candidates_for(
+                    ctx,
+                    RECOVERY_STATUS_KEYS,
+                    assignee_ids=recovery_agent_user_ids,
+                )
+            )
+        return candidates
+
+    async def _fetch_candidates_for(
+        self,
+        ctx: EligibilityContext,
+        status_keys: tuple[str, ...],
+        *,
+        assignee_ids: list[int] | None = None,
+    ) -> list[WorkPackage]:
         status_ids = [
             str(self._resolution.statuses[key].id)
-            for key in CANDIDATE_STATUS_KEYS
+            for key in status_keys
             if key in self._resolution.statuses
         ]
+        if not status_ids:
+            return []
         candidates: list[WorkPackage] = []
         for project in self._config.projects:
             if not project.enabled:
@@ -156,11 +186,20 @@ class Poller:
             type_ids = sorted(ctx.eligible_type_ids.get(resolved.id, frozenset()))
             if not type_ids:
                 continue
-            filters = [
+            filters: list[dict[str, Any]] = [
                 {"project": {"operator": "=", "values": [str(resolved.id)]}},
                 {"status": {"operator": "=", "values": status_ids}},
                 {"type": {"operator": "=", "values": [str(type_id) for type_id in type_ids]}},
             ]
+            if assignee_ids is not None:
+                filters.append(
+                    {
+                        "assignee": {
+                            "operator": "=",
+                            "values": [str(user_id) for user_id in assignee_ids],
+                        }
+                    }
+                )
             async for element in self._client.iter_collection(
                 "/api/v3/work_packages",
                 params={

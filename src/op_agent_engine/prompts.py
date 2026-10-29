@@ -30,7 +30,7 @@ from op_agent_engine.openproject.activities import ActivityComment, comment_from
 
 PROMPTS_DIR_NAME = "prompts"
 
-#: Kinds the engine can render (implement/fix/review; resume is M7).
+#: Kinds the engine can render (implement/fix/resume/review).
 KINDS = ("implement", "fix", "resume", "review")
 
 #: PLAN section 10: cap on later human comments in a fix prompt.

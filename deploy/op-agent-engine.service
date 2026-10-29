@@ -5,6 +5,12 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+# Optional systemd watchdog: switch to Type=notify and set WatchdogSec to three
+# poll intervals (for example 180 with the default 60s poll). The engine sends
+# READY=1 after startup resolution and WATCHDOG=1 after every poll when
+# NOTIFY_SOCKET is set.
+#Type=notify
+#WatchdogSec=180
 User=<host-user>
 Group=<host-user>
 WorkingDirectory=/home/<host-user>

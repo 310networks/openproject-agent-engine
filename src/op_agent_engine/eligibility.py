@@ -15,9 +15,13 @@ from op_agent_engine.config import WorkflowConfig
 from op_agent_engine.openproject.resolve import OpenProjectResolution
 from op_agent_engine.openproject.workpackage import WorkPackage
 
-# Statuses dispatchable in M2. The recovery statuses (in_progress, in_testing)
-# are M7 and are intentionally excluded here.
-DISPATCH_STATUS_KEYS = frozenset({"new", "rejected", "ready_for_review"})
+# Statuses the engine may dispatch. The recovery statuses are only eligible
+# when the work package is already assigned to the matching agent user and has
+# no active run (PLAN sections 8 and 13).
+DISPATCH_STATUS_KEYS = frozenset(
+    {"new", "rejected", "ready_for_review", "in_progress", "in_testing"}
+)
+RECOVERY_STATUS_KEYS = frozenset({"in_progress", "in_testing"})
 
 
 @dataclass(frozen=True)
@@ -30,6 +34,7 @@ class EligibilityContext:
     eligible_type_ids: dict[int, frozenset[int]]
     status_key_by_id: dict[int, str]
     agent_user_ids: frozenset[int]
+    agent_key_by_user_id: dict[int, str]
     agent_keys: frozenset[str]
     reviewer_agent_key: str | None
     agent_field_id: str
@@ -73,10 +78,12 @@ def build_eligibility_context(
     status_key_by_id = {status.id: key for key, status in resolution.statuses.items()}
 
     agent_user_id_set = set()
-    for agent in config.agents.values():
+    agent_key_by_user_id: dict[int, str] = {}
+    for key, agent in config.agents.items():
         user = resolution.users.get(agent.op_login)
         if user is not None:
             agent_user_id_set.add(user.id)
+            agent_key_by_user_id[user.id] = key
     agent_user_id_set.add(resolution.engine_user.id)
     agent_user_ids = frozenset(agent_user_id_set)
 
@@ -97,6 +104,7 @@ def build_eligibility_context(
         eligible_type_ids=eligible_type_ids,
         status_key_by_id=status_key_by_id,
         agent_user_ids=agent_user_ids,
+        agent_key_by_user_id=agent_key_by_user_id,
         agent_keys=frozenset(config.agents),
         reviewer_agent_key=reviewer_agent_key,
         agent_field_id=resolution.agent_field.field_id,
@@ -145,7 +153,22 @@ def evaluate_eligibility(
         return _reject(f"status '{wp.status_name}' is not dispatchable")
 
     # Rules 3/4: determine the target agent from status and the AGENT field.
-    if status_key in ("new", "rejected"):
+    if status_key in RECOVERY_STATUS_KEYS:
+        if wp.assignee_id is None:
+            return _reject(
+                f"status '{wp.status_name}' recovery requires an agent assignee"
+            )
+        agent_key = ctx.agent_key_by_user_id.get(wp.assignee_id)
+        if agent_key is None:
+            return _reject(
+                f"status '{wp.status_name}' is assigned to a user that is not "
+                "a configured agent"
+            )
+        if status_key == "in_testing" and agent_key != ctx.reviewer_agent_key:
+            return _reject(
+                "status 'In Testing' can only be recovered by the reviewer agent"
+            )
+    elif status_key in ("new", "rejected"):
         agent_key = wp.agent_value
         if agent_key is None:
             return _reject("AGENT field is not set")

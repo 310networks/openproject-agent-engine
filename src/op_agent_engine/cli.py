@@ -3,10 +3,10 @@
 Subcommands follow the plan: ``run``, ``once``, ``check-config``, ``status``
 and ``dry-run``. ``check-config`` validates the workflow file and resolves all
 OpenProject IDs. ``once`` performs a single poll and claims what the slot
-rules allow (M3). ``dry-run`` performs a single poll and logs what would be
+rules allow. ``dry-run`` performs a single poll and logs what would be
 claimed without writing anything. ``run`` starts the engine loop (poll,
-schedule, sleep); execution of claimed runs is M4. ``status`` fails fast with
-a clear message until M7.
+schedule, execute, sleep). ``status`` prints the heartbeat age, active runs
+and the last finished runs from the local store (M7).
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ import json
 import os
 import sys
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -28,18 +29,20 @@ from op_agent_engine.config import (
     EngineSettings,
     WorkflowConfig,
 )
-from op_agent_engine.engine import run_engine, run_engine_once
-from op_agent_engine.logging import configure_logging, get_logger
+from op_agent_engine.engine import (
+    HEARTBEAT_FILE_NAME,
+    PAUSE_FILE_NAME,
+    STORE_FILE_NAME,
+    run_engine,
+    run_engine_once,
+)
+from op_agent_engine.logging import configure_logging
 from op_agent_engine.openproject.client import OpenProjectClient, OpenProjectError
 from op_agent_engine.openproject.resolve import OpenProjectResolution, resolve_workflow
+from op_agent_engine.store import Run, Store
 
-NOT_IMPLEMENTED_EXIT = 2
 CONFIG_ERROR_EXIT = 1
 OK_EXIT = 0
-
-_NOT_IMPLEMENTED_IN = {
-    "status": "M7+ (status command)",
-}
 
 
 def default_config_path() -> Path:
@@ -126,10 +129,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="validate the file only; do not resolve OpenProject IDs",
     )
 
-    subparsers.add_parser(
+    status = subparsers.add_parser(
         "status",
         help="print heartbeat age, active runs and recent runs",
         parents=[_subcommand_options()],
+    )
+    status.add_argument(
+        "--json",
+        action="store_true",
+        help="print the status as JSON",
     )
     return parser
 
@@ -281,13 +289,102 @@ def _check_config(path: Path, *, as_json: bool, offline: bool) -> int:
     return OK_EXIT
 
 
-def _not_implemented(command: str) -> int:
-    print(
-        f"op-agent-engine: '{command}' is not implemented yet "
-        f"(target: {_NOT_IMPLEMENTED_IN[command]})",
-        file=sys.stderr,
+def _read_heartbeat(path: Path) -> tuple[str | None, float | None]:
+    """Return the heartbeat timestamp and its age in seconds."""
+    try:
+        raw = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None, None
+    if not raw:
+        return None, None
+    try:
+        timestamp = datetime.fromisoformat(raw)
+    except ValueError:
+        return raw, None
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=UTC)
+    age = max(0.0, (datetime.now(UTC) - timestamp).total_seconds())
+    return raw, age
+
+
+def _run_line(run: Run) -> str:
+    return (
+        f"run {run.id}: wp {run.work_package_id} agent={run.agent} "
+        f"kind={run.kind} state={run.state} outcome={run.outcome or '-'} "
+        f"started={run.started_at} finished={run.finished_at or '-'}"
     )
-    return NOT_IMPLEMENTED_EXIT
+
+
+def _status(*, as_json: bool) -> int:
+    """Print heartbeat age, active runs and the last 10 finished runs."""
+    settings = EngineSettings()
+    data_dir = settings.data_dir
+    heartbeat_raw, heartbeat_age = _read_heartbeat(data_dir / HEARTBEAT_FILE_NAME)
+    paused = settings.engine_paused or (data_dir / PAUSE_FILE_NAME).exists()
+
+    active: list[Run] = []
+    finished: list[Run] = []
+    store_path = data_dir / STORE_FILE_NAME
+    if store_path.exists():
+        store = Store(store_path)
+        try:
+            active = store.active_runs()
+            finished = store.finished_runs(10)
+        finally:
+            store.close()
+
+    if as_json:
+        payload = {
+            "data_dir": str(data_dir),
+            "heartbeat": heartbeat_raw,
+            "heartbeat_age_seconds": (
+                round(heartbeat_age, 1) if heartbeat_age is not None else None
+            ),
+            "paused": paused,
+            "active_runs": [
+                {
+                    "id": run.id,
+                    "work_package_id": run.work_package_id,
+                    "agent": run.agent,
+                    "kind": run.kind,
+                    "branch": run.branch,
+                    "started_at": run.started_at,
+                }
+                for run in active
+            ],
+            "finished_runs": [
+                {
+                    "id": run.id,
+                    "work_package_id": run.work_package_id,
+                    "agent": run.agent,
+                    "kind": run.kind,
+                    "state": run.state,
+                    "outcome": run.outcome,
+                    "started_at": run.started_at,
+                    "finished_at": run.finished_at,
+                }
+                for run in finished
+            ],
+        }
+        print(json.dumps(payload, indent=2))
+        return OK_EXIT
+
+    if heartbeat_raw is None:
+        print(f"heartbeat: missing ({data_dir / HEARTBEAT_FILE_NAME})")
+    elif heartbeat_age is None:
+        print(f"heartbeat: {heartbeat_raw}")
+    else:
+        print(f"heartbeat: {heartbeat_age:.1f}s ago ({heartbeat_raw})")
+    print(f"paused: {'yes' if paused else 'no'}")
+    print(f"active runs: {len(active)}")
+    for run in active:
+        print(f"  {_run_line(run)}")
+    print(f"last {len(finished)} finished run(s) (max 10):")
+    if not finished:
+        print("  (none)")
+    for run in finished:
+        print(f"  {_run_line(run)}")
+    return OK_EXIT
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -295,6 +392,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     config_path = (args.config or default_config_path()).expanduser()
+
+    if args.command == "status":
+        return _status(as_json=args.json)
 
     if args.command == "check-config":
         return _check_config(config_path, as_json=args.json, offline=args.offline)
@@ -304,24 +404,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             config_path, dry_run=(args.command == "dry-run") or bool(args.dry_run)
         )
 
-    if args.command == "run":
-        return _run(config_path, dry_run=bool(args.dry_run))
-
-    # The remaining commands need a valid configuration before they can do
-    # anything, even while their engine behaviour is a stub.
-    try:
-        _load_config(config_path)
-    except ConfigError as error:
-        print(f"op-agent-engine: error: {error}", file=sys.stderr)
-        return CONFIG_ERROR_EXIT
-
-    configure_logging(args.log_level or os.environ.get("LOG_LEVEL", "INFO"))
-    log = get_logger("op_agent_engine.cli")
-    log.info(
-        "command not implemented",
-        extra={"command": args.command, "config": str(config_path)},
-    )
-    return _not_implemented(args.command)
+    return _run(config_path, dry_run=bool(args.dry_run))
 
 
 if __name__ == "__main__":  # pragma: no cover
