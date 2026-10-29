@@ -10,6 +10,13 @@ Do this once per OpenProject instance. Role names must match
 `openproject.provisioning.agent_role` and `engine_role` in `workflow.yaml`
 (the defaults are `Agent Worker` and `Agent Engine`).
 
+Create **exactly two roles**, not one per agent. The four agent users
+(`frontendEngineer`, `backendEngineer`, `leadDesigner`, `codeReviewer`) all
+share the single `Agent Worker` role; `agent-engine` gets `Agent Engine`.
+`provision --apply` creates the five users and one membership per user per
+scoped project, so each project ends up with four `Agent Worker` memberships
+and one `Agent Engine` membership.
+
 ## 1. Create the two project roles
 
 Open **Administration → Users and permissions → Roles and permissions** and
