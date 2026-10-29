@@ -45,9 +45,18 @@ Create exactly two project roles — **Administration → Users and permissions
 - **Agent Engine** (the `agent-engine` user): *View work packages*, *Edit
   work packages*, *Change work package status*, *Add comments*, plus the
   **global** permission *Manage users*. The engine token lists users with
-  `GET /api/v3/users` at startup, so without *Manage users* (or an
-  administrator account) `check-config` and `run` fail with "the engine token
-  needs the global 'manage_user' permission".
+  `GET /api/v3/users` at startup (to assign work packages and attribute
+  comments), so without *Manage users* (or an administrator account)
+  `check-config` and `run` fail with "the engine token needs the global
+  'manage_user' permission".
+
+  Keep **Agent Engine** as a *project* role — a global role cannot carry the
+  work-package permissions above. In the role form, enable *Manage users*
+  under its **Global permissions** section. If your version does not offer
+  global permissions on project roles, create a separate global role with
+  only *Manage users* and assign it to `agent-engine` under
+  *Administration → Users → agent-engine → Global role*; keep the project
+  role as-is.
 
 ## 5. Workflow transitions
 
