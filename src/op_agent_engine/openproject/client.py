@@ -142,6 +142,10 @@ class OpenProjectClient:
         response = await self._request("PATCH", path, json_body=json_body)
         return self._decode(response)
 
+    async def delete(self, path: str) -> None:
+        """DELETE a resource; the response body is ignored."""
+        await self._request("DELETE", path)
+
     @staticmethod
     def _decode(response: httpx.Response) -> JSON:
         try:

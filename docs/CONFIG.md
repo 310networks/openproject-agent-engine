@@ -80,6 +80,7 @@ Field notes:
 | Command | Purpose |
 |---|---|
 | `setup` | interactive installer: init, provision, token prompts, service, dry run |
+| `uninstall` | remove local files and OpenProject users (dry-run by default) |
 | `init` | scaffold config and env files (idempotent) |
 | `run` | long-running service loop |
 | `once` | one poll; claims and executes within the slot rules |

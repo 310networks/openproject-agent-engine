@@ -35,6 +35,7 @@ _SCHEMA = re.compile(r"^/api/v3/work_packages/schemas/(?P<identifier>[^/]+)$")
 _WP_BY_ID = re.compile(r"^/api/v3/work_packages/(?P<id>\d+)$")
 _WP_ACTIVITIES = re.compile(r"^/api/v3/work_packages/(?P<id>\d+)/activities$")
 _USER_BY_ID = re.compile(r"^/api/v3/users/(?P<id>\d+)$")
+_USER_LOCK = re.compile(r"^/api/v3/users/(?P<id>\d+)/lock$")
 _MEMBERSHIP_BY_ID = re.compile(r"^/api/v3/memberships/(?P<id>\d+)$")
 _HREF_ID = re.compile(r"/(\d+)$")
 
@@ -95,6 +96,7 @@ class FakeOpenProject:
         activities: list[dict[str, JSON]] | None = None,
         posting_user_id: int | None = 10,
         patch_error: tuple[int, str] | None = None,
+        delete_user_error: tuple[int, str] | None = None,
         roles: list[dict[str, JSON]] | None = None,
         memberships: list[dict[str, JSON]] | None = None,
         token_users: dict[str, int] | None = None,
@@ -149,6 +151,8 @@ class FakeOpenProject:
         self.patches: list[dict[str, JSON]] = []
         # When set, every PATCH returns this (status, message) instead.
         self.patch_error = patch_error
+        # When set, DELETE /api/v3/users/<id> returns this (status, message).
+        self.delete_user_error = delete_user_error
 
     @property
     def transport(self) -> httpx.MockTransport:
@@ -162,6 +166,16 @@ class FakeOpenProject:
             return self._error(401, "Unauthorized")
 
         path = request.url.path
+        if request.method == "DELETE":
+            user_by_id = _USER_BY_ID.match(path)
+            if user_by_id:
+                return self._delete_user(int(user_by_id.group("id")), request)
+            membership_by_id = _MEMBERSHIP_BY_ID.match(path)
+            if membership_by_id:
+                return self._delete_membership(
+                    int(membership_by_id.group("id")), request
+                )
+            return self._error(404, "The requested resource could not be found.")
         if request.method == "PATCH":
             wp_by_id = _WP_BY_ID.match(path)
             if wp_by_id:
@@ -183,6 +197,9 @@ class FakeOpenProject:
                 return self._create_user(request)
             if path == "/api/v3/memberships":
                 return self._create_membership(request)
+            lock_match = _USER_LOCK.match(path)
+            if lock_match:
+                return self._lock_user(int(lock_match.group("id")))
             return self._error(404, "The requested resource could not be found.")
         if request.method != "GET":
             return self._error(405, "Method not allowed")
@@ -386,6 +403,51 @@ class FakeOpenProject:
         }
         self.users.append(user)
         return self._json(user, status_code=201)
+
+    def _delete_user(
+        self, user_id: int, request: httpx.Request
+    ) -> httpx.Response:
+        if self.delete_user_error is not None:
+            return self._error(*self.delete_user_error)
+        user = next(
+            (entry for entry in self.users if entry.get("id") == user_id), None
+        )
+        if user is None:
+            return self._error(404, "The requested resource could not be found.")
+        self.users = [entry for entry in self.users if entry.get("id") != user_id]
+        self.memberships = [
+            entry
+            for entry in self.memberships
+            if _href_id(entry.get("_links", {}).get("principal")) != user_id
+        ]
+        return httpx.Response(204, request=request)
+
+    def _lock_user(self, user_id: int) -> httpx.Response:
+        user = next(
+            (entry for entry in self.users if entry.get("id") == user_id), None
+        )
+        if user is None:
+            return self._error(404, "The requested resource could not be found.")
+        user["status"] = "locked"
+        return self._json(user)
+
+    def _delete_membership(
+        self, membership_id: int, request: httpx.Request
+    ) -> httpx.Response:
+        membership = next(
+            (
+                entry
+                for entry in self.memberships
+                if entry.get("id") == membership_id
+            ),
+            None,
+        )
+        if membership is None:
+            return self._error(404, "The requested resource could not be found.")
+        self.memberships = [
+            entry for entry in self.memberships if entry.get("id") != membership_id
+        ]
+        return httpx.Response(204, request=request)
 
     def _patch_user(
         self, user_id: int, request: httpx.Request

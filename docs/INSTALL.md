@@ -82,6 +82,25 @@ ln -s ~/.local/share/op-agent-engine/venv/bin/op-agent-engine \
       ~/.local/bin/op-agent-engine
 ```
 
+## Uninstall
+
+```bash
+./uninstall.sh            # asks for confirmation
+./uninstall.sh --dry-run  # print the plan only
+```
+
+The script stops and removes the systemd units, removes the config and data
+directories plus the checkout's `workflow.yaml`/`engine.env` and backups,
+then removes the OpenProject users. Users are deleted when the instance
+permits it; if deletion returns HTTP 403 they are locked instead. The token
+owner and any administrator account are never touched. Finally the script
+runs `uv tool uninstall op-agent-engine`.
+
+Retain specific layers with `--keep-config`, `--keep-data`, `--keep-users`
+or `--keep-tool`. Agent repository clones under
+`WORKSPACE_ROOT/*/repositories` are kept unless `--purge-agent-repos` is
+given.
+
 ## Scaffolding
 
 `op-agent-engine init` creates `~/.config/op-agent-engine/` (mode `700`) with

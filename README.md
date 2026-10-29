@@ -55,6 +55,20 @@ The service starts immediately and autostarts on boot. Follow it with
 The manual equivalent is in [docs/INSTALL.md](docs/INSTALL.md); `uv` is the
 only installer prerequisite.
 
+## Uninstall
+
+```bash
+./uninstall.sh            # asks for confirmation
+./uninstall.sh --dry-run  # print the plan only
+```
+
+The uninstaller stops and removes the systemd units, removes
+`~/.config/op-agent-engine/` and `~/.local/share/op-agent-engine/`, deletes
+the checkout's `workflow.yaml`/`engine.env` and their backups, removes or
+locks the OpenProject users, then uninstalls the `uv` tool. Use
+`--keep-config`, `--keep-data`, `--keep-users` or `--keep-tool` to retain a
+layer; `--purge-agent-repos` also deletes `WORKSPACE_ROOT/*/repositories`.
+
 ## Documentation
 
 | Doc | Contents |

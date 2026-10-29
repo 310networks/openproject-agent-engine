@@ -24,6 +24,7 @@ from pydantic import ValidationError
 
 from op_agent_engine import __version__, install
 from op_agent_engine.config import (
+    DEFAULT_DATA_DIR,
     DEFAULT_ENGINE_CONFIG,
     ConfigError,
     EngineSettings,
@@ -50,6 +51,7 @@ from op_agent_engine.provision import (
 )
 from op_agent_engine.retention import CleanupReport, cleanup_run_dirs
 from op_agent_engine.store import RUNS_DIR_NAME, Run, Store
+from op_agent_engine.uninstall import UninstallOptions, run_uninstall
 from op_agent_engine.wizard import run_setup
 
 CONFIG_ERROR_EXIT = 1
@@ -213,6 +215,68 @@ def build_parser() -> argparse.ArgumentParser:
         "-y",
         action="store_true",
         help="answer yes to the systemd installation prompt",
+    )
+
+    uninstall = subparsers.add_parser(
+        "uninstall",
+        help="remove local files and OpenProject users (dry-run by default)",
+    )
+    uninstall.add_argument(
+        "--source-dir",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help="checkout containing workflow.yaml and engine.env (default: cwd)",
+    )
+    uninstall.add_argument(
+        "--config-dir",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help="config directory (default: ~/.config/op-agent-engine)",
+    )
+    uninstall.add_argument(
+        "--data-dir",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help="data directory (default: ~/.local/share/op-agent-engine)",
+    )
+    uninstall.add_argument(
+        "--apply",
+        action="store_true",
+        help="perform the removal (default: dry-run)",
+    )
+    uninstall.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="print the plan and change nothing (default unless --apply)",
+    )
+    uninstall.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        help="do not ask for confirmation",
+    )
+    uninstall.add_argument(
+        "--keep-config",
+        action="store_true",
+        help="keep ~/.config/op-agent-engine and the checkout config files",
+    )
+    uninstall.add_argument(
+        "--keep-data",
+        action="store_true",
+        help="keep ~/.local/share/op-agent-engine (runs, database, staged units)",
+    )
+    uninstall.add_argument(
+        "--keep-users",
+        action="store_true",
+        help="do not remove or lock OpenProject users",
+    )
+    uninstall.add_argument(
+        "--purge-agent-repos",
+        action="store_true",
+        help="also delete WORKSPACE_ROOT/*/repositories clones",
     )
 
     init = subparsers.add_parser(
@@ -696,9 +760,43 @@ def _setup(
     )
 
 
+def _uninstall(args: argparse.Namespace) -> int:
+    source_dir = (
+        Path(args.source_dir).expanduser()
+        if args.source_dir is not None
+        else Path.cwd()
+    )
+    config_dir = (
+        Path(args.config_dir).expanduser()
+        if args.config_dir is not None
+        else install.default_config_dir()
+    )
+    data_dir = (
+        Path(args.data_dir).expanduser()
+        if args.data_dir is not None
+        else Path(DEFAULT_DATA_DIR).expanduser()
+    )
+    return run_uninstall(
+        UninstallOptions(
+            source_dir=source_dir,
+            config_dir=config_dir,
+            data_dir=data_dir,
+            keep_config=bool(args.keep_config),
+            keep_data=bool(args.keep_data),
+            keep_users=bool(args.keep_users),
+            purge_agent_repos=bool(args.purge_agent_repos),
+            apply=bool(args.apply and not args.dry_run),
+            assume_yes=bool(args.yes),
+        )
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    if args.command == "uninstall":
+        return _uninstall(args)
 
     if args.command == "setup":
         source_dir = (
