@@ -22,3 +22,6 @@ htmlcov/
 *.sqlite3-*
 engine.lock
 heartbeat
+
+# editor swap files
+*.swp
