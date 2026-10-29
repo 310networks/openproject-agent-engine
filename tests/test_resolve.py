@@ -161,6 +161,44 @@ async def test_missing_status_is_named() -> None:
     assert "available: Closed, In Progress" in message
 
 
+SENTENCE_STATUSES: list[dict[str, Any]] = [
+    {"id": 1, "name": "New"},
+    {"id": 2, "name": "In progress"},
+    {"id": 3, "name": "Ready for Review"},
+    {"id": 4, "name": "In testing"},
+    {"id": 5, "name": "On hold"},
+    {"id": 6, "name": "Rejected"},
+    {"id": 7, "name": "Closed"},
+]
+
+
+async def test_status_names_match_case_insensitively() -> None:
+    # OpenProject's default statuses are sentence case; workflow.yaml commonly
+    # uses title case. Both must resolve to the same status.
+    resolution = await resolve(make_fake(statuses=SENTENCE_STATUSES))
+
+    assert resolution.statuses["in_progress"].id == 2
+    assert resolution.statuses["in_progress"].name == "In progress"
+    assert resolution.statuses["in_testing"].name == "In testing"
+    assert resolution.statuses["on_hold"].id == 5
+
+
+async def test_ambiguous_status_names_are_rejected() -> None:
+    statuses = [
+        status for status in STATUSES if status["name"] != "In Progress"
+    ] + [
+        {"id": 20, "name": "In progress"},
+        {"id": 21, "name": "IN PROGRESS"},
+    ]
+
+    with pytest.raises(OpenProjectResolutionError) as excinfo:
+        await resolve(make_fake(statuses=statuses))
+
+    message = str(excinfo.value)
+    assert "in_progress='In Progress'" in message
+    assert "ambiguous" in message
+
+
 async def test_missing_user_is_named() -> None:
     fake = make_fake(users=[user for user in USERS if user["login"] != "reviewer"])
 

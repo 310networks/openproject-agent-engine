@@ -273,27 +273,6 @@ def token_requests(workflow: Mapping[str, Any]) -> list[TokenRequest]:
     return requests
 
 
-def _created_accounts(
-    requests: Sequence[TokenRequest], passwords: Mapping[str, str]
-) -> list[tuple[str, str, str]]:
-    """Return ``(label, login, password)`` once per account created by this run.
-
-    An agent may use more than one token variable, so the same login can
-    appear in ``requests`` several times; it is listed once here.
-    """
-    accounts: list[tuple[str, str, str]] = []
-    seen: set[str] = set()
-    for request in requests:
-        if request.login in seen:
-            continue
-        password = passwords.get(request.login)
-        if password is None:
-            continue
-        seen.add(request.login)
-        accounts.append((request.label, request.login, password))
-    return accounts
-
-
 def _require_provisioning_values(env: Mapping[str, str]) -> str:
     base_url = (env.get("OP_BASE_URL") or "").strip()
     if not base_url.startswith(("http://", "https://")) or "example.com" in base_url:
@@ -600,14 +579,11 @@ def _run_setup(
     )
     ui.info("Log in as each account below and create a token under:")
     ui.info("  My account -> Access tokens")
-    created = _created_accounts(requests, passwords)
-    if created:
-        ui.info("")
+    if passwords:
         ui.info(
-            f"New accounts (sign in at {base_url}; passwords are shown once):"
+            f"Generated passwords are shown once, at that account's token "
+            f"prompt (sign in at {base_url})."
         )
-        for label, login, created_password in created:
-            ui.credential(label, login, created_password)
 
     updates: dict[str, str] = {}
     warned_logins: set[str] = set()

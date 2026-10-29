@@ -7,8 +7,9 @@ workflows, so the rest is manual in the UI. Role names must match
 
 ## 1. Statuses
 
-**Administration → Work packages → Statuses** — ensure these seven exist
-(case-sensitive; `check-config` resolves them):
+**Administration → Work packages → Statuses** — ensure these seven exist.
+Names are matched case- and whitespace-insensitively, so OpenProject's
+default sentence case (`In progress`) also matches the title case below:
 
 | Key | Default name |
 |---|---|
@@ -42,7 +43,11 @@ Create exactly two project roles — **Administration → Users and permissions
   *Add comments*, *Become assignee/responsible*. No other write permissions —
   agents can never change status.
 - **Agent Engine** (the `agent-engine` user): *View work packages*, *Edit
-  work packages*, *Change work package status*, *Add comments*.
+  work packages*, *Change work package status*, *Add comments*, plus the
+  **global** permission *Manage users*. The engine token lists users with
+  `GET /api/v3/users` at startup, so without *Manage users* (or an
+  administrator account) `check-config` and `run` fail with "the engine token
+  needs the global 'manage_user' permission".
 
 ## 5. Workflow transitions
 
@@ -75,9 +80,9 @@ The users' passwords are randomly generated. Administrators cannot mint API
 tokens for other users, so log in as each user and create the token under
 **My account → Access tokens**.
 
-The interactive installer (`./install.sh`, or `op-agent-engine setup`) lists
-each newly created account with its generated password, repeats the password
-at that user's token prompt, asks for the token one at a time — the
+The interactive installer (`./install.sh`, or `op-agent-engine setup`) shows
+each newly created account's generated password at that user's token prompt,
+asks for the token one at a time — the
 `agent-engine` runtime token plus one per agent — verifies it against
 `/api/v3/users/me`, and writes it to `engine.env` (mode `600`). If you install
 manually, use `op-agent-engine provision --json` to obtain the generated

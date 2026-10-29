@@ -39,9 +39,9 @@ installer collects them later.
    existing files;
 4. runs `op-agent-engine provision --apply` to create the engine and agent
    users;
-5. lists every newly created account with its generated password (the block
-   is repeated at each prompt, because administrators cannot mint tokens for
-   other users), then asks for that user's API token one at a time — the
+5. shows each newly created account's generated password once, at that
+   account's token prompt (administrators cannot mint tokens for other
+   users), then asks for its API token one at a time — the
    `agent-engine` runtime token and one per agent in `workflow.yaml` —
    verifying each through `/api/v3/users/me`; sign in as the user at
    `OP_BASE_URL` and create the token under **My account → Access tokens**.

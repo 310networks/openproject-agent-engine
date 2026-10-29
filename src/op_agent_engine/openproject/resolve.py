@@ -210,19 +210,43 @@ async def resolve_workflow(
     )
 
 
+def _status_key(name: str) -> str:
+    """Case- and whitespace-insensitive key for a status name.
+
+    OpenProject's default statuses use sentence case (``In progress``) while
+    operators commonly write title case (``In Progress``) in
+    ``workflow.yaml``. Treat the two as the same name, but never guess when
+    two statuses would collapse to the same key.
+    """
+    return " ".join(name.split()).casefold()
+
+
 async def _resolve_statuses(
     client: OpenProjectClient, names: StatusNames
 ) -> dict[str, ResolvedStatus]:
     available: dict[str, tuple[int, str]] = {}
+    by_key: dict[str, list[tuple[int, str]]] = {}
     async for element in client.iter_collection("/api/v3/statuses"):
         name = _require_str(element.get("name"), "status.name", "statuses")
         status_id = _require_int(element.get("id"), "status.id", f"status {name!r}")
-        available[name] = (status_id, name)
+        entry = (status_id, name)
+        available[name] = entry
+        by_key.setdefault(_status_key(name), []).append(entry)
 
     resolved: dict[str, ResolvedStatus] = {}
     missing: list[str] = []
     for key, configured_name in names.by_key().items():
         found = available.get(configured_name)
+        if found is None:
+            candidates = by_key.get(_status_key(configured_name), [])
+            if len(candidates) == 1:
+                found = candidates[0]
+            elif len(candidates) > 1:
+                matches = ", ".join(repr(name) for _, name in candidates)
+                missing.append(
+                    f"{key}='{configured_name}' (ambiguous: {matches})"
+                )
+                continue
         if found is None:
             missing.append(f"{key}='{configured_name}'")
             continue

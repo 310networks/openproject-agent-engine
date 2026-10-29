@@ -122,41 +122,6 @@ def test_token_requests_rejects_shared_variable() -> None:
         token_requests(raw)
 
 
-def test_created_accounts_lists_each_login_once() -> None:
-    requests = [
-        TokenRequest(
-            "OP_ENGINE_TOKEN", "agent-engine", "agent-engine (runtime)", "engine"
-        ),
-        TokenRequest(
-            "OP_TOKEN_FRONTEND",
-            "frontendEngineer",
-            "FRONTEND (frontendEngineer)",
-            "agent",
-        ),
-        # A second token variable for the same agent must not duplicate the
-        # account (and its password) in the credentials block.
-        TokenRequest(
-            "OP_TOKEN_FRONTEND_CLI",
-            "frontendEngineer",
-            "FRONTEND (frontendEngineer)",
-            "agent",
-        ),
-    ]
-
-    accounts = wizard._created_accounts(
-        requests,
-        {
-            "agent-engine": "engine-password",
-            "frontendEngineer": "frontend-password",
-        },
-    )
-
-    assert accounts == [
-        ("agent-engine (runtime)", "agent-engine", "engine-password"),
-        ("FRONTEND (frontendEngineer)", "frontendEngineer", "frontend-password"),
-    ]
-
-
 def test_run_setup_happy_path(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -214,9 +179,9 @@ def test_run_setup_happy_path(
     assert "engine-secret" not in text_output
     assert "frontend-secret" not in text_output
     assert "My account -> Access tokens" in text_output
-    assert text_output.count("engine-password") >= 2  # summary block + prompt
-    assert "engine-password" in text_output
-    assert "frontend-password" in text_output
+    # Each password is shown once, at its account's token prompt.
+    assert text_output.count("engine-password") == 1
+    assert text_output.count("frontend-password") == 1
     assert text_output.index("engine-password") < text_output.index("frontend-password")
     assert [entry[1] for entry in queried] == ["engine-secret", "frontend-secret"]
 

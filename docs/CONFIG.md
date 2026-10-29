@@ -43,6 +43,10 @@ runners:
 
 Field notes:
 
+- Status names are matched case- and whitespace-insensitively, so
+  `In Progress` also matches OpenProject's default `In progress`; two
+  statuses that differ only by case make the config ambiguous and are
+  rejected with both candidates named.
 - `agents` keys are the `AGENT` field options. `FRONTEND`/`BACKEND`/
   `LEAD_DESIGNER` route work; `REVIEWER` exists only so option resolution
   succeeds.
