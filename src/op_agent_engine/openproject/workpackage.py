@@ -68,6 +68,12 @@ def _option_id(ref: Any) -> int | None:
         ref_id = ref.get("id")
         if isinstance(ref_id, int) and not isinstance(ref_id, bool):
             return ref_id
+        # OpenProject returns list custom-field values in ``_links`` as a
+        # plain HAL reference such as
+        # ``{"href": "/api/v3/custom_options/2", "title": "BACKEND"}``.
+        href_id = _id_from_href(ref.get("href"))
+        if href_id is not None:
+            return href_id
     return None
 
 
@@ -77,6 +83,12 @@ def _extract_agent_value(
     option_id_to_value: dict[int, str],
 ) -> str | None:
     raw = entry.get(agent_field_id)
+    if raw is None:
+        # List custom fields are exposed as links, not top-level attributes:
+        # ``_links: {"customField1": {"href": ..., "title": "BACKEND"}}``.
+        links = entry.get("_links")
+        if isinstance(links, dict):
+            raw = links.get(agent_field_id)
     if raw is None:
         return None
     refs: list[Any] = raw if isinstance(raw, list) else [raw]
