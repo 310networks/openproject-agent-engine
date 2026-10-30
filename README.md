@@ -29,34 +29,27 @@ and every engine comment starts with `ENGINE:`. Failed runs are retried up to
 
 ## Quick start
 
+1. Clone the repo, copy the config files, and update OP_BASE_URL and OP_PROVISION_TOKEN
 ```bash
 git clone <engine-repo> ~/op-agent-engine && cd ~/op-agent-engine
 cp workflow.example.yaml ./workflow.yaml
 cp engine.env.example ./engine.env
 chmod 600 ./engine.env
-# edit workflow.yaml (project, repo, statuses) and engine.env
-# (OP_BASE_URL and OP_PROVISION_TOKEN — an admin token).
-# One-time OpenProject setup first: docs/OPENPROJECT_SETUP.md
-# (statuses, AGENT field, Agent Worker role).
+```
+2. Setup the required statuses, AGENT custom field, and Agent Worker role: [docs/OPENPROJECT_SETUP.md](docs/OPENPROJECT_SETUP.md)
+
+3. Run interactive install.sh script
+./install.sh
+```bash
 ./install.sh
 ```
+The installer will ask the user to create API tokens for each of the agent users it created.
+It will provide the login so the the user can login as the agent and create the API token.
 
-`install.sh` is an interactive installer.
-It installs the package with `uv`, copies your two files into
-`~/.config/op-agent-engine/`, provisions the OpenProject users, and prints each
-new user's generated password.
-It then prompts for that user's API token one at
-a time and verifies each token.
-It installs the systemd service and runs a dry
-poll. Passwords are shown once; tokens are written to both `engine.env` files. 
+At the `agent-engine` token prompt it reminds you to make that user an administrator,
+which is required for the engine to list users and edit work packages.
 
-At the `agent-engine` token prompt it
-reminds you to make that user an administrator, which is required for the
-engine to list users and edit work packages.
-
-The service starts immediately and autostarts on boot. Follow it with
-`journalctl -u op-agent-engine -f`. The read-only dashboard is served at
-`http://127.0.0.1:8765` (see [docs/DASHBOARD.md](docs/DASHBOARD.md)).
+The read-only dashboard is served at `http://127.0.0.1:8765` (see [docs/DASHBOARD.md](docs/DASHBOARD.md)).
 
 ## Uninstall
 
