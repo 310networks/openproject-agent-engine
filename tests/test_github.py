@@ -74,3 +74,30 @@ async def test_find_pr_timeout_raises(tmp_path: Path) -> None:
     gh = GitHub(executable=str(script), timeout=0.3)
     with pytest.raises(GitHubError, match="timed out"):
         await gh.find_pr("acme/thing", "op-4-100")
+
+
+PR_BODY_DRAFT = json.dumps(
+    [
+        {
+            "number": 8,
+            "url": "https://github.com/acme/thing/pull/8",
+            "headRefName": "op-4-101",
+            "isDraft": True,
+        }
+    ]
+)
+
+
+async def test_find_pr_reports_draft_flag(tmp_path: Path) -> None:
+    """A draft PR is not authoritative for an implementation result."""
+    gh = GitHub(executable=str(_fake_gh(tmp_path, body=PR_BODY_DRAFT)))
+    pr = await gh.find_pr("acme/thing", "op-4-101")
+    assert pr is not None
+    assert pr.is_draft is True
+
+
+async def test_find_pr_without_is_draft_is_not_a_draft(tmp_path: Path) -> None:
+    gh = GitHub(executable=str(_fake_gh(tmp_path, body=PR_BODY)))
+    pr = await gh.find_pr("acme/thing", "op-4-100")
+    assert pr is not None
+    assert pr.is_draft is False

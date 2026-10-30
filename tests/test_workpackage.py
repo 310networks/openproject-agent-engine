@@ -46,3 +46,34 @@ def test_missing_agent_value() -> None:
     wp = parse_work_package(entry(), "customField1", OPTIONS)
 
     assert wp.agent_value is None
+
+
+def test_description_uses_raw_markdown() -> None:
+    data = entry()
+    data["description"] = {
+        "format": "markdown",
+        "raw": "## Acceptance\n\n- one thing\n- another",
+        "html": "<h2>Acceptance</h2>",
+    }
+
+    wp = parse_work_package(data, "customField1", OPTIONS)
+
+    assert wp.description == "## Acceptance\n\n- one thing\n- another"
+
+
+def test_description_accepts_a_plain_string() -> None:
+    data = entry()
+    data["description"] = "plain text"
+
+    assert parse_work_package(data, "customField1", OPTIONS).description == "plain text"
+
+
+def test_description_falls_back_to_html_then_empty() -> None:
+    data = entry()
+    data["description"] = {"format": "markdown", "html": "<p>hi</p>"}
+    assert parse_work_package(data, "customField1", OPTIONS).description == "<p>hi</p>"
+
+    data["description"] = {"format": "markdown"}
+    assert parse_work_package(data, "customField1", OPTIONS).description == ""
+    del data["description"]
+    assert parse_work_package(data, "customField1", OPTIONS).description == ""

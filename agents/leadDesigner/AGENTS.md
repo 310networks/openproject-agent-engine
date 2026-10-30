@@ -23,7 +23,24 @@ Your final message must end with exactly one of these lines:
 - `RESULT: PR_OPENED <pr-url>`
 - `RESULT: BLOCKED <one-line reason>`
 
-Use the OpenProject skill to read the ticket and its relations and to post comments. Do not use it to edit status, assignee, or other fields, and do not use it to create tickets.
+Use the OpenProject skill to read the ticket and its relations. Do not use it to edit status, assignee, or other fields, and do not use it to create tickets.
+
+### Posting a comment
+
+`op` reads tickets and activities but has no command that creates a comment. Post comments through the API with **your own** credentials, which the engine provides in the environment:
+
+- `$OP_CLI_HOST` — the OpenProject base URL
+- `$OP_CLI_TOKEN` — your API token
+
+```bash
+jq -Rs '{comment: {raw: .}}' /tmp/report.md > /tmp/comment.json
+curl -sS -X POST -u "apikey:$OP_CLI_TOKEN" \
+  -H 'Content-Type: application/json' \
+  --data-binary @/tmp/comment.json \
+  "$OP_CLI_HOST/api/v3/work_packages/<workPackageId>/activities"
+```
+
+Never read a credential file to find a token (`~/.pi/agent/infra/credentials/openproject-credentials.json` or any other), and never use another account's token. Comments must be authored by your own user: the workflow identifies comments by author, and a comment posted by a different account is invisible to the engine and to the reviewer.
 
 ## 2. Before you start
 
@@ -109,6 +126,8 @@ Before stopping, push any clean work, then post a ticket comment stating what yo
 Post this as one comment on the ticket when you finish:
 
 - **Status:** done | blocked
+  - `done` — the deliverable this ticket asks for is complete and verified. Anything you found but did not do because it is outside this ticket's scope belongs under **Suggested follow-up tickets** and is non-blocking; do not report `blocked` for it.
+  - `blocked` — you could not complete the deliverable and need an answer or an external change before you can continue. In that case the run must also end with `RESULT: BLOCKED <one-line reason>` (section 7). A complete deliverable with open questions is `done`, not `blocked`.
 - **PR:** branch to default branch (URL)
 - **Summary:** what was designed
 - **Deliverables:** file paths

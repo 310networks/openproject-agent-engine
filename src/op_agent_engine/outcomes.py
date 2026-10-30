@@ -4,12 +4,15 @@ Implement and fix runs (M6):
 
 * ``RESULT: BLOCKED <reason>`` -> blocked: the work package moves to On
   Hold and the reason is posted as an engine comment.
-* Otherwise an open PR for the branch (external check via GitHub) ->
-  success: the work package moves to Ready for Review.
-* No PR (or non-zero exit, or timeout) -> failure; the crash retry counter
-  increments and a resume run is dispatched on a later poll (M7). When the
-  cap (``MAX_CRASH_RETRIES``) is reached the work package moves to On Hold
-  with an engine comment (escalation).
+* Otherwise an open pull request for the branch (external check via GitHub)
+  -> success: the work package moves to Ready for Review. An open PR is
+  authoritative, exactly like a merged PR for reviews: a run that was
+  killed or timed out after it opened the PR has delivered the work, so it
+  is not retried.
+* No PR (or non-zero exit, or timeout without a PR) -> failure; the crash
+  retry counter increments and a resume run is dispatched on a later poll
+  (M7). When the cap (``MAX_CRASH_RETRIES``) is reached the work package
+  moves to On Hold with an engine comment (escalation).
 
 Review runs (M5):
 
@@ -110,13 +113,19 @@ def decide_implementer_outcome(
     result_line: str | None,
     pr_found: bool,
 ) -> OutcomeDecision:
-    """Apply the PLAN section 4 rules for implement/fix runs."""
-    if timed_out:
-        return OutcomeDecision(run_state=TIMEOUT, outcome="timeout", crash_retry=True)
-    if exit_code != 0:
-        return OutcomeDecision(
-            run_state=FAILED, outcome="nonzero_exit", crash_retry=True
-        )
+    """Apply the PLAN section 4 rules for implement/fix runs.
+
+    Order matters:
+
+    1. An explicit ``RESULT: BLOCKED`` wins: the agent needs a human even if
+       it happened to leave an open PR behind.
+    2. An open PR is authoritative (like a merged PR for a review). A run
+       that was killed or timed out after the PR was opened must not be
+       retried: the deliverable exists, so the work package moves to Ready
+       for Review.
+    3. Only without a PR do a timeout or a non-zero exit count as a crash
+       retry.
+    """
     reason = blocked_reason(result_line)
     if reason is not None:
         return OutcomeDecision(
@@ -130,6 +139,12 @@ def decide_implementer_outcome(
             run_state=SUCCEEDED,
             outcome="ready_for_review",
             transition="ready_for_review",
+        )
+    if timed_out:
+        return OutcomeDecision(run_state=TIMEOUT, outcome="timeout", crash_retry=True)
+    if exit_code != 0:
+        return OutcomeDecision(
+            run_state=FAILED, outcome="nonzero_exit", crash_retry=True
         )
     return OutcomeDecision(run_state=FAILED, outcome="no_pr", crash_retry=True)
 
@@ -186,6 +201,17 @@ def no_pr_comment(branch: str) -> str:
         "ENGINE: no PR found\n\n"
         f"No pull request was found for branch `{branch}`, so the review cannot "
         "start. Putting the ticket on hold for a human."
+    )
+
+
+def already_open_pr_comment(branch: str, pr_url: str) -> str:
+    """Engine comment for a resume run skipped because the PR is already open."""
+    return (
+        "ENGINE: resume skipped (PR already open)\n\n"
+        f"Branch `{branch}` already has an open pull request: {pr_url}\n\n"
+        "The previous run was interrupted after the pull request was opened, "
+        "so the resume run was skipped instead of repeating the work. Moving "
+        "the ticket to Ready for Review."
     )
 
 

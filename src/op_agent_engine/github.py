@@ -32,6 +32,9 @@ class PullRequest:
     url: str
     head_branch: str
     state: str  # "open" | "closed" | "merged"
+    #: A draft PR is not finished work: the engine does not treat it as an
+    #: authoritative implementation result.
+    is_draft: bool = False
 
 
 class GitHub:
@@ -63,7 +66,7 @@ class GitHub:
             "--state",
             state,
             "--json",
-            "number,url,headRefName",
+            "number,url,headRefName,isDraft",
         ]
         try:
             process = await asyncio.create_subprocess_exec(
@@ -102,4 +105,5 @@ class GitHub:
             url=str(entry["url"]),
             head_branch=str(entry.get("headRefName", branch)),
             state=state,
+            is_draft=bool(entry.get("isDraft", False)),
         )

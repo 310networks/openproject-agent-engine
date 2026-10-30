@@ -234,6 +234,7 @@ async def make_dispatcher(
     (prompts_dir / "implement.txt.j2").write_text(prompts_template, encoding="utf-8")
     (prompts_dir / "review.txt.j2").write_text(review_template, encoding="utf-8")
     (prompts_dir / "fix.txt.j2").write_text(fix_template, encoding="utf-8")
+    (prompts_dir / "resume.txt.j2").write_text(prompts_template, encoding="utf-8")
 
     dispatcher = Dispatcher(
         config=config,
@@ -1675,6 +1676,29 @@ async def test_engine_comments_use_the_activities_endpoint(
             if activity.get("comment", {}).get("raw", "").startswith("ENGINE:")
         ]
         assert posted[-1]["_links"]["user"]["href"] == "/api/v3/users/10"
+    finally:
+        await client.aclose()
+        store.close()
+
+
+async def test_timeout_after_the_pr_was_opened_moves_to_ready_for_review(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A hung run whose PR is open has delivered the work; it is not retried."""
+    runner = FakeRunner(make_result(tmp_path, exit_code=-15, timed_out=True))
+    dispatcher, fake, store, client, _ = await make_dispatcher(
+        tmp_path, monkeypatch, runner=runner, gh=FakeGitHub(pr=PR)
+    )
+    try:
+        claimed = claim(store, make_item(100))
+        await dispatcher.execute(claimed)
+
+        run = store.get_run(1)
+        assert run is not None
+        assert run.state == SUCCEEDED
+        assert run.outcome == "ready_for_review"
+        assert store.crash_count(100) == 0
+        assert status_href(fake, 100) == f"/api/v3/statuses/{STATUS_READY_FOR_REVIEW}"
     finally:
         await client.aclose()
         store.close()

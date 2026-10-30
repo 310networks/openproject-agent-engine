@@ -71,11 +71,11 @@ Statuses as configured. The `AGENT` field routes `New` and `Rejected` work packa
 
 | Trigger (engine observes) | Engine action before run | Run | Outcome verification | Transition after run |
 |---|---|---|---|---|
-| `New`, eligible, `AGENT` set | Claim. Status to `In Progress`. Assignee to the agent user. | Implement | RESULT `BLOCKED`: blocked. Otherwise an open PR exists for the branch: success. | Success: `Ready for Review`. Blocked: `On Hold` plus engine comment. |
+| `New`, eligible, `AGENT` set | Claim. Status to `In Progress`. Assignee to the agent user. | Implement | RESULT `BLOCKED`: blocked. Otherwise an open PR exists for the branch: success (authoritative, even after a timeout or a kill). | Success: `Ready for Review`. Blocked: `On Hold` plus engine comment. |
 | `Ready for Review`, PR exists for branch | Claim. Status to `In Testing`. Assignee to the `codeReviewer` user. | Review | PR merged: approved. RESULT `REJECTED` and a new comment by the reviewer user since run start: rejected. | Approved: `Closed`. Rejected: `Rejected` (or `On Hold` if the cap is reached, with engine comment). |
 | `Ready for Review`, no PR for branch | None | None | None | `On Hold` plus engine comment ("no PR found for branch"). |
 | `Rejected`, eligible | Claim. Status to `In Progress`. Assignee to the implementer agent user. | Fix pass | Same as implement | Same as implement |
-| `In Progress`, assigned to an agent user, no running run (after restart or crash) | Claim. | Resume | Same as implement | Same as implement. Counts toward crash retries. |
+| `In Progress`, assigned to an agent user, no running run (after restart or crash) | Claim. | Resume (skipped when the branch already has an open, non-draft PR) | Same as implement | Same as implement. Counts toward crash retries. |
 | `In Testing`, assigned to the `codeReviewer` user, no running run (after restart or crash) | Claim. | Review | Same as review | Same as review. Counts toward crash retries. |
 | `On Hold`, `Closed` | None | None | None | None |
 
@@ -87,7 +87,7 @@ Failure handling for any run (non-zero exit, timeout, missing or invalid RESULT 
 
 Rejection cap: the rejection count is derived from OpenProject activity (the number of status changes to `Rejected` in the work package history). When a review would move the work package to `Rejected` and the count (including this one) exceeds `MAX_REJECTIONS`, set `On Hold` instead and post an engine comment summarizing the cap.
 
-Rule: external verification is authoritative. The RESULT line provides the `BLOCKED` reason and diagnostics. A merged PR means approval. An open PR means the implementation finished.
+Rule: external verification is authoritative. The RESULT line provides the `BLOCKED` reason and diagnostics. A merged PR means approval. An open (non-draft) PR means the implementation finished — for implement/fix runs it wins over a timeout or a non-zero exit code, and a `resume` run for a branch that already has an open PR does not start the agent at all (it transitions to `Ready for Review` with an engine comment). An explicit `RESULT: BLOCKED` still wins over the PR.
 
 ## 5. Configuration
 
@@ -184,10 +184,13 @@ agents:
 
 runners:
   pi:
-    argv: ["pi", "-p", "@{prompt_file}", "Follow the instructions in the attached prompt file."]   # VERIFY
+    # --no-extensions / --no-context-files keep an unattended run minimal: no
+    # host extensions (pi-dashboard, ...) and no host AGENTS.md / repo context
+    # files; the workspace standard is injected instead (see section 6).
+    argv: ["pi", "-p", "--no-extensions", "--no-context-files", "@{prompt_file}", "Follow the instructions in the attached prompt file."]   # VERIFY
     cwd: "{repo_dir}"
-    env: {}                        # pi uses the host's default ~/.pi/agent configuration
-    inject_standard: false         # pi loads AGENTS.md from parent directories
+    env: {}                        # pi still uses the host's provider credentials
+    inject_standard: true          # --no-context-files disables AGENTS.md discovery
   opencode:
     argv: ["opencode", "run", "--file", "{prompt_file}", "Follow the instructions in the attached prompt file."]   # VERIFY
     cwd: "{repo_dir}"
@@ -241,7 +244,7 @@ Requirements:
 - Non-interactive runs must never block on approval prompts. **VERIFY** per agent that the configured flags disable confirmation prompts, and add them to `argv` where needed.
 - Adding a new agent requires only a new `runners` entry. No code change.
 
-Known command shapes (**VERIFY** with `--help` before use): pi accepts `-p` for print mode and `@file` arguments, and loads `AGENTS.md` from its global directory, parent directories, and the current directory. OpenCode offers a non-interactive `run` command and file attachment.
+Known command shapes (**VERIFY** with `--help` before use): pi accepts `-p` for print mode and `@file` arguments, and by default loads `AGENTS.md` from its global directory, parent directories, and the current directory. An unattended run must not do that: the host's `~/.pi/agent/AGENTS.md` is personal context (wrong credentials, wrong workflow), so the pi runner passes `--no-context-files` (no `AGENTS.md`/`CLAUDE.md` discovery) and `--no-extensions` (no host extensions, which can block or hang print mode), and relies on `inject_standard: true` for the workspace standard. Explicit `--skill`/`--no-skills` control skills separately; skills stay available. OpenCode offers a non-interactive `run` command and file attachment.
 
 ## 7. OpenProject integration
 

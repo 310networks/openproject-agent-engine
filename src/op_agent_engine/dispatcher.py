@@ -9,7 +9,10 @@ The dispatcher takes one claimed run to completion:
    transition plus engine comment (PLAN section 4).
 5. Record the run in the store and write ``meta.json`` (PLAN section 16).
 
-Implement runs (M4) verify an open PR for the branch. Review runs (M5)
+Implement runs (M4) verify an open PR for the branch. The PR is
+ authoritative, exactly like a merged PR for a review: a run that was killed
+ or timed out after opening the PR is not retried, and a resume run whose PR
+ is already open does not start the agent at all (PLAN section 4). Review runs (M5)
 first require an open PR (otherwise the work package goes to On Hold with an
 engine comment and the reviewer is not started), then verify that the PR was
 merged (approved) or that the reviewer reported ``RESULT: REJECTED`` together
@@ -69,6 +72,7 @@ from op_agent_engine.openproject.resolve import OpenProjectResolution
 from op_agent_engine.openproject.workpackage import WorkPackage, parse_work_package
 from op_agent_engine.outcomes import (
     OutcomeDecision,
+    already_open_pr_comment,
     decide_implementer_outcome,
     decide_reviewer_outcome,
     escalation_comment,
@@ -218,6 +222,40 @@ class Dispatcher:
         started_at: datetime,
     ) -> None:
         wp = claimed.item.work_package
+
+        # A resume run whose branch already has an open PR is finished work:
+        # the previous run was killed or timed out after opening it. Starting
+        # the agent again would repeat the work (and can hang again), so the
+        # PR is authoritative here just like a merged PR for a review. A
+        # draft PR is not authoritative and the agent resumes normally.
+        if claimed.kind == "resume":
+            try:
+                open_pr = await self._gh.find_pr(
+                    self._repo_github(wp.project_id), claimed.branch
+                )
+            except GitHubError as error:
+                # Verification is best-effort here; running the resume is
+                # still correct when GitHub cannot be reached.
+                logger.warning(
+                    "could not check for an open PR before resuming %s; "
+                    "starting the agent anyway: %s",
+                    wp.display_id,
+                    error,
+                    extra={
+                        "run_id": run_id,
+                        "work_package_id": wp.id,
+                        "agent": claimed.item.agent_key,
+                        "kind": claimed.kind,
+                        "branch": claimed.branch,
+                    },
+                )
+            else:
+                if open_pr is not None and not open_pr.is_draft:
+                    await self._resume_already_has_pr(
+                        claimed, run_id, open_pr, started_at
+                    )
+                    return
+
         workspace = await self._prepare_workspace(claimed, run_id)
         if workspace is None:
             return
@@ -624,6 +662,68 @@ class Dispatcher:
             outcome,
             transition,
             extra={**log_extra, "state": state, "outcome": outcome},
+        )
+
+    async def _resume_already_has_pr(
+        self,
+        claimed: ClaimedRun,
+        run_id: int,
+        pr: PullRequest,
+        started_at: datetime,
+    ) -> None:
+        """Finish a resume run without an agent because its PR is already open."""
+        wp = claimed.item.work_package
+        log_extra = {
+            "run_id": run_id,
+            "work_package_id": wp.id,
+            "agent": claimed.item.agent_key,
+            "kind": claimed.kind,
+            "pr": pr.url,
+        }
+        transition: str | None = "ready_for_review"
+        try:
+            await self._transition(
+                wp.id, "ready_for_review", expected_status_key="in_progress"
+            )
+            await self._post_comment(
+                wp.id, already_open_pr_comment(claimed.branch, pr.url)
+            )
+        except TransitionAborted as error:
+            state, outcome, transition = (
+                FAILED,
+                f"transition_aborted: {error}",
+                None,
+            )
+            logger.error(
+                "transition aborted for run %d: %s", run_id, error, extra=log_extra
+            )
+        except OpenProjectError as error:
+            self._write_meta(
+                claimed, None, None, state="running", outcome="error",
+                transition=transition, pr=pr, started_at=started_at,
+            )
+            logger.error(
+                "OpenProject error finishing a resume with an already open PR "
+                "for run %d; run left active: %s",
+                run_id,
+                error,
+                extra=log_extra,
+            )
+            raise
+        else:
+            state, outcome = SUCCEEDED, "ready_for_review_existing_pr"
+            logger.info(
+                "branch %s already has an open PR; work package %s moved to "
+                "Ready for Review without a resume run",
+                claimed.branch,
+                wp.display_id,
+                extra=log_extra,
+            )
+
+        self._store.finish_run(run_id, state=state, outcome=outcome)
+        self._write_meta(
+            claimed, None, None, state=state, outcome=outcome,
+            transition=transition, pr=pr, started_at=started_at,
         )
 
     async def _review_already_merged(

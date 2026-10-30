@@ -721,6 +721,14 @@ async def test_engine_review_without_pr_moves_to_on_hold(
 async def test_startup_recovers_in_progress_with_a_resume_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # A draft PR is not finished work, so the resume run does start the agent.
+    draft_pr = PullRequest(
+        number=8,
+        url="https://github.com/owner/demo/pull/8",
+        head_branch="op-4-100",
+        state="open",
+        is_draft=True,
+    )
     runner = FakeRunner(make_result(tmp_path))
     engine, fake, client, store_path = await make_engine(
         tmp_path,
@@ -729,7 +737,7 @@ async def test_startup_recovers_in_progress_with_a_resume_run(
             wp(100, status=STATUS_IN_PROGRESS, agent=11, assignee=AGENT_USER_ID)
         ],
         runner=runner,
-        gh=FakeGitHub(pr=PR),
+        gh=FakeGitHub(pr=draft_pr),
     )
     try:
         assert await engine.run(max_polls=1) == 0
@@ -749,6 +757,40 @@ async def test_startup_recovers_in_progress_with_a_resume_run(
             assert runs[0].outcome == "ready_for_review"
             prompt = (Path(runs[0].run_dir) / "prompt.txt").read_text()
             assert "RESUME wp 100" in prompt
+        finally:
+            store.close()
+    finally:
+        await client.aclose()
+
+
+async def test_startup_resume_with_an_open_pr_is_skipped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Recovery of a hung run: the open PR is authoritative, no agent starts."""
+    runner = FakeRunner(make_result(tmp_path))
+    engine, fake, client, store_path = await make_engine(
+        tmp_path,
+        monkeypatch,
+        work_packages=[
+            wp(100, status=STATUS_IN_PROGRESS, agent=11, assignee=AGENT_USER_ID)
+        ],
+        runner=runner,
+        gh=FakeGitHub(pr=PR),
+    )
+    try:
+        assert await engine.run(max_polls=1) == 0
+
+        assert runner.requests == []
+        assert status_href(fake, 100) == f"/api/v3/statuses/{STATUS_READY_FOR_REVIEW}"
+        assert assignee_href(fake, 100) == f"/api/v3/users/{AGENT_USER_ID}"
+
+        store = Store(store_path)
+        try:
+            runs = runs_for(store, 100)
+            assert len(runs) == 1
+            assert runs[0].kind == "resume"
+            assert runs[0].state == SUCCEEDED
+            assert runs[0].outcome == "ready_for_review_existing_pr"
         finally:
             store.close()
     finally:

@@ -97,11 +97,22 @@ runners:
     # --approve trusts project-local resources (print mode cannot prompt).
     # pi does not ask for approval before tool calls.
     # --model {model} selects the model; leave it unset to use pi's default.
-    argv: ["pi", "-p", "--approve", "--model", "{model}", "@{prompt_file}", "Follow the instructions in the attached prompt file."]
+    #
+    # --no-extensions    do not load the host's pi extensions (pi-dashboard and
+    #                    the built-in MCP/llama.cpp/codemode/tool-search ones).
+    #                    An unattended run must be minimal: extension startup
+    #                    can block or hang a print-mode run.
+    # --no-context-files do not load ~/.pi/agent/AGENTS.md (the host's personal
+    #                    agent instructions), a repository AGENTS.md, or any
+    #                    other discovered context file. The workspace standard
+    #                    below is the only standing context; the agent reads
+    #                    repository files it needs explicitly.
+    argv: ["pi", "-p", "--approve", "--no-extensions", "--no-context-files",
+           "--model", "{model}", "@{prompt_file}", "Follow the instructions in the attached prompt file."]
     model: null                    # e.g. "anthropic/claude-sonnet-4-5"
     cwd: "{repo_dir}"
-    env: {}                        # pi uses the host's default ~/.pi/agent configuration
-    inject_standard: false         # pi loads AGENTS.md from parent directories
+    env: {}                        # pi still uses the host's provider credentials
+    inject_standard: true          # --no-context-files disables AGENTS.md discovery
   opencode:
     # Verified against opencode 1.18.4: `run` is non-interactive, -f/--file
     # attaches the prompt, --auto approves permissions that are not denied.

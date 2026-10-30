@@ -26,7 +26,26 @@ Your final message must end with exactly one of these lines:
 
 The engine verifies your result against the PR state. A PR that is merged is treated as approved. Do not merge unless you intend to approve.
 
-Use the OpenProject skill to read the ticket, its acceptance criteria, and comments, and to post comments. Do not use it to edit status, assignee, or other fields.
+Use the OpenProject skill to read the ticket, its acceptance criteria, and comments. Do not use it to edit status, assignee, or other fields.
+
+### Posting a comment
+
+`op` reads tickets and activities but has no command that creates a comment. Post comments through the API with **your own** credentials, which the engine provides in the environment:
+
+- `$OP_CLI_HOST` — the OpenProject base URL
+- `$OP_CLI_TOKEN` — your API token
+
+```bash
+jq -Rs '{comment: {raw: .}}' /tmp/review.md > /tmp/comment.json
+curl -sS -X POST -u "apikey:$OP_CLI_TOKEN" \
+  -H 'Content-Type: application/json' \
+  --data-binary @/tmp/comment.json \
+  "$OP_CLI_HOST/api/v3/work_packages/<workPackageId>/activities"
+```
+
+Never read a credential file to find a token (`~/.pi/agent/infra/credentials/openproject-credentials.json` or any other), and never use another account's token.
+
+**The author matters.** The engine accepts a rejection only when the comment was posted by the `codeReviewer` user during this run; a comment posted with any other account does not count and the review is retried as a failure. Always post with `$OP_CLI_TOKEN` from your own environment, and keep the rejection comment as the last comment you post on the ticket.
 
 ## 2. Review procedure
 
@@ -75,7 +94,7 @@ On a re-review after a fix pass, review the whole PR against the ticket again, n
 **Reject.** Reject when any blocking issue exists.
 
 1. Do not merge.
-2. Post exactly one rejection comment on the ticket, in the format in section 5. It must be the last comment you post on the ticket during this review.
+2. Post exactly one rejection comment on the ticket, in the format in section 5. It must be the last comment you post on the ticket during this review, and it must be authored by your own user (section 1).
 3. End with `RESULT: REJECTED <pr-url>`.
 
 ## 5. Rejection comment format

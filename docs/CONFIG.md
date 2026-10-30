@@ -36,11 +36,12 @@ agents:
     env: {OP_CLI_HOST: "${OP_BASE_URL}", OP_CLI_TOKEN: "${OP_TOKEN_FRONTEND}"}
 runners:
   pi:
-    argv: ["pi", "-p", "--approve", "--model", "{model}", "@{prompt_file}",
+    argv: ["pi", "-p", "--approve", "--no-extensions", "--no-context-files",
+           "--model", "{model}", "@{prompt_file}",
            "Follow the instructions in the attached prompt file."]
     model: null                # optional default for every agent using this runner
     cwd: "{repo_dir}"
-    inject_standard: false     # pi discovers AGENTS.md from parent dirs
+    inject_standard: true      # --no-context-files disables AGENTS.md discovery
 ```
 
 Field notes:
@@ -66,7 +67,7 @@ Field notes:
   ```yaml
   runners:
     pi:
-      argv: ["pi", "-p", "--approve", "--model", "{model}", "@{prompt_file}", "..."]
+      argv: ["pi", "-p", "--approve", "--no-extensions", "--no-context-files", "--model", "{model}", "@{prompt_file}", "..."]
     opencode:
       argv: ["opencode", "run", "--auto", "--model", "{model}", "--file", "{prompt_file}", "..."]
   agents:
@@ -81,8 +82,19 @@ Field notes:
   CLI's own default model in charge. `--model={model}` glued into one argument
   is dropped the same way; keep flag and placeholder as separate argv elements.
   Leave the placeholder out of argv entirely if the CLI has no model flag.
-- `inject_standard: true` prepends the workspace `AGENTS.md` to the prompt;
-  keep `false` for pi.
+- `inject_standard: true` prepends the workspace `AGENTS.md` to the prompt.
+  The pi runner sets it because it passes `--no-context-files`.
+- **Isolated agent context.** `--no-context-files` stops pi from loading
+  `~/.pi/agent/AGENTS.md` (the host's personal agent instructions, including
+  access to personal credentials) and any repository `AGENTS.md`. The only
+  standing context an agent gets is the standard for its own workspace
+  (`WORKSPACE_ROOT/<workspace>/AGENTS.md`); everything else it reads
+  explicitly from the repository. Update that file to change one agent's
+  instructions, or point two agents at the same text to share it.
+  `--no-extensions` keeps the host's interactive pi extensions
+  (`pi-dashboard`, built-in MCP/codemode/tool-search, ...) out of unattended
+  runs, where they can block or hang print mode. Skills are separate flags
+  (`--skill`/`--no-skills`) and stay available.
 
 ## Environment variables (`engine.env`)
 

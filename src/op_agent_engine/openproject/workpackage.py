@@ -32,7 +32,8 @@ class WorkPackage:
     # Optimistic-locking version; required in the PATCH body when claiming
     # (verified live: omitting it yields HTTP 409 UpdateConflict).
     lock_version: int | None = None
-    # Ticket description (rendered into the prompt; may be empty).
+    # Ticket description as raw markdown (rendered into the prompt; may be
+    # empty).
     description: str = ""
 
 
@@ -99,6 +100,27 @@ def _extract_agent_value(
     return None
 
 
+def _description_text(raw: Any) -> str:
+    """The description's raw markdown.
+
+    OpenProject returns descriptions as a *formattable* object
+    (``{"format": "markdown", "raw": "...", "html": "..."}``), not as a
+    plain string. Rendering that object into the prompt leaks Python dict
+    syntax at the agent, so the raw markdown is extracted here; ``html`` is
+    only a fallback for a payload that carries no ``raw`` text.
+    """
+    if isinstance(raw, str):
+        return raw
+    if isinstance(raw, dict):
+        raw_text = raw.get("raw")
+        if isinstance(raw_text, str):
+            return raw_text
+        html = raw.get("html")
+        if isinstance(html, str):
+            return html
+    return ""
+
+
 def parse_work_package(
     entry: dict[str, Any],
     agent_field_id: str,
@@ -131,5 +153,5 @@ def parse_work_package(
             if isinstance(raw_lock, int) and not isinstance(raw_lock, bool)
             else None
         ),
-        description=str(entry.get("description") or ""),
+        description=_description_text(entry.get("description")),
     )

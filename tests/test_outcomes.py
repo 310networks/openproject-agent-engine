@@ -3,6 +3,7 @@
 from pathlib import Path
 
 from op_agent_engine.outcomes import (
+    already_open_pr_comment,
     blocked_comment,
     blocked_reason,
     decide_implementer_outcome,
@@ -19,9 +20,9 @@ from op_agent_engine.store import FAILED, SUCCEEDED, TIMEOUT
 # -- decide_implementer_outcome -------------------------------------------
 
 
-def test_timeout_is_crash_retry() -> None:
+def test_timeout_without_pr_is_crash_retry() -> None:
     decision = decide_implementer_outcome(
-        exit_code=-15, timed_out=True, result_line="RESULT: ok", pr_found=True
+        exit_code=-15, timed_out=True, result_line="RESULT: ok", pr_found=False
     )
     assert decision.run_state == TIMEOUT
     assert decision.outcome == "timeout"
@@ -30,14 +31,35 @@ def test_timeout_is_crash_retry() -> None:
     assert decision.comment is None
 
 
-def test_nonzero_exit_is_crash_retry() -> None:
+def test_nonzero_exit_without_pr_is_crash_retry() -> None:
     decision = decide_implementer_outcome(
-        exit_code=1, timed_out=False, result_line=None, pr_found=True
+        exit_code=1, timed_out=False, result_line=None, pr_found=False
     )
     assert decision.run_state == FAILED
     assert decision.outcome == "nonzero_exit"
     assert decision.crash_retry is True
     assert decision.transition is None
+
+
+def test_timeout_after_the_pr_was_opened_is_ready_for_review() -> None:
+    """An open PR is authoritative: a hung run that finished the work is not retried."""
+    decision = decide_implementer_outcome(
+        exit_code=-15, timed_out=True, result_line=None, pr_found=True
+    )
+    assert decision.run_state == SUCCEEDED
+    assert decision.outcome == "ready_for_review"
+    assert decision.transition == "ready_for_review"
+    assert decision.crash_retry is False
+
+
+def test_nonzero_exit_after_the_pr_was_opened_is_ready_for_review() -> None:
+    decision = decide_implementer_outcome(
+        exit_code=1, timed_out=False, result_line=None, pr_found=True
+    )
+    assert decision.run_state == SUCCEEDED
+    assert decision.outcome == "ready_for_review"
+    assert decision.transition == "ready_for_review"
+    assert decision.crash_retry is False
 
 
 def test_blocked_moves_to_on_hold_with_comment() -> None:
@@ -294,3 +316,13 @@ def test_read_tail_returns_last_lines(tmp_path: Path) -> None:
 def test_read_tail_missing_file(tmp_path: Path) -> None:
     assert read_tail(tmp_path / "nope.log") == []
     assert read_tail(None) == []
+
+
+# -- already_open_pr_comment -----------------------------------------------------
+
+
+def test_already_open_pr_comment_names_branch_and_pr() -> None:
+    comment = already_open_pr_comment("op-4-100", "https://github.com/o/r/pull/7")
+    assert comment.startswith("ENGINE: resume skipped (PR already open)")
+    assert "`op-4-100`" in comment
+    assert "https://github.com/o/r/pull/7" in comment
