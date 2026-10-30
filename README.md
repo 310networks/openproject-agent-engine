@@ -23,7 +23,7 @@ and every engine comment starts with `ENGINE:`. Failed runs are retried up to
 
 ## Requirements
 
-- Python 3.12, `git`, `gh`, and the agent CLIs on the service user's `PATH`.
+- Python 3.12, `git`, `gh`, `uv`, and the agent CLIs on the service user's `PATH`.
 - OpenProject 17 (API v3) with a project, plus one-time administrator access.
 - A GitHub repository the service user can clone, push to and merge into.
 
@@ -41,13 +41,16 @@ chmod 600 ./engine.env
 ./install.sh
 ```
 
-`install.sh` is an interactive installer. It plays a short robot intro,
-installs the package with `uv`, copies your two files into
-`~/.config/op-agent-engine/`, provisions the OpenProject users, prints each
-new user's generated password, then prompts for that user's API token one at
-a time, verifies each token, installs the systemd service and runs a dry
-poll. Passwords are shown once; tokens are written to both `engine.env` files
-with mode `600` and are never printed. At the `agent-engine` token prompt it
+`install.sh` is an interactive installer.
+It installs the package with `uv`, copies your two files into
+`~/.config/op-agent-engine/`, provisions the OpenProject users, and prints each
+new user's generated password.
+It then prompts for that user's API token one at
+a time and verifies each token.
+It installs the systemd service and runs a dry
+poll. Passwords are shown once; tokens are written to both `engine.env` files. 
+
+At the `agent-engine` token prompt it
 reminds you to make that user an administrator, which is required for the
 engine to list users and edit work packages.
 
@@ -55,24 +58,12 @@ The service starts immediately and autostarts on boot. Follow it with
 `journalctl -u op-agent-engine -f`. The read-only dashboard is served at
 `http://127.0.0.1:8765` (see [docs/DASHBOARD.md](docs/DASHBOARD.md)).
 
-The manual equivalent is in [docs/INSTALL.md](docs/INSTALL.md); `uv` is the
-only installer prerequisite.
-
 ## Uninstall
 
 ```bash
 ./uninstall.sh            # asks for confirmation
 ./uninstall.sh --dry-run  # print the plan only
 ```
-
-The uninstaller stops and removes the systemd units, removes
-`~/.config/op-agent-engine/` and `~/.local/share/op-agent-engine/`, deletes
-the checkout's `workflow.yaml`/`engine.env` and their backups, removes or
-locks the OpenProject users, then uninstalls the `uv` tool. The
-administrator `agent-engine` account is never deleted by the API; the script
-reminds you to remove it manually under **Administration → Users**. Use
-`--keep-config`, `--keep-data`, `--keep-users` or `--keep-tool` to retain a
-layer; `--purge-agent-repos` also deletes `WORKSPACE_ROOT/*/repositories`.
 
 ## Documentation
 
