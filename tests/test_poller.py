@@ -11,8 +11,8 @@ from op_agent_engine.config import WorkflowConfig
 from op_agent_engine.openproject.client import OpenProjectClient
 from op_agent_engine.openproject.resolve import resolve_workflow
 from op_agent_engine.poller import Poller
-from tests.fakes.openproject import FakeOpenProject
 from tests.fakes import non_write_requests
+from tests.fakes.openproject import FakeOpenProject
 from tests.test_resolve import (
     BASE_URL,
     TOKEN,

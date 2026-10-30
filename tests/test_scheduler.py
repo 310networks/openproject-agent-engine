@@ -16,8 +16,8 @@ from op_agent_engine.openproject.workpackage import parse_work_package
 from op_agent_engine.poller import DispatchItem, DispatchPlan
 from op_agent_engine.scheduler import Scheduler
 from op_agent_engine.store import CANCELLED, RUNNING, Store
-from tests.fakes.openproject import FakeOpenProject
 from tests.fakes import non_write_requests
+from tests.fakes.openproject import FakeOpenProject
 from tests.test_poller import PRIORITIES, wp
 from tests.test_resolve import BASE_URL, TOKEN, make_config, make_fake, resolve
 

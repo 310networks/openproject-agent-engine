@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Iterable
+from collections.abc import Iterable
 
 import httpx
 
@@ -16,9 +16,7 @@ def non_write_requests(requests: Iterable[httpx.Request]) -> list[httpx.Request]
     """
     reads: list[httpx.Request] = []
     for request in requests:
-        if request.method == "GET":
-            reads.append(request)
-        elif (
+        if request.method == "GET" or (
             request.method == "POST"
             and request.url.path == "/api/v3/work_packages/form"
         ):
