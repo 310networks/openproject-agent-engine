@@ -22,6 +22,7 @@ from pathlib import Path
 
 UNIT_NAMES: tuple[str, ...] = (
     "op-agent-engine.service",
+    "op-agent-engine-dashboard.service",
     "op-agent-engine-cleanup.service",
     "op-agent-engine-cleanup.timer",
 )
@@ -33,6 +34,9 @@ _REPO_EXAMPLES: dict[str, Path] = {
     "workflow.example.yaml": Path("workflow.example.yaml"),
     "engine.env.example": Path("engine.env.example"),
     "units/op-agent-engine.service": Path("deploy/op-agent-engine.service"),
+    "units/op-agent-engine-dashboard.service": Path(
+        "deploy/op-agent-engine-dashboard.service"
+    ),
     "units/op-agent-engine-cleanup.service": Path("deploy/op-agent-engine-cleanup.service"),
     "units/op-agent-engine-cleanup.timer": Path("deploy/op-agent-engine-cleanup.timer"),
 }
@@ -338,6 +342,9 @@ def install_service(*, apply: bool, exe: Path, stage_dir: Path) -> ServiceReport
             report.commands.append(f"{prefix}cp {stage_dir / name} /etc/systemd/system/{name}")
         report.commands.append(f"{prefix}systemctl daemon-reload")
         report.commands.append(f"{prefix}systemctl enable --now op-agent-engine")
+        report.commands.append(
+            f"{prefix}systemctl enable --now op-agent-engine-dashboard"
+        )
         report.commands.append(f"{prefix}systemctl enable --now op-agent-engine-cleanup.timer")
         return report
 
@@ -362,6 +369,10 @@ def install_service(*, apply: bool, exe: Path, stage_dir: Path) -> ServiceReport
             "",
         ),
         ([*sudo, "systemctl", "enable", "--now", "op-agent-engine"], "op-agent-engine.service"),
+        (
+            [*sudo, "systemctl", "enable", "--now", "op-agent-engine-dashboard"],
+            "op-agent-engine-dashboard.service",
+        ),
         (
             [*sudo, "systemctl", "enable", "--now", "op-agent-engine-cleanup.timer"],
             "op-agent-engine-cleanup.timer",

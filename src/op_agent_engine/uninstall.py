@@ -309,6 +309,7 @@ def service_plan() -> list[list[str]]:
     sudo = _sudo_prefix()
     commands = [
         [*sudo, "systemctl", "disable", "--now", "op-agent-engine.service"],
+        [*sudo, "systemctl", "disable", "--now", "op-agent-engine-dashboard.service"],
         [*sudo, "systemctl", "disable", "--now", "op-agent-engine-cleanup.timer"],
     ]
     commands.extend(
@@ -324,7 +325,11 @@ def stop_service(ui: UI) -> None:
     if not _systemctl_available() or not _sudo_available():
         ui.warn("systemctl/sudo not available; stop the service manually")
         return
-    for unit in ("op-agent-engine.service", "op-agent-engine-cleanup.timer"):
+    for unit in (
+        "op-agent-engine.service",
+        "op-agent-engine-dashboard.service",
+        "op-agent-engine-cleanup.timer",
+    ):
         code, detail = _run([*_sudo_prefix(), "systemctl", "disable", "--now", unit])
         if code == 0:
             continue
@@ -477,7 +482,7 @@ def _run_uninstall(options: UninstallOptions, ui: UI) -> int:
     else:
         ui.info("dry run; nothing will be changed")
 
-    ui.info("service: op-agent-engine + cleanup timer")
+    ui.info("service: op-agent-engine + dashboard + cleanup timer")
     if not options.keep_config:
         ui.info(f"config:  {options.config_dir}")
         for name in ("workflow.yaml", "engine.env"):

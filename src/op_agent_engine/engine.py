@@ -351,6 +351,29 @@ def is_paused(settings: EngineSettings) -> bool:
     ).exists()
 
 
+def read_heartbeat(settings: EngineSettings) -> tuple[str | None, float | None]:
+    """Return the heartbeat timestamp and its age in seconds.
+
+    ``(None, None)`` means the file is missing; ``(raw, None)`` means it could
+    not be parsed as a timestamp.
+    """
+    heartbeat = settings.data_dir / HEARTBEAT_FILE_NAME
+    try:
+        raw = heartbeat.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None, None
+    if not raw:
+        return None, None
+    try:
+        timestamp = datetime.fromisoformat(raw)
+    except ValueError:
+        return raw, None
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=UTC)
+    age = max(0.0, (datetime.now(UTC) - timestamp).total_seconds())
+    return raw, age
+
+
 def write_heartbeat(settings: EngineSettings) -> None:
     """Write the ``DATA_DIR/heartbeat`` timestamp atomically."""
     settings.data_dir.mkdir(parents=True, exist_ok=True)

@@ -253,6 +253,8 @@ class Scheduler:
             attempt=1,
             branch=branch,
             run_dir_template=str(self._store.runs_dir / "{id}"),
+            display_id=wp.display_id,
+            subject=wp.subject,
         )
 
         try:

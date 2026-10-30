@@ -18,6 +18,7 @@ import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 # Run artifact directory name (PLAN section 16).
 RUNS_DIR_NAME = "runs"
@@ -40,6 +41,8 @@ CREATE TABLE IF NOT EXISTS runs (
   state TEXT NOT NULL,
   attempt INTEGER NOT NULL,
   branch TEXT NOT NULL,
+  display_id TEXT,
+  subject TEXT,
   pid INTEGER,
   pgid INTEGER,
   proc_start TEXT,
@@ -70,6 +73,8 @@ _RUN_COLUMNS = (
     "state",
     "attempt",
     "branch",
+    "display_id",
+    "subject",
     "pid",
     "pgid",
     "proc_start",
@@ -96,6 +101,8 @@ class Run:
     state: str
     attempt: int
     branch: str
+    display_id: str | None
+    subject: str | None
     pid: int | None
     pgid: int | None
     proc_start: str | None
@@ -112,7 +119,15 @@ def _utcnow() -> str:
 
 
 def _row_to_run(row: sqlite3.Row) -> Run:
-    return Run(**{column: row[column] for column in _RUN_COLUMNS})
+    # A read-only reader may open a database created before a column was
+    # added (the engine migrates it on its next start); treat it as NULL so
+    # the dashboard can still show the old history.
+    available = set(row.keys())
+    values: dict[str, Any] = {
+        column: row[column] if column in available else None
+        for column in _RUN_COLUMNS
+    }
+    return Run(**values)
 
 
 class Store:
@@ -124,25 +139,58 @@ class Store:
     Pass the string ``":memory:"`` for an ephemeral store (dry-run mode).
     """
 
-    def __init__(self, path: Path | str) -> None:
+    def __init__(self, path: Path | str, *, read_only: bool = False) -> None:
         in_memory = isinstance(path, str) and path == ":memory:"
         if in_memory:
             self._path = Path("__in_memory__")
         else:
             self._path = path if isinstance(path, Path) else Path(path)
-            self._path.parent.mkdir(parents=True, exist_ok=True)
+            if not read_only:
+                self._path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
+        self._read_only = read_only
+        if read_only:
+            if in_memory:
+                raise ValueError("a read-only store cannot be in-memory")
+            self._conn = sqlite3.connect(
+                f"file:{self._path}?mode=ro",
+                uri=True,
+                check_same_thread=False,
+            )
+            self._conn.row_factory = sqlite3.Row
+            return
         self._conn = sqlite3.connect(
             ":memory:" if in_memory else str(self._path), check_same_thread=False
         )
         self._conn.row_factory = sqlite3.Row
         with self._lock:
             self._conn.executescript(_SCHEMA)
+            self._migrate()
             self._conn.commit()
+
+    def _migrate(self) -> None:
+        """Add columns introduced after the database was first created.
+
+        ``CREATE TABLE IF NOT EXISTS`` does not alter an existing table, and
+        the run history must survive an upgrade (it is the dashboard's data
+        source). Adding a nullable column is safe and cheap.
+        """
+        columns = {
+            str(row["name"])
+            for row in self._conn.execute("PRAGMA table_info(runs)").fetchall()
+        }
+        for name in ("display_id", "subject"):
+            if name not in columns:
+                self._conn.execute(f"ALTER TABLE runs ADD COLUMN {name} TEXT")
 
     @property
     def path(self) -> Path:
         return self._path
+
+    @property
+    def read_only(self) -> bool:
+        """Whether this store was opened with ``mode=ro``."""
+        return self._read_only
 
     @property
     def runs_dir(self) -> Path:
@@ -163,6 +211,8 @@ class Store:
         attempt: int,
         branch: str,
         run_dir_template: str,
+        display_id: str | None = None,
+        subject: str | None = None,
     ) -> int:
         """Insert a ``running`` run row and return its id.
 
@@ -179,9 +229,9 @@ class Store:
                     """
                     INSERT INTO runs (
                       work_package_id, project_id, agent, kind, state, attempt,
-                      branch, started_at, run_dir
+                      branch, display_id, subject, started_at, run_dir
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         work_package_id,
@@ -191,6 +241,8 @@ class Store:
                         RUNNING,
                         attempt,
                         branch,
+                        display_id,
+                        subject,
                         _utcnow(),
                         run_dir_template,
                     ),
@@ -317,6 +369,63 @@ class Store:
                 (RUNNING, limit),
             ).fetchall()
         return [_row_to_run(row) for row in rows]
+
+    def state_counts(self) -> dict[str, int]:
+        """Number of runs per state (``running`` included)."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT state, COUNT(*) AS n FROM runs GROUP BY state"
+            ).fetchall()
+        return {str(row["state"]): int(row["n"]) for row in rows}
+
+    def outcome_counts(self) -> dict[str, int]:
+        """Number of finished runs per outcome (``NULL`` outcomes omitted)."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT outcome, COUNT(*) AS n FROM runs "
+                "WHERE outcome IS NOT NULL GROUP BY outcome"
+            ).fetchall()
+        return {str(row["outcome"]): int(row["n"]) for row in rows}
+
+    def agent_counts(self) -> dict[str, dict[str, int]]:
+        """Runs per agent, split by state and outcome.
+
+        The shape is ``{agent: {state: n, ..., "outcome:<name>": n}}``. It is
+        computed in one grouped query so the dashboard does not load the whole
+        run history on every refresh.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT agent, state, outcome, COUNT(*) AS n FROM runs "
+                "GROUP BY agent, state, outcome"
+            ).fetchall()
+        counts: dict[str, dict[str, int]] = {}
+        for row in rows:
+            agent = str(row["agent"])
+            entry = counts.setdefault(agent, {})
+            state = str(row["state"])
+            entry[state] = entry.get(state, 0) + int(row["n"])
+            outcome = row["outcome"]
+            if outcome is not None:
+                key = f"outcome:{outcome}"
+                entry[key] = entry.get(key, 0) + int(row["n"])
+        return counts
+
+    def last_finished_run_by_agent(self) -> dict[str, Run]:
+        """The most recent finished run for each agent, keyed by agent."""
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT * FROM (
+                  SELECT runs.*, ROW_NUMBER() OVER (
+                    PARTITION BY agent ORDER BY finished_at DESC, id DESC
+                  ) AS row_number
+                  FROM runs WHERE state != ?
+                ) WHERE row_number = 1
+                """,
+                (RUNNING,),
+            ).fetchall()
+        return {str(row["agent"]): _row_to_run(row) for row in rows}
 
     # -- crash counts ----------------------------------------------------
 

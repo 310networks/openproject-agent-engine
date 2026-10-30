@@ -158,13 +158,14 @@ runs `init`, which keeps them.
 
 ## Systemd service
 
-`op-agent-engine install-service` renders the three unit files with your real
+`op-agent-engine install-service` renders the four unit files with your real
 paths and the resolved `op-agent-engine` binary, stages them in
 `~/.local/share/op-agent-engine/systemd/`, and:
 
 - without `--apply`: prints the `sudo` commands that would run;
 - with `--apply`: runs `sudo tee`, `daemon-reload`, `systemd-analyze verify`
-  and `systemctl enable --now` for `op-agent-engine.service` and
+  and `systemctl enable --now` for `op-agent-engine.service`,
+  `op-agent-engine-dashboard.service` (the read-only web UI) and
   `op-agent-engine-cleanup.timer` (the daily run-directory retention job).
 
 The service autostarts on boot (`WantedBy=multi-user.target`).
@@ -183,3 +184,6 @@ Unit notes:
 - Optional watchdog: uncomment `Type=notify` and `WatchdogSec=` (three poll
   intervals) in the staged `op-agent-engine.service`, then re-run
   `install-service --apply`.
+- `op-agent-engine-dashboard.service` binds to `DASHBOARD_HOST:DASHBOARD_PORT`
+  (`127.0.0.1:8765` by default) and has no authentication. Keep it on loopback
+  or put it behind the LAN reverse proxy. See [DASHBOARD.md](DASHBOARD.md).

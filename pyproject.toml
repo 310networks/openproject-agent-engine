@@ -41,6 +41,7 @@ packages = ["src/op_agent_engine"]
 "workflow.example.yaml" = "op_agent_engine/examples/workflow.example.yaml"
 "engine.env.example" = "op_agent_engine/examples/engine.env.example"
 "deploy/op-agent-engine.service" = "op_agent_engine/examples/units/op-agent-engine.service"
+"deploy/op-agent-engine-dashboard.service" = "op_agent_engine/examples/units/op-agent-engine-dashboard.service"
 "deploy/op-agent-engine-cleanup.service" = "op_agent_engine/examples/units/op-agent-engine-cleanup.service"
 "deploy/op-agent-engine-cleanup.timer" = "op_agent_engine/examples/units/op-agent-engine-cleanup.timer"
 

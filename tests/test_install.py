@@ -202,14 +202,22 @@ class TestInstallService:
         report = install.install_service(apply=True, exe=exe, stage_dir=tmp_path / "stage")
 
         assert report.ok
-        assert len(report.installed) == 3
+        assert len(report.installed) == 4
         assert report.enabled == [
             "op-agent-engine.service",
+            "op-agent-engine-dashboard.service",
             "op-agent-engine-cleanup.timer",
         ]
         assert calls[0][:3] == ["sudo", "tee", "/etc/systemd/system/op-agent-engine.service"]
         assert ["sudo", "systemctl", "daemon-reload"] in calls
         assert ["sudo", "systemctl", "enable", "--now", "op-agent-engine"] in calls
+        assert [
+            "sudo",
+            "systemctl",
+            "enable",
+            "--now",
+            "op-agent-engine-dashboard",
+        ] in calls
         assert ["sudo", "systemctl", "enable", "--now", "op-agent-engine-cleanup.timer"] in calls
 
     def test_apply_reports_subprocess_failure(

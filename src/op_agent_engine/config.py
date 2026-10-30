@@ -661,6 +661,8 @@ class EngineSettings(BaseSettings):
     gh_token: SecretStr | None = None
     engine_paused: bool = False
     log_level: str = "INFO"
+    dashboard_host: str = "127.0.0.1"
+    dashboard_port: int = Field(default=8765, ge=1, le=65535)
 
     def missing_api_values(self) -> list[str]:
         """Required variables for talking to OpenProject."""

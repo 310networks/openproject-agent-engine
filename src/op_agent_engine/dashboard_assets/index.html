@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Agent Engine</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="page">
+    <header class="topbar">
+      <div class="brand">
+        <div class="logo" aria-hidden="true">▣</div>
+        <div>
+          <h1>Agent Engine</h1>
+          <p class="sub">OpenProject dispatch monitor</p>
+        </div>
+      </div>
+      <div id="engine-badge" class="engine-badge offline" role="status" aria-live="polite">
+        <span class="status-dot" aria-hidden="true"></span>
+        <div class="engine-copy">
+          <strong id="engine-status">Connecting…</strong>
+          <span id="engine-detail">waiting for first snapshot</span>
+        </div>
+      </div>
+    </header>
+
+    <div id="banner" class="banner hidden" role="alert"></div>
+
+    <section class="kpis" id="kpis" aria-label="Run totals"></section>
+
+    <main>
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Agents</h2>
+          <span id="agent-summary" class="muted"></span>
+        </div>
+        <div id="agents" class="agent-grid"></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Active sessions</h2>
+          <span id="active-count" class="muted"></span>
+        </div>
+        <div id="active-sessions" class="table-wrap"></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Recent sessions</h2>
+          <span id="recent-count" class="muted"></span>
+        </div>
+        <div id="recent-sessions" class="table-wrap"></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Outcomes</h2>
+          <span class="muted">all recorded runs</span>
+        </div>
+        <div id="outcomes" class="outcome-list"></div>
+      </section>
+    </main>
+
+    <footer>
+      <span id="footer-meta"></span>
+      <span id="updated"></span>
+    </footer>
+  </div>
+  <script src="/app.js"></script>
+</body>
+</html>

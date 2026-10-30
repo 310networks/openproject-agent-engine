@@ -1,0 +1,24 @@
+[Unit]
+Description=OpenProject Agent Engine Dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=<user>
+Group=<user>
+WorkingDirectory=<home>
+EnvironmentFile=<home>/.config/op-agent-engine/engine.env
+Environment=PATH=<home>/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=<exe> dashboard --config <home>/.config/op-agent-engine/workflow.yaml
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+# The dashboard only reads the store and heartbeat. Bound to 127.0.0.1 by
+# default; put it behind the LAN reverse proxy if it must be remote.
+ProtectSystem=strict
+ProtectHome=read-only
+
+[Install]
+WantedBy=multi-user.target

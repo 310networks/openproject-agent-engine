@@ -52,7 +52,8 @@ reminds you to make that user an administrator, which is required for the
 engine to list users and edit work packages.
 
 The service starts immediately and autostarts on boot. Follow it with
-`journalctl -u op-agent-engine -f`.
+`journalctl -u op-agent-engine -f`. The read-only dashboard is served at
+`http://127.0.0.1:8765` (see [docs/DASHBOARD.md](docs/DASHBOARD.md)).
 
 The manual equivalent is in [docs/INSTALL.md](docs/INSTALL.md); `uv` is the
 only installer prerequisite.
@@ -80,6 +81,7 @@ layer; `--purge-agent-repos` also deletes `WORKSPACE_ROOT/*/repositories`.
 | [docs/INSTALL.md](docs/INSTALL.md) | install options, systemd service, updates |
 | [docs/OPENPROJECT_SETUP.md](docs/OPENPROJECT_SETUP.md) | one-time instance setup: statuses, `AGENT` field, Agent Worker role, admin engine user, tokens |
 | [docs/CONFIG.md](docs/CONFIG.md) | `workflow.yaml`, environment variables, CLI reference |
+| [docs/DASHBOARD.md](docs/DASHBOARD.md) | read-only web UI: engine status, agents, sessions, totals |
 | [docs/RUNBOOK.md](docs/RUNBOOK.md) | status, pause, run inspection, `On Hold` handling, recovery, security |
 | [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md) | fake-agent test and manual acceptance checklist |
 

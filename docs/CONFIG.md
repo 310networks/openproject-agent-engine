@@ -116,6 +116,8 @@ Field notes:
 | `GH_TOKEN` | optional | overrides host `gh`/git auth; normally unset |
 | `ENGINE_PAUSED` | `false` | stop new dispatches |
 | `LOG_LEVEL` | `INFO` | log level |
+| `DASHBOARD_HOST` | `127.0.0.1` | dashboard bind address (no auth: keep loopback) |
+| `DASHBOARD_PORT` | `8765` | dashboard bind port |
 
 ## CLI
 
@@ -129,6 +131,7 @@ Field notes:
 | `dry-run` | one poll; logs the dispatch plan, writes nothing |
 | `check-config` | validate the file and resolve IDs (`--offline`, `--json`) |
 | `status` | heartbeat age, pause state, active and last 10 runs (`--json`) |
+| `dashboard` | read-only web UI on `127.0.0.1:8765` (`--host`, `--port`, `--limit`, `--refresh`) |
 | `provision` | reconcile users and scoped memberships (`--apply`) |
 | `install-service` | render/install the systemd units (`--apply`) |
 | `cleanup` | remove run dirs older than the retention period (`--days`, `--json`) |

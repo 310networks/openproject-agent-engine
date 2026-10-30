@@ -312,3 +312,233 @@ def test_engine_lock_context_manager(tmp_path: Path) -> None:
         assert held.acquire() is True
         with pytest.raises(RuntimeError), EngineLock(path):
             pass
+
+
+# -- dashboard metadata and aggregates ------------------------------------
+
+
+def test_begin_run_records_ticket_metadata(store: Store) -> None:
+    run_id = store.begin_run(
+        work_package_id=77,
+        project_id=4,
+        agent="BACKEND",
+        kind="implement",
+        attempt=1,
+        branch="op-4-77",
+        run_dir_template=TEMPLATE,
+        display_id="#77",
+        subject="Build the dashboard",
+    )
+
+    run = store.get_run(run_id)
+    assert run is not None
+    assert run.display_id == "#77"
+    assert run.subject == "Build the dashboard"
+
+
+def test_state_and_outcome_counts(store: Store) -> None:
+    running = begin(store, work_package_id=1, agent="IMPL")
+    completed = begin(store, work_package_id=2, agent="REVIEWER")
+    declined = begin(store, work_package_id=3, agent="DESIGNER")
+    failed = begin(store, work_package_id=4, agent="OTHER")
+    store.finish_run(completed, state=SUCCEEDED, outcome="approved")
+    store.finish_run(declined, state=SUCCEEDED, outcome="rejected")
+    store.finish_run(failed, state=FAILED, outcome="nonzero_exit")
+
+    assert store.state_counts() == {
+        RUNNING: 1,
+        SUCCEEDED: 2,
+        FAILED: 1,
+    }
+    assert store.outcome_counts() == {
+        "approved": 1,
+        "rejected": 1,
+        "nonzero_exit": 1,
+    }
+    assert store.get_run(running) is not None
+
+
+def test_agent_counts_split_states_and_outcomes(store: Store) -> None:
+    first = begin(store, work_package_id=1, agent="IMPL")
+    store.finish_run(first, state=SUCCEEDED, outcome="ready_for_review")
+    second = begin(store, work_package_id=2, agent="IMPL")
+    third = begin(store, work_package_id=3, agent="REVIEWER")
+    store.finish_run(second, state=FAILED, outcome="nonzero_exit")
+    store.finish_run(third, state=SUCCEEDED, outcome="approved")
+
+    counts = store.agent_counts()
+    assert counts["IMPL"][SUCCEEDED] == 1
+    assert counts["IMPL"][FAILED] == 1
+    assert counts["IMPL"]["outcome:ready_for_review"] == 1
+    assert counts["IMPL"]["outcome:nonzero_exit"] == 1
+    assert counts["REVIEWER"][SUCCEEDED] == 1
+    assert counts["REVIEWER"]["outcome:approved"] == 1
+
+
+def test_last_finished_run_by_agent(store: Store) -> None:
+    first = begin(store, work_package_id=1, agent="IMPL")
+    store.finish_run(first, state=SUCCEEDED, outcome="ready_for_review")
+    second = begin(store, work_package_id=2, agent="IMPL")
+    other = begin(store, work_package_id=3, agent="REVIEWER")
+    store.finish_run(other, state=SUCCEEDED, outcome="approved")
+    store.finish_run(second, state=FAILED, outcome="nonzero_exit")
+
+    last = store.last_finished_run_by_agent()
+    assert set(last) == {"IMPL", "REVIEWER"}
+    assert last["IMPL"].id == second
+    assert last["REVIEWER"].id == other
+
+
+def test_store_migrates_a_database_created_before_dashboard_columns(
+    tmp_path: Path,
+) -> None:
+    import sqlite3
+
+    path = tmp_path / "old.db"
+    connection = sqlite3.connect(path)
+    connection.executescript(
+        """
+        CREATE TABLE runs (
+          id INTEGER PRIMARY KEY,
+          work_package_id INTEGER NOT NULL,
+          project_id INTEGER NOT NULL,
+          agent TEXT NOT NULL,
+          kind TEXT NOT NULL,
+          state TEXT NOT NULL,
+          attempt INTEGER NOT NULL,
+          branch TEXT NOT NULL,
+          pid INTEGER,
+          pgid INTEGER,
+          proc_start TEXT,
+          started_at TEXT NOT NULL,
+          finished_at TEXT,
+          exit_code INTEGER,
+          result_line TEXT,
+          outcome TEXT,
+          run_dir TEXT NOT NULL
+        );
+        INSERT INTO runs (
+          work_package_id, project_id, agent, kind, state, attempt, branch,
+          started_at, run_dir
+        ) VALUES (7, 4, 'IMPL', 'implement', 'succeeded', 1, 'op-4-7',
+                  '2026-01-01T00:00:00+00:00', '/tmp/runs/1');
+        CREATE TABLE crash_counts (
+          work_package_id INTEGER PRIMARY KEY,
+          count INTEGER NOT NULL DEFAULT 0
+        );
+        """
+    )
+    connection.commit()
+    connection.close()
+
+    reopened = Store(path)
+    try:
+        run = reopened.get_run(1)
+        assert run is not None
+        assert run.display_id is None
+        assert run.subject is None
+        new_id = begin(reopened, work_package_id=8, agent="REVIEWER")
+        new_run = reopened.get_run(new_id)
+        assert new_run is not None
+        assert new_run.display_id is None  # helper did not pass one
+    finally:
+        reopened.close()
+
+
+# -- read-only readers -----------------------------------------------------
+
+
+def test_read_only_store_reads_without_writing(tmp_path: Path) -> None:
+    import sqlite3
+
+    path = tmp_path / "engine.db"
+    writer = Store(path)
+    run_id = writer.begin_run(
+        work_package_id=9,
+        project_id=4,
+        agent="IMPL",
+        kind="implement",
+        attempt=1,
+        branch="op-4-9",
+        run_dir_template=TEMPLATE,
+        display_id="#9",
+        subject="Read me",
+    )
+    writer.finish_run(run_id, state=SUCCEEDED, outcome="approved")
+    writer.close()
+
+    reader = Store(path, read_only=True)
+    try:
+        assert reader.read_only is True
+        run = reader.get_run(run_id)
+        assert run is not None
+        assert run.subject == "Read me"
+        assert reader.state_counts() == {SUCCEEDED: 1}
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            reader.increment_crash_count(9)
+    finally:
+        reader.close()
+
+
+def test_read_only_store_tolerates_a_pre_migration_schema(
+    tmp_path: Path,
+) -> None:
+    import sqlite3
+
+    path = tmp_path / "old.db"
+    connection = sqlite3.connect(path)
+    connection.executescript(
+        """
+        CREATE TABLE runs (
+          id INTEGER PRIMARY KEY,
+          work_package_id INTEGER NOT NULL,
+          project_id INTEGER NOT NULL,
+          agent TEXT NOT NULL,
+          kind TEXT NOT NULL,
+          state TEXT NOT NULL,
+          attempt INTEGER NOT NULL,
+          branch TEXT NOT NULL,
+          pid INTEGER,
+          pgid INTEGER,
+          proc_start TEXT,
+          started_at TEXT NOT NULL,
+          finished_at TEXT,
+          exit_code INTEGER,
+          result_line TEXT,
+          outcome TEXT,
+          run_dir TEXT NOT NULL
+        );
+        INSERT INTO runs (
+          work_package_id, project_id, agent, kind, state, attempt, branch,
+          started_at, run_dir
+        ) VALUES (7, 4, 'IMPL', 'implement', 'succeeded', 1, 'op-4-7',
+                  '2026-01-01T00:00:00+00:00', '/tmp/runs/1');
+        """
+    )
+    connection.commit()
+    connection.close()
+
+    reader = Store(path, read_only=True)
+    try:
+        run = reader.get_run(1)
+        assert run is not None
+        assert run.display_id is None
+        assert run.subject is None
+    finally:
+        reader.close()
+
+    # The read-only reader must not have migrated the file.
+    check = sqlite3.connect(path)
+    try:
+        columns = {row[1] for row in check.execute("PRAGMA table_info(runs)")}
+    finally:
+        check.close()
+    assert "display_id" not in columns
+    assert "subject" not in columns
+
+
+def test_read_only_store_requires_an_existing_file(tmp_path: Path) -> None:
+    import sqlite3
+
+    with pytest.raises(sqlite3.OperationalError):
+        Store(tmp_path / "missing.db", read_only=True)

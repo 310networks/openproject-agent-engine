@@ -7,6 +7,8 @@ Commands that need API access assume `engine.env` is sourced:
 
 ```bash
 op-agent-engine status            # or --json
+op-agent-engine dashboard         # read-only web UI on 127.0.0.1:8765
+op-agent-engine dashboard --port 9000   # or DASHBOARD_PORT in engine.env
 ```
 
 The heartbeat (`DATA_DIR/heartbeat`) is written after every poll; a stale one

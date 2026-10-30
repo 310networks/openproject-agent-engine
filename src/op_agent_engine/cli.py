@@ -17,7 +17,6 @@ import json
 import os
 import sys
 from collections.abc import Sequence
-from datetime import UTC, datetime
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -30,10 +29,17 @@ from op_agent_engine.config import (
     EngineSettings,
     WorkflowConfig,
 )
+from op_agent_engine.dashboard import (
+    DEFAULT_LIMIT,
+    DEFAULT_REFRESH_SECONDS,
+    MAX_LIMIT,
+    serve_dashboard,
+)
 from op_agent_engine.engine import (
     HEARTBEAT_FILE_NAME,
     PAUSE_FILE_NAME,
     STORE_FILE_NAME,
+    read_heartbeat,
     run_engine,
     run_engine_once,
 )
@@ -151,6 +157,39 @@ def build_parser() -> argparse.ArgumentParser:
         "--json",
         action="store_true",
         help="print the status as JSON",
+    )
+
+    dashboard = subparsers.add_parser(
+        "dashboard",
+        help="serve the read-only web dashboard",
+        parents=[_subcommand_options()],
+    )
+    dashboard.add_argument(
+        "--host",
+        default=None,
+        metavar="HOST",
+        help="bind address (default: $DASHBOARD_HOST or 127.0.0.1)",
+    )
+    dashboard.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        metavar="PORT",
+        help="bind port (default: $DASHBOARD_PORT or 8765)",
+    )
+    dashboard.add_argument(
+        "--limit",
+        type=int,
+        default=DEFAULT_LIMIT,
+        metavar="N",
+        help=f"recent sessions in the snapshot (1-{MAX_LIMIT}, default: {DEFAULT_LIMIT})",
+    )
+    dashboard.add_argument(
+        "--refresh",
+        type=int,
+        default=DEFAULT_REFRESH_SECONDS,
+        metavar="SECONDS",
+        help=f"browser refresh interval (default: {DEFAULT_REFRESH_SECONDS})",
     )
 
     provision = subparsers.add_parser(
@@ -520,24 +559,6 @@ def _check_config(path: Path, *, as_json: bool, offline: bool) -> int:
     return OK_EXIT if (provision_report is None or provision_report.ok) else CONFIG_ERROR_EXIT
 
 
-def _read_heartbeat(path: Path) -> tuple[str | None, float | None]:
-    """Return the heartbeat timestamp and its age in seconds."""
-    try:
-        raw = path.read_text(encoding="utf-8").strip()
-    except OSError:
-        return None, None
-    if not raw:
-        return None, None
-    try:
-        timestamp = datetime.fromisoformat(raw)
-    except ValueError:
-        return raw, None
-    if timestamp.tzinfo is None:
-        timestamp = timestamp.replace(tzinfo=UTC)
-    age = max(0.0, (datetime.now(UTC) - timestamp).total_seconds())
-    return raw, age
-
-
 def _run_line(run: Run) -> str:
     return (
         f"run {run.id}: wp {run.work_package_id} agent={run.agent} "
@@ -546,11 +567,50 @@ def _run_line(run: Run) -> str:
     )
 
 
+def _dashboard(
+    config_path: Path,
+    *,
+    host: str | None,
+    port: int | None,
+    limit: int,
+    refresh_seconds: int,
+) -> int:
+    """Serve the read-only dashboard (no OpenProject token required)."""
+    try:
+        config = _load_config(config_path)
+    except ConfigError as error:
+        print(f"op-agent-engine: error: {error}", file=sys.stderr)
+        return CONFIG_ERROR_EXIT
+    if not 1 <= limit <= MAX_LIMIT:
+        print(
+            f"op-agent-engine: error: --limit must be between 1 and {MAX_LIMIT}",
+            file=sys.stderr,
+        )
+        return CONFIG_ERROR_EXIT
+    if refresh_seconds < 1:
+        print("op-agent-engine: error: --refresh must be at least 1", file=sys.stderr)
+        return CONFIG_ERROR_EXIT
+    settings = EngineSettings()
+    bind_port = settings.dashboard_port if port is None else port
+    if not 1 <= bind_port <= 65535:
+        print("op-agent-engine: error: port must be between 1 and 65535", file=sys.stderr)
+        return CONFIG_ERROR_EXIT
+    configure_logging(os.environ.get("LOG_LEVEL", "INFO"))
+    return serve_dashboard(
+        config,
+        settings,
+        host=host,
+        port=bind_port,
+        limit=limit,
+        refresh_seconds=refresh_seconds,
+    )
+
+
 def _status(*, as_json: bool) -> int:
     """Print heartbeat age, active runs and the last 10 finished runs."""
     settings = EngineSettings()
     data_dir = settings.data_dir
-    heartbeat_raw, heartbeat_age = _read_heartbeat(data_dir / HEARTBEAT_FILE_NAME)
+    heartbeat_raw, heartbeat_age = read_heartbeat(settings)
     paused = settings.engine_paused or (data_dir / PAUSE_FILE_NAME).exists()
 
     active: list[Run] = []
@@ -859,6 +919,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             else install.default_stage_dir()
         )
         return _install_service(apply=args.apply, stage_dir=stage_dir)
+
+    if args.command == "dashboard":
+        return _dashboard(
+            config_path,
+            host=args.host,
+            port=args.port,
+            limit=args.limit,
+            refresh_seconds=args.refresh,
+        )
 
     if args.command == "status":
         return _status(as_json=args.json)
