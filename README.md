@@ -81,7 +81,7 @@ The dashboard is served at `http://127.0.0.1:8765`
 | `OP_TOKEN_BACKEND` | token of `backendEngineer` |
 | `OP_TOKEN_DESIGNER` | token of `leadDesigner` |
 | `OP_TOKEN_REVIEWER` | token of `codeReviewer` |
-| `ANTHROPIC_API_KEY` etc. | one model provider key for the agent CLI |
+| `OPENROUTER_API_KEY` (or other provider key) | one model provider key for the agent CLI |
 
 Each monitored project must have a **project** custom field named `GIT_REPO`
 (configurable with `OP_GIT_REPO_FIELD`) containing its GitHub repository
