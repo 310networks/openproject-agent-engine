@@ -13,20 +13,6 @@ agent, verifies the outcome against GitHub and OpenProject, and performs
 
 ![](docs/op-agent-engine-demo.gif)
 
-## How a ticket flows
-
-| Observed state | Engine action | Run | Verified outcome | Transition |
-|---|---|---|---|---|
-| `New`, eligible, `AGENT` set | claim, `In Progress` | implement | open PR / `BLOCKED` | `Ready for Review` / `On Hold` |
-| `Ready for Review`, PR exists | claim, `In Testing` | review | PR merged / `REJECTED` | `Closed` / `Rejected` |
-| `Ready for Review`, no PR | — | — | — | `On Hold` + comment |
-| `Rejected`, eligible | claim, `In Progress` | fix | as implement | as implement |
-
-`On Hold` is terminal: the engine ignores the ticket until a human moves it.
-Branches are `op-<project>-<wp>` (one per ticket), at most
-`MAX_RUNS_PER_AGENT` runs per agent (default 1), and every engine comment
-starts with `ENGINE:`.
-
 ## Requirements
 
 - Docker
@@ -78,7 +64,6 @@ starts with `ENGINE:`.
    `docker/.env`, run `docker compose up -d engine` so compose recreates the
    container with the new environment.
 
-
 The dashboard is served at `http://127.0.0.1:8765`
 (see [docs/DASHBOARD.md](docs/DASHBOARD.md)).
 
@@ -123,6 +108,20 @@ Two optional variables are commonly changed:
 Everything else — concurrency, timings, status names, paths, git identity —
 has a working default. See [docs/CONFIG.md](docs/CONFIG.md) and the commented
 [`docker/.env.example`](docker/.env.example).
+
+## How a ticket flows
+
+| Observed state | Engine action | Run | Verified outcome | Transition |
+|---|---|---|---|---|
+| `New`, eligible, `AGENT` set | claim, `In Progress` | implement | open PR / `BLOCKED` | `Ready for Review` / `On Hold` |
+| `Ready for Review`, PR exists | claim, `In Testing` | review | PR merged / `REJECTED` | `Closed` / `Rejected` |
+| `Ready for Review`, no PR | — | — | — | `On Hold` + comment |
+| `Rejected`, eligible | claim, `In Progress` | fix | as implement | as implement |
+
+`On Hold` is terminal: the engine ignores the ticket until a human moves it.
+Branches are `op-<project>-<wp>` (one per ticket), at most
+`MAX_RUNS_PER_AGENT` runs per agent (default 1), and every engine comment
+starts with `ENGINE:`.
 
 ## Documentation
 
