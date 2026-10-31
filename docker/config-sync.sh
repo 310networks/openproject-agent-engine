@@ -2,10 +2,11 @@
 # Stage the host's agent configuration into ./docker/config for the container.
 #
 # The container never mounts the host's home directory: it reads copies from
-# ./docker/config (mounted read-only at /config). This script produces those copies,
-# with the one invariant the container relies on -- everything in ./config
-# except engine.env is world-readable, so the image's own user can read it
-# without any UID/GID matching.
+# ./docker/config (mounted read-only at /config). This script produces those
+# copies, with the one invariant the container relies on -- everything in
+# ./config is world-readable, so the image's own user can read it without any
+# UID/GID matching. The deployment environment lives in ./docker/.env instead
+# (host-readable only, never mounted).
 #
 # ./docker/config ships as templates you edit in place. This script replaces
 # them with the operator's own files when they exist; the values it writes are
@@ -23,6 +24,8 @@ set -eu
 
 REPO_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 CONFIG_DIR="${CONFIG_DIR:-${REPO_ROOT}/docker/config}"
+ENV_FILE="${ENV_FILE:-${REPO_ROOT}/docker/.env}"
+ENV_TEMPLATE="${REPO_ROOT}/docker/.env.example"
 PI_HOME="${HOME}/.pi/agent"
 OPENCODE_HOME="${XDG_CONFIG_HOME:-${HOME}/.config}/opencode"
 CHECK=0
@@ -120,30 +123,17 @@ if [ "$CHECK" -eq 0 ]; then
 fi
 
 say ""
-say "== operator files =="
-if [ "$CHECK" -eq 0 ]; then
-  if [ -f "${CONFIG_DIR}/workflow.yaml" ]; then
-    say "present:   config/workflow.yaml"
-  else
-    cp "${REPO_ROOT}/workflow.example.yaml" "${CONFIG_DIR}/workflow.yaml"
-    chmod 0644 "${CONFIG_DIR}/workflow.yaml"
-    say "created:   config/workflow.yaml (edit it)"
-    changed=1
-  fi
-  if [ -f "${CONFIG_DIR}/engine.env" ]; then
-    say "present:   config/engine.env"
-  else
-    # engine.env.example is already the container variant: the engine paths come
-    # from the image, so only the URL, the tokens and AGENT need filling in.
-    cp "${REPO_ROOT}/engine.env.example" "${CONFIG_DIR}/engine.env"
-    chmod 0600 "${CONFIG_DIR}/engine.env"
-    say "created:   config/engine.env (edit it: OP_BASE_URL, tokens, AGENT)"
-    changed=1
-  fi
+say "== deployment environment =="
+if [ -f "$ENV_FILE" ]; then
+  say "present:   docker/.env"
+elif [ "$CHECK" -eq 1 ]; then
+  say "missing:   docker/.env"
+  missing=1
 else
-  for f in workflow.yaml engine.env; do
-    [ -f "${CONFIG_DIR}/${f}" ] || { say "missing:   config/${f}"; missing=1; }
-  done
+  cp "$ENV_TEMPLATE" "$ENV_FILE"
+  chmod 0600 "$ENV_FILE"
+  say "created:   docker/.env (fill it in, or run ./provision-users.sh)"
+  changed=1
 fi
 
 say ""
@@ -156,7 +146,7 @@ copy_file "${HOME}/.gitconfig" "${CONFIG_DIR}/gitconfig"
 if [ "$COPY_AUTH" -eq 1 ]; then
   copy_file "${PI_HOME}/auth.json" "${CONFIG_DIR}/pi/auth.json"
 else
-  say "skipped:   pi/auth.json (--no-auth: supply provider keys via engine.env)"
+  say "skipped:   pi/auth.json (--no-auth: no provider key is seeded)"
 fi
 if [ "$COPY_SKILLS" -eq 1 ]; then
   copy_tree "${PI_HOME}/skills" "${CONFIG_DIR}/pi/skills"
@@ -192,7 +182,7 @@ fi
 
 say ""
 say "docker/config is not committed: it holds your own credentials, settings,"
-say "skills and git identity. Nothing else is needed from the repository."
+say "skills and git identity. The engine configuration is docker/.env."
 say ""
 say "next: docker compose pull && docker compose up -d"
-say "      (after editing docker/config/engine.env: docker compose up -d)"
+say "      (after editing docker/.env: docker compose up -d)"

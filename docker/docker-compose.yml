@@ -1,16 +1,18 @@
 # Docker Compose deployment of the agent engine.
 #
 # Every Docker artifact lives in this directory, and deployment is pull-only:
-# nothing is built here. All you supply is this file plus ./config: edit
-# engine.env (tokens), workflow.yaml (your projects and agents) and the agent
-# templates that ship next to them:
+# nothing is built here. Configuration is environment variables, read from the
+# .env file next to this file (or from docker/provision-users.sh, which writes
+# it) and passed straight into the containers:
 #
+#   ./provision-users.sh            # creates .env, the users and the tokens
 #   docker compose pull && docker compose up -d
 #   docker compose logs -f engine
 #
-# Nothing from the host is mounted except ./config (read-only). Runtime state
-# lives in named volumes, so the container user never has to match a host UID
-# and the whole directory can be copied to another machine as-is.
+# Nothing from the host is mounted except ./config (read-only), which holds the
+# agent CLI credentials and skills. Runtime state lives in named volumes, so the
+# container user never has to match a host UID and the whole directory can be
+# copied to another machine as-is.
 #
 #   OP_AGENT_ENGINE_TAG=0.1.0 docker compose up -d    # pin a version,
 #                                                    # default is `latest`
@@ -25,10 +27,13 @@ x-engine: &engine
   # docker/version.json.
   image: kookster310/op-agent-engine:${OP_AGENT_ENGINE_TAG:-latest}
   env_file:
-    - config/engine.env
+    # Written by ./provision-users.sh (mode 0600). Optional so the provisioning
+    # script can run before it exists.
+    - path: .env
+      required: false
   volumes:
-    # User-supplied configuration. Read-only; the entrypoint copies from here
-    # into the writable volumes below on every start.
+    # Agent CLI credentials, settings and skills. Read-only; the entrypoint
+    # copies from here into the writable volumes below on every start.
     - ./config:/config:ro
     # pi state: auth, settings, skills, model cache, sessions, downloaded tools.
     - pi-agent:/home/agent/.pi/agent
@@ -58,7 +63,7 @@ services:
     depends_on:
       - engine
     ports:
-      # Keep DASHBOARD_PORT=8765 in config/engine.env: this publishes 8765.
+      # Keep DASHBOARD_PORT=8765 in .env: this publishes 8765.
       - "${DASHBOARD_BIND:-127.0.0.1}:8765:8765"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/healthz', timeout=5)"]
@@ -75,16 +80,18 @@ services:
     restart: "no"
     command: ["cleanup"]
 
-  # Creates the engine and agent users in OpenProject, then prints the
-  # generated password of every account it created (once):
-  #   docker compose run --rm provision --apply --json
+  # Creates or reconciles the engine and agent users in OpenProject (writes
+  # enabled). ./provision-users.sh does this, and the token interview, for you.
+  #   docker compose run --rm provision
   provision:
     <<: *engine
     profiles: ["tasks"]
     restart: "no"
-    command: ["provision"]
+    command: ["provision", "--apply", "--json"]
 
-  # Validates config/workflow.yaml + config/engine.env without a poll.
+  # Validates the environment variables without a poll. Any other command can
+  # be run the same way; the argument overrides the service command:
+  #   docker compose run --rm engine status --json
   check-config:
     <<: *engine
     profiles: ["tasks"]

@@ -49,11 +49,10 @@ ENV PYTHONUNBUFFERED=1 \
     # installed to a fixed path instead of relying on the workspace layout.
     PROMPTS_DIR=/opt/op-agent-engine/prompts
 
-# Container defaults for the engine's path settings, so a `config/engine.env`
-# that only holds the OpenProject URL and tokens is enough. They match the
-# volume mounts in docker-compose.yml; `env_file` overrides them if set.
-ENV ENGINE_CONFIG=/config/workflow.yaml \
-    WORKSPACE_ROOT=/home/agent/agents \
+# Container defaults for the engine's path settings, so .env only has to hold
+# the deployment values (URL, project, repository, tokens). They match the
+# volume mounts in docker-compose.yml.
+ENV WORKSPACE_ROOT=/home/agent/agents \
     DATA_DIR=/home/agent/.local/share/op-agent-engine \
     DASHBOARD_HOST=0.0.0.0 \
     DASHBOARD_PORT=8765
@@ -110,10 +109,9 @@ RUN if [ "${INSTALL_OPENCODE}" = "true" ]; then \
 
 COPY --from=opcli /out/op /usr/local/bin/op
 
-# The engine package. `pip install .` also embeds the workflow/env examples
-# (see pyproject.toml force-include).
+# The engine package.
 WORKDIR /app
-COPY pyproject.toml README.md workflow.example.yaml engine.env.example /app/
+COPY pyproject.toml README.md /app/
 COPY src /app/src
 RUN pip install --no-cache-dir . \
  && rm -rf /app

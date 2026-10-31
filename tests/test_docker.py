@@ -4,8 +4,8 @@ The container design relies on a few things lining up:
 
 * ``./config`` is the only host bind mount, and it is read-only;
 * the engine paths the image sets are exactly the mount points declared in
-  ``docker-compose.yml``, and ``config/engine.env`` never overrides them with a
-  host path;
+  ``docker-compose.yml``, and ``docker/.env`` never overrides them with a host
+  path;
 * the image never receives operator state or secrets (``.dockerignore``);
 * ``docker/config/`` ships as templates edited in place -- nothing that can
   hold a real secret or the operator's own content may be committed in it.
@@ -74,7 +74,7 @@ def _populate(home: Path) -> None:
 def _sync(
     tmp_path: Path, *args: str, populate_home: bool = False
 ) -> tuple[Path, subprocess.CompletedProcess[str]]:
-    """Run config-sync.sh against a throwaway HOME and CONFIG_DIR."""
+    """Run config-sync.sh against a throwaway HOME, CONFIG_DIR and .env."""
     home = tmp_path / "home"
     config_dir = tmp_path / "config"
     home.mkdir(exist_ok=True)
@@ -87,6 +87,7 @@ def _sync(
             "PATH": os.environ["PATH"],
             "HOME": str(home),
             "CONFIG_DIR": str(config_dir),
+            "ENV_FILE": str(tmp_path / ".env"),
         },
         capture_output=True,
         text=True,
@@ -96,9 +97,9 @@ def _sync(
 
 
 def _generated_env(tmp_path: Path) -> dict[str, str]:
-    config_dir, result = _sync(tmp_path)
+    _, result = _sync(tmp_path)
     assert result.returncode == 0, result.stderr
-    return _env_file(config_dir / "engine.env")
+    return _env_file(tmp_path / ".env")
 
 
 # -- repository contents -----------------------------------------------------
@@ -138,14 +139,14 @@ def test_committed_config_is_templates_only() -> None:
     # Everything that can hold a real secret or the operator's own content
     # stays out of git, while the templates next to it do not.
     for operator_file in (
-        "docker/config/engine.env",
-        "docker/config/workflow.yaml",
+        "docker/.env",
         "docker/config/pi/skills/demo/SKILL.md",
         "docker/config/opencode/auth.json",
     ):
         assert _is_ignored(operator_file), f"{operator_file} must be git-ignored"
     for template in templates:
         assert not _is_ignored(template), f"{template} must be committed"
+    assert not _is_ignored("docker/.env.example")
 
 
 def _git(*args: str) -> str:
@@ -173,8 +174,7 @@ def test_dockerignore_keeps_secrets_and_state_out_of_the_image() -> None:
     for required in (
         "docker/config",
         ".git",
-        "workflow.yaml",
-        "engine.env",
+        "docker/.env",
         ".venv",
     ):
         assert required in patterns
@@ -212,15 +212,12 @@ def test_committed_config_templates_are_valid_and_free_of_operator_data() -> Non
 
 def test_agent_env_var_selects_the_runner() -> None:
     """`AGENT` is the single knob for pi versus opencode."""
-    example_workflow = (REPO_ROOT / "workflow.example.yaml").read_text()
-    example_env = (REPO_ROOT / "engine.env.example").read_text()
+    env_template = (DOCKER_DIR / ".env.example").read_text()
     entrypoint = (DOCKER_DIR / "entrypoint.sh").read_text()
 
-    # Every agent in the example takes its runner from the environment, so
-    # switching agent CLIs does not mean editing four agents.
-    assert example_workflow.count('runner: "${AGENT}"') == 4
-    assert "\nAGENT=pi\n" in example_env
-    # The container refuses to start rather than failing inside a workflow load.
+    # Switching agent CLIs is one variable, not four agent edits.
+    assert "\nAGENT=pi\n" in env_template
+    # The container refuses to start rather than failing inside a config build.
     assert ': "${AGENT:?AGENT is not set' in entrypoint
 
 
@@ -253,8 +250,7 @@ def test_sync_creates_only_the_skeleton(tmp_path: Path) -> None:
     config_dir, result = _sync(tmp_path)
 
     assert result.returncode == 0, result.stderr
-    assert (config_dir / "workflow.yaml").is_file()
-    assert (config_dir / "engine.env").is_file()
+    assert (tmp_path / ".env").is_file()
     assert (config_dir / "pi" / "skills").is_dir()
     # Nothing of the operator's own is invented.
     assert not (config_dir / "pi" / "auth.json").exists()
@@ -273,8 +269,8 @@ def test_sync_copies_operator_files_with_container_modes(tmp_path: Path) -> None
         # World-readable: the container reads these as its own user.
         assert path.stat().st_mode & 0o444 == 0o444
     assert (config_dir / "pi" / "skills" / "demo" / "SKILL.md").is_file()
-    # engine.env holds tokens: it is read by compose, never mounted.
-    assert (config_dir / "engine.env").stat().st_mode & 0o077 == 0
+    # .env holds tokens: it is read by compose, never mounted.
+    assert (tmp_path / ".env").stat().st_mode & 0o077 == 0
 
 
 def test_sync_dereferences_symlinked_skills(tmp_path: Path) -> None:
@@ -372,30 +368,30 @@ def test_image_paths_match_the_compose_mounts() -> None:
     for name, value in (
         ("WORKSPACE_ROOT", "/home/agent/agents"),
         ("DATA_DIR", "/home/agent/.local/share/op-agent-engine"),
-        ("ENGINE_CONFIG", "/config/workflow.yaml"),
         ("PROMPTS_DIR", "/opt/op-agent-engine/prompts"),
     ):
         assert f"{name}={value}" in dockerfile, name
         if name in ("WORKSPACE_ROOT", "DATA_DIR"):
             assert value in targets, f"{name} points outside the mounted volumes"
-    # The workflow is read from the read-only config mount.
+    # The agent credentials come from the read-only config mount.
     assert "/config" in targets
+    assert "ENGINE_CONFIG" not in dockerfile
 
 
 def test_generated_env_keeps_host_paths_out(tmp_path: Path) -> None:
-    config_dir, _ = _sync(tmp_path)
-    text = (config_dir / "engine.env").read_text()
-    env = _env_file(config_dir / "engine.env")
+    template = (DOCKER_DIR / ".env.example").read_text()
+    env = _env_file(DOCKER_DIR / ".env.example")
 
-    assert "<home>" not in text
-    # Only the container paths may appear, and only as comments: the image owns
-    # them, so a stale copy here could silently point at the wrong directory.
+    assert "<home>" not in template
+    assert "/home/" not in template
+    # The image owns the container paths, so a stale copy in .env must not
+    # silently point at the wrong directory.
     for name in ("WORKSPACE_ROOT", "DATA_DIR", "ENGINE_CONFIG"):
         assert name not in env, f"{name} must come from the image"
-        assert f"# {name}=/" in text
     # Inside a container the dashboard has to bind every interface; the host
     # port is published on loopback by docker-compose.yml.
     assert env["DASHBOARD_HOST"] == "0.0.0.0"
+    assert env["DASHBOARD_PORT"] == "8765"
 
 
 def test_compose_pulls_and_never_builds() -> None:
@@ -429,7 +425,6 @@ def test_root_readme_documents_every_environment_variable() -> None:
     # The image defaults the README promises must match the Dockerfile.
     dockerfile = DOCKERFILE.read_text()
     for name, value in (
-        ("ENGINE_CONFIG", "/config/workflow.yaml"),
         ("WORKSPACE_ROOT", "/home/agent/agents"),
         ("DATA_DIR", "/home/agent/.local/share/op-agent-engine"),
     ):
@@ -446,6 +441,7 @@ def test_every_docker_artifact_lives_under_docker() -> None:
         "config-sync.sh",
         "provision-users.sh",
         "version.json",
+        ".env.example",
     ):
         assert (DOCKER_DIR / name).is_file(), f"docker/{name} missing"
 
@@ -461,19 +457,18 @@ def test_every_docker_artifact_lives_under_docker() -> None:
 
 
 def test_image_defaults_the_container_paths(tmp_path: Path) -> None:
-    # A pull-only user writes a config/engine.env with just the URL and tokens,
-    # so the paths have to come from the image and match the mounts.
+    # A pull-only user writes .env with just the deployment values, so the paths
+    # have to come from the image and match the mounts.
     dockerfile = DOCKERFILE.read_text()
     targets = {str(v).split(":")[1] for v in _service("engine")["volumes"]}
     expected = {
-        "ENGINE_CONFIG": "/config/workflow.yaml",
         "WORKSPACE_ROOT": "/home/agent/agents",
         "DATA_DIR": "/home/agent/.local/share/op-agent-engine",
     }
 
     for name, value in expected.items():
         assert f"{name}={value}" in dockerfile, name
-        assert value in targets or value == "/config/workflow.yaml"
+        assert value in targets, f"{name} points outside a mounted volume"
     assert "DASHBOARD_HOST=0.0.0.0" in dockerfile
 
 
@@ -482,26 +477,27 @@ def test_compose_runs_the_expected_commands() -> None:
     assert _service("dashboard")["command"] == ["dashboard"]
     # One-shot tasks: the installer's steps, available without the installer.
     for task, command in (
-        ("provision", "provision"),
-        ("cleanup", "cleanup"),
-        ("check-config", "check-config"),
+        ("provision", ["provision", "--apply", "--json"]),
+        ("cleanup", ["cleanup"]),
+        ("check-config", ["check-config"]),
     ):
-        assert _service(task)["command"] == [command]
+        assert _service(task)["command"] == command
         assert _service(task)["profiles"] == ["tasks"]
         assert _service(task)["restart"] == "no"
 
 
-def test_provision_users_script_never_hands_out_the_host_uid() -> None:
-    """The wrapper stages a readable copy instead of mounting config writable."""
+def test_provision_users_script_is_interactive_and_private() -> None:
+    """The script prompts on the host and writes a private .env."""
     script = (REPO_ROOT / "docker" / "provision-users.sh").read_text()
 
-    # engine.env is 0600 and host-owned, so the container user can neither read
-    # nor write it. A staged copy is mounted as /config for this one command...
-    assert 'cp "${config_dir}/engine.env" "${config_dir}/workflow.yaml" "$work/"' in script
-    assert '-v "${work}:/config"' in script
-    # ...and only the staged result is copied back, still private.
-    assert 'cp "${work}/engine.env" "${config_dir}/engine.env"' in script
-    assert 'chmod 0600 "${config_dir}/engine.env"' in script
+    # The administrator token is asked for at run time and never stored.
+    assert 'ask_secret "  Administrator API token"' in script
+    assert "unset_env OP_PROVISION_TOKEN" in script
+    # Per-token verification runs in the container.
+    assert "engine verify-token --login" in script
+    # .env is written 0600 and holds every credential.
+    assert 'chmod 0600 "$env_file"' in script
+    assert "set_env OP_ENGINE_TOKEN" in script
     # No UID/GID matching, and the real config directory stays read-only.
     assert "--user" not in script
     assert "config:/config:rw" not in script
@@ -511,7 +507,7 @@ def test_docs_explain_provisioning_instead_of_the_installer() -> None:
     readme = (REPO_ROOT / "README.md").read_text()
     docs = (REPO_ROOT / "docs" / "DOCKER.md").read_text()
 
-    assert "config/workflow.yaml" in docs
+    assert "docker/.env" in docs or ".env" in docs
     assert "./provision-users.sh" in readme
     assert "OP_PROVISION_TOKEN" in readme
     # A changed env file needs a recreate, not a restart.

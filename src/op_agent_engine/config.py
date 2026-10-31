@@ -1,14 +1,16 @@
 """Configuration loading and validation.
 
-Two configuration sources exist:
+There is no configuration file. Everything comes from environment variables:
 
-* ``workflow.yaml`` (this module's :class:`WorkflowConfig`) describes statuses,
-  projects, agents and runners.
-* Environment variables (see :class:`EngineSettings`) supply secrets and
-  runtime limits.
+* :class:`EngineSettings` (pydantic-settings) reads the deployment and runtime
+  variables.
+* :meth:`WorkflowConfig.from_settings` turns those variables into the workflow
+  model the engine uses. The agent team, the runners and the status names have
+  defaults, so a deployment only supplies its OpenProject URL, project,
+  repository and tokens.
 
-``${VAR}`` placeholders in ``workflow.yaml`` are resolved from the process
-environment before validation. A missing variable is a startup error.
+``${VAR}`` placeholders are still resolved by :meth:`WorkflowConfig.from_mapping`
+(used by tests and by the env builder), so a missing variable is an error.
 """
 
 from __future__ import annotations
@@ -19,7 +21,6 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Literal
 
-import yaml
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -415,7 +416,7 @@ def _check_placeholders(value: str, location: str) -> None:
 
 
 class WorkflowConfig(BaseModel):
-    """The parsed, validated contents of ``workflow.yaml``."""
+    """The parsed, validated contents of the configuration."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -586,7 +587,6 @@ class WorkflowConfig(BaseModel):
             raise ConfigError(
                 f"{source}: invalid configuration: top level must be a mapping"
             )
-
         missing: list[tuple[str, str]] = []
         resolved = _interpolate(raw, environ, "", missing)
         if missing:
@@ -602,41 +602,155 @@ class WorkflowConfig(BaseModel):
             raise ConfigError(f"{source}: {_format_validation_error(error)}") from error
 
     @classmethod
-    def load(
+    def from_settings(
         cls,
-        path: str | Path,
+        settings: EngineSettings,
         *,
         environ: Mapping[str, str] | None = None,
     ) -> WorkflowConfig:
-        config_path = Path(path).expanduser()
-        try:
-            text = config_path.read_text(encoding="utf-8")
-        except FileNotFoundError as error:
-            raise ConfigError(f"configuration file not found: {config_path}") from error
-        except OSError as error:
-            raise ConfigError(f"cannot read configuration file {config_path}: {error}") from error
+        """Build the workflow from environment variables.
 
-        try:
-            raw = yaml.safe_load(text)
-        except yaml.YAMLError as error:
-            raise ConfigError(f"{config_path}: invalid YAML: {error}") from error
+        The team, the runners and the status defaults are baked in; the
+        deployment supplies its OpenProject URL, project, repository, agent CLI
+        and one token per agent.
+        """
+        env = os.environ if environ is None else environ
+        missing = [
+            name
+            for name, value in (
+                ("OP_BASE_URL", settings.op_base_url),
+                ("OP_PROJECT", settings.op_project),
+                ("GITHUB_REPO", settings.github_repo),
+                ("AGENT", settings.agent),
+            )
+            if not value
+        ]
+        if missing:
+            raise ConfigError(
+                "missing required environment variables: " + ", ".join(missing)
+            )
 
-        if raw is None:
-            raise ConfigError(f"{config_path}: configuration file is empty")
+        assert settings.op_base_url is not None
+        assert settings.op_project is not None
+        assert settings.github_repo is not None
+        assert settings.agent is not None
 
-        return cls.from_mapping(raw, environ=environ, source=str(config_path))
+        repo_dir = settings.github_repo_dir or settings.github_repo.rsplit("/", 1)[-1]
+        statuses = {
+            "new": settings.op_status_new,
+            "in_progress": settings.op_status_in_progress,
+            "ready_for_review": settings.op_status_ready_for_review,
+            "in_testing": settings.op_status_in_testing,
+            "on_hold": settings.op_status_on_hold,
+            "rejected": settings.op_status_rejected,
+            "closed": settings.op_status_closed,
+        }
+        agents: dict[str, Any] = {}
+        for key, login, kind, token_var in TEAM:
+            agents[key] = {
+                "name": login,
+                "kind": kind,
+                "op_login": login,
+                "workspace": login,
+                "runner": settings.agent,
+                "timeout_seconds": settings.agent_timeout_seconds,
+                "env": {
+                    "OP_CLI_HOST": settings.op_base_url,
+                    "OP_CLI_TOKEN": (env.get(token_var) or "").strip(),
+                },
+            }
+
+        mapping: dict[str, Any] = {
+            "openproject": {
+                "statuses": statuses,
+                "agent_field": settings.op_agent_field,
+                "engine_user": settings.op_engine_user,
+                "provisioning": {
+                    "enabled": True,
+                    "agent_role": settings.op_agent_role,
+                    "email_domain": settings.op_email_domain,
+                },
+            },
+            "projects": [
+                {
+                    "identifier": settings.op_project,
+                    "repo": {
+                        "github": settings.github_repo,
+                        "dir": repo_dir,
+                        "default_branch": settings.github_default_branch,
+                    },
+                    "enabled": True,
+                }
+            ],
+            "agents": agents,
+            "runners": _runner_mapping(settings.agent_model or None),
+        }
+        return cls.from_mapping(mapping, environ=env, source="environment")
 
 
 # ---------------------------------------------------------------------------
-# Process environment (secrets, limits, paths)
+# The agent team
 # ---------------------------------------------------------------------------
 
-DEFAULT_ENGINE_CONFIG = "~/.config/op-agent-engine/workflow.yaml"
+#: ``(AGENT field option, OpenProject login, kind, token variable)``.
+#: The team is baked into the image (``agents/*/AGENTS.md``); only the tokens
+#: differ between deployments.
+TEAM: tuple[tuple[str, str, str, str], ...] = (
+    ("FRONTEND", "frontendEngineer", "implementer", "OP_TOKEN_FRONTEND"),
+    ("BACKEND", "backendEngineer", "implementer", "OP_TOKEN_BACKEND"),
+    ("LEAD_DESIGNER", "leadDesigner", "implementer", "OP_TOKEN_DESIGNER"),
+    ("REVIEWER", "codeReviewer", "reviewer", "OP_TOKEN_REVIEWER"),
+)
+
+#: One token per agent, required before the engine can run a session.
+AGENT_TOKEN_VARS: tuple[str, ...] = tuple(entry[3] for entry in TEAM)
+
+_PI_ARGV = [
+    "pi",
+    "-p",
+    "--approve",
+    "--no-extensions",
+    "--no-context-files",
+    "--no-session",
+    "--model",
+    "{model}",
+    "@{prompt_file}",
+    "Follow the instructions in the attached prompt file.",
+]
+_OPENCODE_ARGV = [
+    "opencode",
+    "run",
+    "--auto",
+    "--model",
+    "{model}",
+    "--file",
+    "{prompt_file}",
+    "Follow the instructions in the attached prompt file.",
+]
+
+
+def _runner_mapping(model: str | None) -> dict[str, Any]:
+    return {
+        "pi": {
+            "argv": list(_PI_ARGV),
+            "model": model,
+            "cwd": "{repo_dir}",
+            "inject_standard": True,
+        },
+        "opencode": {
+            "argv": list(_OPENCODE_ARGV),
+            "model": model,
+            "cwd": "{repo_dir}",
+            "inject_standard": True,
+        },
+    }
+
+
 DEFAULT_DATA_DIR = "~/.local/share/op-agent-engine"
 
 
 class EngineSettings(BaseSettings):
-    """Runtime settings supplied through the environment (``config/engine.env``)."""
+    """Every deployment and runtime setting, supplied as environment variables."""
 
     model_config = SettingsConfigDict(
         env_file=None,
@@ -644,11 +758,34 @@ class EngineSettings(BaseSettings):
         case_sensitive=False,
     )
 
+    # OpenProject and the project the engine works on.
     op_base_url: str | None = None
     op_engine_token: SecretStr | None = None
     op_provision_token: SecretStr | None = None
-    # Which agent CLI to run: workflow.yaml selects it as ``runner: ${AGENT}``.
+    op_project: str | None = None
+    # Which agent CLI to run: ``pi`` or ``opencode``.
     agent: Literal["pi", "opencode"] | None = None
+    agent_model: str | None = None
+    agent_timeout_seconds: int = Field(default=3600, gt=0)
+
+    # The repository each work package is implemented in.
+    github_repo: str | None = None
+    github_repo_dir: str | None = None
+    github_default_branch: str = "main"
+
+    # OpenProject object names (defaults match a stock OpenProject instance).
+    op_agent_field: str = "AGENT"
+    op_engine_user: str = "agent-engine"
+    op_agent_role: str = "Agent Worker"
+    op_email_domain: str = "agent-engine.local"
+    op_status_new: str = "New"
+    op_status_in_progress: str = "In Progress"
+    op_status_ready_for_review: str = "Ready for Review"
+    op_status_in_testing: str = "In Testing"
+    op_status_on_hold: str = "On Hold"
+    op_status_rejected: str = "Rejected"
+    op_status_closed: str = "Closed"
+
     poll_interval_seconds: int = Field(default=60, gt=0)
     max_concurrent_runs: int = Field(default=1, gt=0)
     max_rejections: int = Field(default=3, ge=0)
@@ -656,7 +793,6 @@ class EngineSettings(BaseSettings):
     run_timeout_seconds: int = Field(default=3600, gt=0)
     stop_grace_seconds: int = Field(default=60, ge=0)
     run_retention_days: int = Field(default=30, ge=0)
-    engine_config: Path = Field(default_factory=lambda: Path(DEFAULT_ENGINE_CONFIG).expanduser())
     data_dir: Path = Field(default_factory=lambda: Path(DEFAULT_DATA_DIR).expanduser())
     workspace_root: Path | None = None
     prompts_dir: Path | None = None
@@ -685,11 +821,23 @@ class EngineSettings(BaseSettings):
     def missing_runtime_values(self) -> list[str]:
         """Names of required variables that are absent or empty."""
         missing = self.missing_api_values()
+        if not self.op_project:
+            missing.append("OP_PROJECT")
+        if not self.github_repo:
+            missing.append("GITHUB_REPO")
         if not self.agent:
             missing.append("AGENT")
         if self.workspace_root is None or not str(self.workspace_root):
             missing.append("WORKSPACE_ROOT")
+        missing.extend(self.missing_agent_tokens())
         return missing
+
+    def missing_agent_tokens(
+        self, environ: Mapping[str, str] | None = None
+    ) -> list[str]:
+        """Token variables that are absent or empty, one per agent."""
+        env = os.environ if environ is None else environ
+        return [name for name in AGENT_TOKEN_VARS if not (env.get(name) or "").strip()]
 
     def require_runtime_values(self) -> None:
         missing = self.missing_runtime_values()

@@ -1,7 +1,7 @@
 """Agent provisioning (M8).
 
 Reconciles the OpenProject identities, project memberships and per-agent
-project scopes declared in ``workflow.yaml``. Only users and memberships are
+project scopes declared in the configuration. Only users and memberships are
 written: statuses, types, workflow transitions and the ``AGENT`` custom field
 remain manual administrator setup.
 
@@ -257,7 +257,7 @@ async def provision_workflow(
     """
     if not config.openproject.provisioning.enabled:
         raise ProvisioningError(
-            "provisioning is disabled in workflow.yaml "
+            "provisioning is disabled in the configuration "
             "(openproject.provisioning.enabled: false)"
         )
 
@@ -312,7 +312,7 @@ async def audit_workflow(
     """Read-only provisioning audit used by ``check-config``."""
     report = ProvisionReport(apply=False)
     if not config.openproject.provisioning.enabled:
-        report.warnings.append("provisioning is disabled in workflow.yaml")
+        report.warnings.append("provisioning is disabled in the configuration")
         return report
 
     roles = await _fetch_roles(client)

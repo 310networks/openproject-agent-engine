@@ -22,17 +22,17 @@ from op_agent_engine.openproject.resolve import (
 from op_agent_engine.provision import ProvisionReport, TokenReport, TokenStatus
 from tests.fakes import non_write_requests
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-EXAMPLE = REPO_ROOT / "workflow.example.yaml"
-
 EXAMPLE_ENV = {
     "OP_BASE_URL": "https://openproject.example.com",
+    "OP_PROJECT": "example-project",
+    "GITHUB_REPO": "310networks/example-project",
     "AGENT": "pi",
     "OP_ENGINE_TOKEN": "engine-token",
     "OP_TOKEN_FRONTEND": "frontend-token",
     "OP_TOKEN_BACKEND": "backend-token",
     "OP_TOKEN_DESIGNER": "designer-token",
     "OP_TOKEN_REVIEWER": "reviewer-token",
+    "WORKSPACE_ROOT": "/srv/agents",
 }
 
 SAMPLE_RESOLUTION = OpenProjectResolution(
@@ -75,7 +75,6 @@ async def _fake_audit(config: object, settings: object) -> ProvisionReport:
 def example_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     for name, value in EXAMPLE_ENV.items():
         monkeypatch.setenv(name, value)
-    monkeypatch.setenv("ENGINE_CONFIG", str(EXAMPLE))
     # The provisioning audit is exercised in tests/test_provision.py; keep the
     # CLI tests offline.
     monkeypatch.setattr(cli, "_audit_against_api", _fake_audit)
@@ -99,29 +98,22 @@ def test_version_exits_zero(capsys: pytest.CaptureFixture[str]) -> None:
     assert "op-agent-engine" in capsys.readouterr().out
 
 
-def test_check_config_default_path_from_environment(capsys: pytest.CaptureFixture[str]) -> None:
+def test_check_config_reads_the_environment(capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["check-config", "--offline"]) == OK_EXIT
 
     output = capsys.readouterr().out
     assert "Configuration OK" in output
     assert "agents: 4" in output
-    assert "runners: 3" in output
+    assert "runners: 2" in output
     # Secrets must never appear in check-config output.
     assert "frontend-token" not in output
 
 
-def test_check_config_accepts_config_after_subcommand(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    assert main(["check-config", "--offline", "--config", str(EXAMPLE)]) == OK_EXIT
-    assert "Configuration OK" in capsys.readouterr().out
-
-
 def test_check_config_json(capsys: pytest.CaptureFixture[str]) -> None:
-    assert main(["--config", str(EXAMPLE), "check-config", "--json", "--offline"]) == OK_EXIT
+    assert main(["check-config", "--json", "--offline"]) == OK_EXIT
 
     payload = json.loads(capsys.readouterr().out)
-    assert payload["path"] == str(EXAMPLE)
+    assert payload["source"] == "environment"
     assert payload["statuses"]["in_testing"] == "In Testing"
     assert payload["agents"]["REVIEWER"]["kind"] == "reviewer"
     assert payload["projects"][0]["github"] == "310networks/example-project"
@@ -131,83 +123,35 @@ def test_check_config_json(capsys: pytest.CaptureFixture[str]) -> None:
 def test_check_config_reports_missing_environment_variable(
     capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.delenv("OP_TOKEN_REVIEWER")
+    monkeypatch.delenv("OP_PROJECT")
 
-    assert main(["check-config", "--offline", "--config", str(EXAMPLE)]) == CONFIG_ERROR_EXIT
+    assert main(["check-config", "--offline"]) == CONFIG_ERROR_EXIT
 
     error = capsys.readouterr().err
     assert "error:" in error
-    assert "OP_TOKEN_REVIEWER is not set" in error
+    assert "OP_PROJECT" in error
 
 
 def test_check_config_reports_validation_errors(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    path = tmp_path / "workflow.yaml"
-    path.write_text(
-        """
-projects: []
-agents:
-  IMPL:
-    name: impl
-    kind: implementer
-    op_login: impl
-    workspace: impl
-    runner: pi
-  REVIEWER:
-    name: reviewer
-    kind: reviewer
-    op_login: reviewer
-    workspace: reviewer
-    runner: pi
-runners:
-  pi:
-    argv: ["pi", "-p", "@{prompt_file}"]
-""",
-        encoding="utf-8",
-    )
+    monkeypatch.setenv("GITHUB_REPO", "not-a-repo")
 
-    assert main(["check-config", "--offline", "--config", str(path)]) == CONFIG_ERROR_EXIT
+    assert main(["check-config", "--offline"]) == CONFIG_ERROR_EXIT
 
     error = capsys.readouterr().err
-    assert "at least one project must be configured" in error
+    assert "must be a GitHub repository in 'owner/name' form" in error
 
 
 def test_check_config_requires_api_environment(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    path = tmp_path / "workflow.yaml"
-    path.write_text(
-        """
-projects:
-  - identifier: demo
-    repo: { github: owner/demo, dir: demo }
-agents:
-  IMPL:
-    name: impl
-    kind: implementer
-    op_login: impl
-    workspace: impl
-    runner: pi
-  REVIEWER:
-    name: reviewer
-    kind: reviewer
-    op_login: reviewer
-    workspace: reviewer
-    runner: pi
-runners:
-  pi:
-    argv: ["pi", "-p", "@{prompt_file}"]
-""",
-        encoding="utf-8",
-    )
-    monkeypatch.delenv("OP_BASE_URL", raising=False)
     monkeypatch.delenv("OP_ENGINE_TOKEN", raising=False)
 
-    assert main(["check-config", "--config", str(path)]) == CONFIG_ERROR_EXIT
+    assert main(["check-config"]) == CONFIG_ERROR_EXIT
 
     error = capsys.readouterr().err
-    assert "OP_BASE_URL, OP_ENGINE_TOKEN" in error
+    assert "missing required environment variables: OP_ENGINE_TOKEN" in error
 
 
 def test_check_config_reports_resolved_ids(
@@ -215,7 +159,7 @@ def test_check_config_reports_resolved_ids(
 ) -> None:
     monkeypatch.setattr(cli, "_resolve_against_api", _fake_resolve)
 
-    assert main(["check-config", "--config", str(EXAMPLE)]) == OK_EXIT
+    assert main(["check-config"]) == OK_EXIT
 
     output = capsys.readouterr().out
     assert "Resolved OpenProject IDs:" in output
@@ -233,7 +177,7 @@ def test_check_config_json_includes_resolved_ids(
 ) -> None:
     monkeypatch.setattr(cli, "_resolve_against_api", _fake_resolve)
 
-    assert main(["check-config", "--config", str(EXAMPLE), "--json"]) == OK_EXIT
+    assert main(["check-config", "--json"]) == OK_EXIT
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["resolved"]["statuses"]["in_testing"]["id"] == 4
@@ -252,7 +196,7 @@ def test_check_config_reports_resolution_failure(
 
     monkeypatch.setattr(cli, "_resolve_against_api", failing_resolve)
 
-    assert main(["check-config", "--config", str(EXAMPLE)]) == CONFIG_ERROR_EXIT
+    assert main(["check-config"]) == CONFIG_ERROR_EXIT
 
     error = capsys.readouterr().err
     assert "OpenProject statuses not found" in error
@@ -274,7 +218,7 @@ def test_provision_is_dry_run_by_default(
 
     monkeypatch.setattr(cli, "_provision_async", fake_provision)
 
-    assert main(["provision", "--config", str(EXAMPLE)]) == OK_EXIT
+    assert main(["provision"]) == OK_EXIT
     assert captured["apply"] is False
     output = capsys.readouterr().out
     assert "provisioning (dry-run)" in output
@@ -291,10 +235,33 @@ def test_provision_apply_and_json(
 
     monkeypatch.setattr(cli, "_provision_async", fake_provision)
 
-    assert main(["provision", "--apply", "--json", "--config", str(EXAMPLE)]) == OK_EXIT
+    assert main(["provision", "--apply", "--json"]) == OK_EXIT
     payload = json.loads(capsys.readouterr().out)
     assert payload["apply"] is True
     assert payload["actions"] == []
+
+
+def test_provision_passwords_prints_login_and_password_lines(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def fake_provision(
+        config: object, settings: object, *, apply: bool
+    ) -> ProvisionReport:
+        report = ProvisionReport(apply=apply)
+        report.generated_passwords.update(
+            {"agent-engine": "Pw1!", "frontendEngineer": "Pw2?"}
+        )
+        return report
+
+    monkeypatch.setattr(cli, "_provision_async", fake_provision)
+
+    assert main(["provision", "--apply", "--passwords"]) == OK_EXIT
+
+    output = capsys.readouterr().out
+    assert "agent-engine\tPw1!" in output
+    assert "frontendEngineer\tPw2?" in output
+    # Machine-readable: no JSON and no report text around the lines.
+    assert "{" not in output
 
 
 def test_provision_json_keeps_logs_on_stderr(
@@ -309,7 +276,7 @@ def test_provision_json_keeps_logs_on_stderr(
     monkeypatch.setattr(cli, "_provision_async", fake_provision)
     monkeypatch.delenv("LOG_LEVEL", raising=False)
 
-    assert main(["provision", "--apply", "--json", "--config", str(EXAMPLE)]) == OK_EXIT
+    assert main(["provision", "--apply", "--json"]) == OK_EXIT
 
     captured = capsys.readouterr()
     # stdout must stay valid JSON even when INFO logging is enabled.
@@ -336,8 +303,6 @@ def test_log_level_flag_overrides_environment(
                 "--json",
                 "--log-level",
                 "CRITICAL",
-                "--config",
-                str(EXAMPLE),
             ]
         ) == OK_EXIT
         captured = capsys.readouterr()
@@ -368,17 +333,19 @@ def test_check_config_fails_on_agent_token_mismatch(
     monkeypatch.setattr(cli, "_audit_against_api", mismatch_audit)
     monkeypatch.setattr(cli, "_resolve_against_api", _fake_resolve)
 
-    assert main(["check-config", "--config", str(EXAMPLE)]) == CONFIG_ERROR_EXIT
+    assert main(["check-config"]) == CONFIG_ERROR_EXIT
     error = capsys.readouterr().err
     assert "agent token/login mismatch" in error
     assert "frontend-token" not in error
 
 
-def test_run_requires_valid_config(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+def test_run_requires_deployment_values(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    assert main(["run", "--config", str(tmp_path / "missing.yaml")]) == CONFIG_ERROR_EXIT
-    assert "configuration file not found" in capsys.readouterr().err
+    monkeypatch.delenv("OP_PROJECT")
+
+    assert main(["run"]) == CONFIG_ERROR_EXIT
+    assert "OP_PROJECT" in capsys.readouterr().err
 
 
 def test_status_without_data_dir_reports_no_history(
@@ -388,7 +355,7 @@ def test_status_without_data_dir_reports_no_history(
 ) -> None:
     monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
 
-    assert main(["status", "--config", str(EXAMPLE)]) == OK_EXIT
+    assert main(["status"]) == OK_EXIT
 
     output = capsys.readouterr().out
     assert "heartbeat: missing" in output
@@ -452,7 +419,7 @@ def test_run_refuses_to_start_when_the_lock_is_held(
     fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     monkeypatch.setenv("DATA_DIR", str(data_dir))
     try:
-        assert main(["run", "--config", str(EXAMPLE)]) == 1
+        assert main(["run"]) == 1
     finally:
         fcntl.flock(fd, fcntl.LOCK_UN)
         os.close(fd)
@@ -464,12 +431,10 @@ def test_run_refuses_to_start_when_the_lock_is_held(
 def test_dry_run_flag_is_accepted_before_subcommand(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import yaml
-
     import op_agent_engine.engine as engine
     from op_agent_engine.openproject.client import OpenProjectClient
     from tests.test_poller import PRIORITIES
-    from tests.test_resolve import make_fake, workflow_mapping
+    from tests.test_resolve import make_config, make_fake
 
     fake = make_fake(work_packages=[], priorities=PRIORITIES)
 
@@ -477,14 +442,12 @@ def test_dry_run_flag_is_accepted_before_subcommand(
         return OpenProjectClient(base_url, token, transport=fake.transport, **kwargs)
 
     monkeypatch.setattr(engine, "OpenProjectClient", factory)
+    monkeypatch.setattr(cli, "_load_config", lambda settings=None: make_config())
     monkeypatch.setenv("OP_ENGINE_TOKEN", "test-token")
     monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
 
-    config_path = tmp_path / "workflow.yaml"
-    config_path.write_text(yaml.safe_dump(workflow_mapping()), encoding="utf-8")
-
     # A single dry-run poll cycle completes and claims nothing.
-    assert main(["--dry-run", "once", "--config", str(config_path)]) == OK_EXIT
+    assert main(["--dry-run", "once"]) == OK_EXIT
     assert len(non_write_requests(fake.requests)) == len(fake.requests)
 
 

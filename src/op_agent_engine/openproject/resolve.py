@@ -1,4 +1,4 @@
-"""Startup resolution of OpenProject IDs referenced by ``workflow.yaml``.
+"""Startup resolution of OpenProject IDs referenced by the configuration.
 
 Everything is resolved once at startup and fails fast: statuses, agent users,
 the engine user, projects, eligible project types, and the ``AGENT`` custom
@@ -221,7 +221,7 @@ def _status_key(name: str) -> str:
 
     OpenProject's default statuses use sentence case (``In progress``) while
     operators commonly write title case (``In Progress``) in
-    ``workflow.yaml``. Treat the two as the same name, but never guess when
+    the configuration. Treat the two as the same name, but never guess when
     two statuses would collapse to the same key.
     """
     return " ".join(name.split()).casefold()

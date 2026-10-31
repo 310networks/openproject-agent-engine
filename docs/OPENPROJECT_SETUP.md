@@ -2,8 +2,8 @@
 
 Do this once per instance. `provision --apply` handles users and
 memberships; the API cannot create roles, custom fields or statuses, so the
-rest is manual in the UI. The Agent Worker role name must match
-`openproject.provisioning` in `workflow.yaml`.
+rest is manual in the UI. The Agent Worker role name must match `OP_AGENT_ROLE`
+(default `Agent Worker`).
 
 ## 1. Statuses
 
@@ -23,21 +23,19 @@ default sentence case (`In progress`) also matches the title case below:
 
 ## 2. Types
 
-Enable `Task`, `Bug`, `Feature` in the project (or set
-`openproject.eligible_types` to the instance's actual names).
+Enable `Task`, `Bug`, and `Feature` in the project. The engine's eligible types
+are fixed to those three.
 
 ## 3. The `AGENT` custom field
 
 The engine reads each work package's agent from a work-package custom field
-named `AGENT` (configurable as `openproject.agent_field`). It must be a
-single-select **List** field whose option titles match the `agents` keys in
-`workflow.yaml`.
+named `AGENT` (configurable as `OP_AGENT_FIELD`). It must be a single-select
+**List** field whose option titles match the fixed agent keys.
 
 1. **Administration → Custom fields → Work packages → New custom field**.
 2. **Name**: `AGENT`. **Format**: **List** (single value, not multi-select).
-3. Add one option per agent key — default `FRONTEND`, `BACKEND`,
-   `LEAD_DESIGNER`, `REVIEWER`. The titles are case-sensitive and must match
-   the config keys exactly. Save.
+3. Add one option per agent key — `FRONTEND`, `BACKEND`, `LEAD_DESIGNER`,
+   `REVIEWER`. The titles are case-sensitive and must match exactly. Save.
 4. Open the field's **Settings** tab and enable it for:
    - the eligible types (`Task`, `Bug`, `Feature` by default), and
    - the monitored project(s) (or all projects).
@@ -75,15 +73,14 @@ status.
 
 ## 6. Users and tokens
 
-Only an admin token is needed before this step: set `OP_BASE_URL` and
-`OP_PROVISION_TOKEN` in `config/engine.env`. `op-agent-engine provision --apply`
-(run by `provision-users.sh`, or manually) creates the five users
+Only an admin token is needed before this step: `./provision-users.sh` asks for
+it at run time (it is never stored). `op-agent-engine provision --apply` (run
+by the script, or manually with `OP_PROVISION_TOKEN` set) creates the five users
 (`frontendEngineer`, `backendEngineer`, `leadDesigner`, `codeReviewer`,
-`agent-engine`) and one membership per agent per scoped project. The engine
-user is created as a regular user; **make it an administrator** as described
-in [section 4](#4-roles) before using its token. It never deletes,
-deactivates or renames logins, and it exits successfully while the agent
-tokens are still placeholders — it just lists the variables to fill in.
+`agent-engine`) and one membership per agent in the configured project. The
+engine user is created as a regular user; **make it an administrator** as
+described in [section 4](#4-roles) before using its token. Provisioning never
+deletes, deactivates or renames logins.
 
 The users' passwords are randomly generated. Administrators cannot mint API
 tokens for other users, so log in as each user and create the token under
@@ -92,7 +89,7 @@ tokens for other users, so log in as each user and create the token under
 `./provision-users.sh` (in the deployment directory) shows each newly created
 account's generated password at that user's token prompt, asks for the token one
 at a time — the `agent-engine` runtime token plus one per agent — verifies it
-against `/api/v3/users/me`, and writes it to `config/engine.env` (mode `600`).
+against `/api/v3/users/me`, and writes it to `docker/.env` (mode `0600`).
 The passwords are shown once and not saved, so record them if you may need to
 sign in again; a later run cannot recover them for an existing account, so a
 forgotten password has to be reset in **Administration → Users**.
@@ -100,7 +97,7 @@ forgotten password has to be reset in **Administration → Users**.
 | Variable | Owner |
 |---|---|
 | `OP_ENGINE_TOKEN` | `agent-engine` — runtime polling and transitions |
-| `OP_PROVISION_TOKEN` | an administrator — `provision`/`check-config` only |
+| `OP_PROVISION_TOKEN` | an administrator — `provision`/`check-config` only (asked for at run time, not stored) |
 | `OP_TOKEN_FRONTEND` / `OP_TOKEN_BACKEND` / `OP_TOKEN_DESIGNER` / `OP_TOKEN_REVIEWER` | the four agent users — passed into agent runs |
 
 `OP_ENGINE_TOKEN` belongs to the administrator `agent-engine` user, which is

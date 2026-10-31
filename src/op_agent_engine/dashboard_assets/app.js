@@ -194,7 +194,7 @@ function renderAgents(snapshot) {
   els.agentSummary.textContent = `${agents.length} configured · ${running} running`;
 
   if (!agents.length) {
-    els.agents.append(make("div", "empty", "No agents configured in workflow.yaml."));
+    els.agents.append(make("div", "empty", "No agents configured."));
     return;
   }
 

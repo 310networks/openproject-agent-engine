@@ -302,49 +302,12 @@ def test_http_health_and_errors(server: DashboardHTTPServer) -> None:
 # -- CLI wiring ------------------------------------------------------------
 
 
-def _write_workflow(path: Path) -> Path:
-    import yaml
-
-    path.write_text(
-        yaml.safe_dump(
-            {
-                "projects": [
-                    {
-                        "identifier": "demo",
-                        "repo": {"github": "owner/repo", "dir": "repo"},
-                    }
-                ],
-                "agents": {
-                    "IMPL": {
-                        "name": "implementer",
-                        "kind": "implementer",
-                        "op_login": "impl",
-                        "workspace": "impl",
-                        "runner": "pi",
-                    },
-                    "REVIEWER": {
-                        "name": "reviewer",
-                        "kind": "reviewer",
-                        "op_login": "reviewer",
-                        "workspace": "reviewer",
-                        "runner": "pi",
-                    },
-                },
-                "runners": {"pi": {"argv": ["pi"]}},
-            }
-        ),
-        encoding="utf-8",
-    )
-    return path
-
-
 def test_cli_dashboard_port_flag(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from op_agent_engine import cli
 
-    config_path = _write_workflow(tmp_path / "workflow.yaml")
     captured: dict[str, Any] = {}
 
     def fake_serve(
@@ -365,13 +328,12 @@ def test_cli_dashboard_port_flag(
         return 0
 
     monkeypatch.setattr(cli, "serve_dashboard", fake_serve)
+    monkeypatch.setattr(cli, "_load_config", lambda settings=None: _config())
     monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
 
     assert (
         cli.main(
             [
-                "--config",
-                str(config_path),
                 "dashboard",
                 "--host",
                 "0.0.0.0",
@@ -399,7 +361,6 @@ def test_cli_dashboard_uses_env_port(
 ) -> None:
     from op_agent_engine import cli
 
-    config_path = _write_workflow(tmp_path / "workflow.yaml")
     captured: dict[str, Any] = {}
 
     def fake_serve(
@@ -415,12 +376,13 @@ def test_cli_dashboard_uses_env_port(
         return 0
 
     monkeypatch.setattr(cli, "serve_dashboard", fake_serve)
+    monkeypatch.setattr(cli, "_load_config", lambda settings=None: _config())
     monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("DASHBOARD_PORT", "9333")
     monkeypatch.setenv("DASHBOARD_HOST", "127.0.0.1")
 
-    assert cli.main(["--config", str(config_path), "dashboard"]) == 0
-    # ``None`` lets EngineSettings supply the value from engine.env.
+    assert cli.main(["dashboard"]) == 0
+    # ``None`` lets EngineSettings supply the value from .env.
     assert captured == {"host": None, "port": 9333}
 
 
@@ -430,7 +392,6 @@ def test_cli_dashboard_rejects_invalid_port(
 ) -> None:
     from op_agent_engine import cli
 
-    config_path = _write_workflow(tmp_path / "workflow.yaml")
     called = False
 
     def fake_serve(*args: object, **kwargs: object) -> int:
@@ -439,10 +400,8 @@ def test_cli_dashboard_rejects_invalid_port(
         return 0
 
     monkeypatch.setattr(cli, "serve_dashboard", fake_serve)
+    monkeypatch.setattr(cli, "_load_config", lambda settings=None: _config())
     monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
 
-    assert (
-        cli.main(["--config", str(config_path), "dashboard", "--port", "70000"])
-        == cli.CONFIG_ERROR_EXIT
-    )
+    assert cli.main(["dashboard", "--port", "70000"]) == cli.CONFIG_ERROR_EXIT
     assert called is False

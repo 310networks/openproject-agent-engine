@@ -6,7 +6,7 @@ glance:
 - **Is the engine alive and polling?** The status pill pulses green while the
   heartbeat is fresh, turns amber when the engine is paused, and red when the
   heartbeat is stale or missing.
-- **Which agents are available?** Every agent from `workflow.yaml`, its
+- **Which agents are available?** Every agent in the fixed team, its
   runner/model, project scope, current session (if any) and last session.
 - **What is running, and what ran before?** Active sessions plus the most
   recent finished sessions, with ticket id, agent, kind, duration, outcome
@@ -34,22 +34,21 @@ docker compose run --rm --service-ports dashboard
 
 Use `--host`, `--port`, `--limit` (recent sessions in the snapshot, max 500) or
 `--refresh` (browser refresh in seconds) for one-off overrides; the same
-defaults can be set with `DASHBOARD_HOST` and `DASHBOARD_PORT` in
-`config/engine.env`.
+defaults can be set with `DASHBOARD_HOST` and `DASHBOARD_PORT` in `docker/.env`.
 
 ## Changing the port
 
 The port is a plain setting — no rebuild or code change is needed. Pick one
 of these:
 
-**Persistent (recommended):** edit `config/engine.env`
+**Persistent (recommended):** edit `docker/.env`
 
 ```ini
 DASHBOARD_PORT=9000
 ```
 
 and publish that port instead of the default in `docker-compose.yml`, then
-recreate the container (a changed env file needs more than `restart`):
+recreate the container (a changed `.env` needs more than `restart`):
 
 ```bash
 docker compose up -d dashboard
@@ -59,15 +58,15 @@ docker compose up -d dashboard
 **One-off / manual run:**
 
 ```bash
-docker compose run --rm dashboard --port 9000
+docker compose run --rm engine dashboard --port 9000
 # or bind another interface as well
-docker compose run --rm dashboard --host 0.0.0.0 --port 9000
+docker compose run --rm engine dashboard --host 0.0.0.0 --port 9000
 ```
 
 `DASHBOARD_HOST` works the same way. Keep it on loopback unless a reverse proxy
 needs it: the dashboard has no authentication.
 
-**Publish a different host port instead** (keeps `engine.env` untouched): set
+**Publish a different host port instead** (keeps `.env` untouched): set
 `DASHBOARD_BIND`/the left-hand side of the port mapping in
 `docker-compose.yml`, e.g. `127.0.0.1:9000:8765`, and recreate the service.
 

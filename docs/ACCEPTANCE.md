@@ -13,18 +13,12 @@ never appears in the run directory or SQLite history.
 
 ## Smoke-test with the fake agent
 
-Point a runner at the script to test prompt rendering, process handling and
-result parsing without a real agent:
-
-```yaml
-runners:
-  fake:
-    argv: ["/bin/sh", "<checkout>/tests/fakes/fake_agent.sh", "{prompt_file}"]
-    cwd: "{repo_dir}"
-    env:
-      FAKE_AGENT_BEHAVIOR: "blocked"   # or unset: prompt-based approve/pr_opened
-    inject_standard: false
-```
+The fake agent (`tests/fakes/fake_agent.sh`) is a test fixture, not a
+configuration option: the deployment's runners are fixed to `pi` and
+`opencode` (selected by `AGENT`). `tests/test_runner.py` and
+`tests/test_e2e.py` build a `WorkflowConfig` in memory and point its runner at
+the script, which covers prompt rendering, process handling and result
+parsing without a real agent.
 
 The script does not push commits, open PRs or post comments, so the external
 verifier rejects an unbacked success. Use the automated test for a full
@@ -33,10 +27,10 @@ cycle, or back the run with a real branch/PR when testing live.
 ## Manual acceptance checklist (real instance, throwaway repo)
 
 - [ ] One-time OpenProject setup done ([OPENPROJECT_SETUP.md](OPENPROJECT_SETUP.md)).
-- [ ] `./docker/provision-users.sh` (with `workflow.yaml` and `engine.env` in
-      `docker/config/`) provisions the users, prints each generated password at
-      that account's token prompt, prompts for one token per account, verifies
-      each token, writes `config/engine.env` and runs `check-config`.
+- [ ] `./docker/provision-users.sh` asks for the deployment values and an
+      administrator token, provisions the users, prints each generated password
+      at that account's token prompt, prompts for one token per account, verifies
+      each token, writes `docker/.env` and runs `check-config`.
 - [ ] `docker compose up -d` starts `engine` and `dashboard`; the dashboard
       answers on `http://127.0.0.1:8765`.
 - [ ] `docker compose down -v` stops the stack and deletes the volumes; the

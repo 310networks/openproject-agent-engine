@@ -1,141 +1,96 @@
 # Configuration
 
-Two files drive everything: `config/workflow.yaml` (the fully commented
-reference is [`workflow.example.yaml`](../workflow.example.yaml)) and
-`config/engine.env` (secrets and limits). Both live in the deployment's
-`config/` directory, which the container mounts read-only at `/config`; see the
-[root README](../README.md) for the layout. `workflow.yaml` references secrets
-as `${VAR}`, resolved from the environment before validation; a missing
-variable is a startup error.
+There is no configuration file. Everything deployment-specific is an
+environment variable, read from `docker/.env` (which compose passes to the
+containers) or from your shell. The agent team, the runners and the
+OpenProject object names have defaults baked into the code, so a deployment
+only supplies its URL, project, repository and tokens.
 
-## `workflow.yaml` skeleton
+`docker/provision-users.sh` writes the required variables for you; the
+commented reference is [`docker/.env.example`](../docker/.env.example). The
+full variable tables are in the [root README](../README.md#environment-variables).
 
-```yaml
-openproject:
-  statuses: {new: "New", in_progress: "In Progress", ready_for_review: "Ready for Review",
-             in_testing: "In Testing", on_hold: "On Hold", rejected: "Rejected", closed: "Closed"}
-  agent_field: "AGENT"
-  engine_user: "agent-engine"
-  eligible_types: ["Task", "Bug", "Feature"]
-projects:
-  - identifier: "my-project"
-    repo: {github: "owner/repo", dir: "repo", default_branch: "main"}
-    enabled: true
-agents:
-  FRONTEND:
-    name: frontendEngineer
-    kind: implementer          # exactly one agent must be 'reviewer'
-    op_login: frontendEngineer
-    workspace: frontendEngineer
-    projects: ["*"]            # ["*"] = every enabled project
-    runner: pi
-    model: "anthropic/claude-sonnet-4-5"    # optional, overrides the runner's model
-    env: {OP_CLI_HOST: "${OP_BASE_URL}", OP_CLI_TOKEN: "${OP_TOKEN_FRONTEND}"}
-runners:
-  pi:
-    argv: ["pi", "-p", "--approve", "--no-extensions", "--no-context-files",
-           "--no-session", "--model", "{model}", "@{prompt_file}",
-           "Follow the instructions in the attached prompt file."]
-    model: null                # optional default for every agent using this runner
-    cwd: "{repo_dir}"
-    inject_standard: true      # --no-context-files disables AGENTS.md discovery
-```
+## Required
 
-Field notes:
+| Variable | Meaning |
+|---|---|
+| `OP_BASE_URL` | OpenProject URL |
+| `OP_PROJECT` | project identifier the engine works on |
+| `GITHUB_REPO` | repository as `owner/name` |
+| `OP_ENGINE_TOKEN` | API token of the administrator runtime user |
+| `AGENT` | `pi` or `opencode` |
+| `OP_TOKEN_FRONTEND` | token of `frontendEngineer` |
+| `OP_TOKEN_BACKEND` | token of `backendEngineer` |
+| `OP_TOKEN_DESIGNER` | token of `leadDesigner` |
+| `OP_TOKEN_REVIEWER` | token of `codeReviewer` |
 
-- Status names are matched case- and whitespace-insensitively, so
-  `In Progress` also matches OpenProject's default `In progress`; two
-  statuses that differ only by case make the config ambiguous and are
-  rejected with both candidates named.
-- `agents` keys are the `AGENT` field options. `FRONTEND`/`BACKEND`/
-  `LEAD_DESIGNER` route work; `REVIEWER` exists only so option resolution
-  succeeds.
-- A ticket routed to an out-of-scope agent is skipped with a warning.
-- `runners` are generic command templates — adding an agent CLI means adding
-  a `runners` entry, no code change. Placeholders: `{prompt_file}`,
-  `{repo_dir}`, `{workspace_dir}`, `{run_dir}`, `{model}`, `{branch}`,
-  `{work_package_id}`.
-- **Model selection.** `model` can be set on an agent (`agents.<KEY>.model`)
-  and/or as a default on a runner (`runners.<name>.model`); the agent's value
-  wins. `check-config` prints the resolved model per agent. The value is a
-  single token (no spaces) in the CLI's own format — `provider/id` works for
-  both supported CLIs:
+`OP_PROVISION_TOKEN` is an administrator token used only by
+`provision-users.sh` and `docker compose run --rm provision`.
 
-  ```yaml
-  runners:
-    pi:
-      argv: ["pi", "-p", "--approve", "--no-extensions", "--no-context-files", "--no-session", "--model", "{model}", "@{prompt_file}", "..."]
-    opencode:
-      argv: ["opencode", "run", "--auto", "--model", "{model}", "--file", "{prompt_file}", "..."]
-  agents:
-    REVIEWER:
-      runner: opencode
-      model: "openai/gpt-5"    # per-agent override
-  ```
+## What is baked in
 
-  `{model}` is optional: when neither the agent nor its runner sets a model,
-  the `{model}` element **and the flag in front of it** are dropped from argv
-  (so `--model {model}` never reaches the CLI as `--model ""`), leaving the
-  CLI's own default model in charge. `--model={model}` glued into one argument
-  is dropped the same way; keep flag and placeholder as separate argv elements.
-  Leave the placeholder out of argv entirely if the CLI has no model flag.
-- `inject_standard: true` prepends the workspace `AGENTS.md` to the prompt.
-  The pi runner sets it because it passes `--no-context-files`.
-- **Isolated agent context.** `--no-context-files` stops pi from loading
-  `~/.pi/agent/AGENTS.md` (the host's personal agent instructions, including
-  access to personal credentials) and any repository `AGENTS.md`. The only
-  standing context an agent gets is the standard for its own workspace
-  (`WORKSPACE_ROOT/<workspace>/AGENTS.md`); everything else it reads
-  explicitly from the repository. Update that file to change one agent's
-  instructions, or point two agents at the same text to share it.
-  `--no-extensions` keeps the host's interactive pi extensions
-  (`pi-dashboard`, built-in MCP/codemode/tool-search, ...) out of unattended
-  runs, where they can block or hang print mode. Skills are separate flags
-  (`--skill`/`--no-skills`) and stay available.
-- **No session per run.** `--no-session` stops pi writing a resumable session
-  file for every run. The run directory already keeps the complete transcript
-  (`runs/<id>/stdout.log`), so the session adds nothing and otherwise grows
-  the agent directory without bound.
+The team is fixed, one OpenProject account and one token each:
 
-## Environment variables (`engine.env`)
+| `AGENT` option | Login | Kind | Token |
+|---|---|---|---|
+| `FRONTEND` | `frontendEngineer` | implementer | `OP_TOKEN_FRONTEND` |
+| `BACKEND` | `backendEngineer` | implementer | `OP_TOKEN_BACKEND` |
+| `LEAD_DESIGNER` | `leadDesigner` | implementer | `OP_TOKEN_DESIGNER` |
+| `REVIEWER` | `codeReviewer` | reviewer | `OP_TOKEN_REVIEWER` |
 
-| Variable | Default | Purpose |
-|---|---|---|
-| `OP_BASE_URL` | required | OpenProject base URL |
-| `OP_ENGINE_TOKEN` | required | `agent-engine` API token; runtime |
-| `OP_PROVISION_TOKEN` | optional | admin token for `provision`/`check-config` |
-| `AGENT` | required | agent CLI to run: `pi` or `opencode`; the example workflow uses `runner: "${AGENT}"` |
-| `POLL_INTERVAL_SECONDS` | `60` | poll interval |
-| `MAX_CONCURRENT_RUNS` | `1` | global run cap |
-| `MAX_REJECTIONS` | `3` | rejections before `On Hold` |
-| `MAX_CRASH_RETRIES` | `2` | failed-run retries before `On Hold` |
-| `RUN_TIMEOUT_SECONDS` | `3600` | default per-run timeout |
-| `STOP_GRACE_SECONDS` | `60` | shutdown grace for running agents |
-| `RUN_RETENTION_DAYS` | `30` | `cleanup` retention |
-| `ENGINE_CONFIG` | `~/.config/op-agent-engine/workflow.yaml` | workflow file |
-| `DATA_DIR` | `~/.local/share/op-agent-engine` | SQLite, run dirs, heartbeat, lock |
-| `WORKSPACE_ROOT` | required | absolute path to the checkout's `agents/` dir |
-| `GH_TOKEN` | optional | overrides host `gh`/git auth; normally unset |
-| `ENGINE_PAUSED` | `false` | stop new dispatches |
-| `LOG_LEVEL` | `INFO` | log level |
-| `DASHBOARD_HOST` | `127.0.0.1` | dashboard bind address (no auth: keep loopback) |
-| `DASHBOARD_PORT` | `8765` | dashboard bind port |
+Exactly one agent is the reviewer. The implementers and the reviewer run the
+same CLI selected by `AGENT`:
 
-## CLI
+- `pi`: `pi -p --approve --no-extensions --no-context-files --no-session
+  --model {model} @{prompt_file} ...`
+- `opencode`: `opencode run --auto --model {model} --file {prompt_file} ...`
+
+`AGENT_MODEL` sets the model for every agent; when it is unset the `{model}`
+placeholder and the flag in front of it are dropped, so the CLI's own default
+is used. The value must be one token (no spaces), in the CLI's own format —
+`provider/id` works for both.
+
+Status names come from `OP_STATUS_*` and are matched case- and
+whitespace-insensitively, so `In Progress` also matches OpenProject's default
+`In progress`.
+
+## Runtime variables
+
+`POLL_INTERVAL_SECONDS`, `MAX_CONCURRENT_RUNS`, `MAX_REJECTIONS`,
+`MAX_CRASH_RETRIES`, `RUN_TIMEOUT_SECONDS`, `STOP_GRACE_SECONDS`,
+`RUN_RETENTION_DAYS`, `ENGINE_PAUSED`, `LOG_LEVEL`, `GH_TOKEN`,
+`WORKSPACE_ROOT`, `DATA_DIR`, `PROMPTS_DIR`, `DASHBOARD_HOST` and
+`DASHBOARD_PORT` work as before; see the README for defaults. The image sets
+the paths and the dashboard bind address, so `.env` normally only holds the
+deployment values and the limits.
+
+## Dispatching rules
+
+- A work package is eligible when it is in a dispatch status, has an eligible
+  type (`Task`, `Bug`, `Feature`), sets the `AGENT` field to a team option and
+  is not assigned to a human.
+- Work packages with children are skipped. Dispatch order is
+  `Ready for Review`, `Rejected`, `New` (finish work before starting new work).
+- A ticket routed to an out-of-scope agent is skipped with a warning; every
+  agent is scoped to the one configured project.
+
+## CLI reference
+
+Run inside the container (`docker compose run --rm <task>` or
+`docker compose exec engine op-agent-engine ...`):
 
 | Command | Purpose |
 |---|---|
-| `run` | long-running service loop (the `engine` service) |
-| `once` | one poll; claims and executes within the slot rules |
-| `dry-run` | one poll; logs the dispatch plan, writes nothing |
-| `check-config` | validate the file and resolve IDs (`--offline`, `--json`) |
-| `status` | heartbeat age, pause state, active and last 10 runs (`--json`) |
-| `dashboard` | read-only web UI on `127.0.0.1:8765` (`--host`, `--port`, `--limit`, `--refresh`) |
-| `provision` | reconcile users and scoped memberships (`--apply`) |
-| `provision-users` | create the accounts and collect one API token per account (what `provision-users.sh` runs) |
-| `cleanup` | remove run dirs older than the retention period (`--days`, `--json`) |
+| `run` | start the polling engine loop |
+| `once` | a single poll and claim |
+| `dry-run` | a single poll that logs the plan and writes nothing |
+| `check-config` | validate the environment and resolve OpenProject IDs (`--json`, `--offline`) |
+| `status` | heartbeat age, active runs, recent runs (`--json`) |
+| `dashboard` | serve the read-only web UI |
+| `provision` | create/reconcile users and memberships (`--apply`, `--json`, `--passwords`) |
+| `verify-token` | check that `OP_VERIFY_TOKEN` authenticates as `--login` (used by `provision-users.sh`) |
+| `cleanup` | remove run directories older than `RUN_RETENTION_DAYS` |
 
-`--config` and `--log-level` work before or after the subcommand.
-`check-config` never prints token values. `provision --json` includes the
-generated passwords for users it created (so `provision-users` can display
-them one at a time); treat that output as secret.
+`--log-level LEVEL` is accepted before or after the subcommand. `provision`
+prints generated passwords only with `--passwords`, and `verify-token` never
+prints the token.

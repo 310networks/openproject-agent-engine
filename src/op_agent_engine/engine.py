@@ -31,7 +31,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
-from op_agent_engine.config import EngineSettings, WorkflowConfig
+from op_agent_engine.config import ConfigError, EngineSettings, WorkflowConfig
 from op_agent_engine.dispatcher import EXECUTED_KINDS, Dispatcher
 from op_agent_engine.logging import get_logger
 from op_agent_engine.openproject.client import (
@@ -379,11 +379,21 @@ def write_heartbeat(settings: EngineSettings) -> None:
     temporary.replace(heartbeat)
 
 
+def _require_agent_tokens(settings: EngineSettings) -> None:
+    """A run needs one token per agent; refuse to start without them."""
+    missing = settings.missing_agent_tokens()
+    if missing:
+        raise ConfigError(
+            "missing required environment variables: " + ", ".join(missing)
+        )
+
+
 def run_engine(
     config: WorkflowConfig, settings: EngineSettings, *, dry_run: bool = False
 ) -> int:
     """Synchronous entry point for the ``run`` subcommand."""
     settings.require_api_values()
+    _require_agent_tokens(settings)
     return asyncio.run(Engine(config, settings).run(dry_run=dry_run))
 
 
@@ -402,6 +412,7 @@ def run_engine_once(
     so its claims are durable.
     """
     settings.require_api_values()
+    _require_agent_tokens(settings)
     return asyncio.run(
         _run_once_async(config, settings, dry_run=dry_run)
     )

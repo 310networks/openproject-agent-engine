@@ -1,15 +1,12 @@
 # env
 .env
-# operator files created from the examples by config-sync.sh
-/workflow.yaml
-/engine.env
+/docker/.env
 /*.bak.*
 # Operator configuration. The templates that contain nothing personal
 # (gitconfig, pi/settings.json, pi/auth.json, opencode/opencode.json) are
 # committed so they can be edited in place; everything that holds a real secret
 # or your own content stays out of git:
-#   engine.env            real API tokens
-#   workflow.yaml         your projects, repositories and agents
+#   docker/.env           real API tokens and deployment values
 #   pi/skills/**          your skills
 #   opencode/auth.json    real provider credentials
 #   anything else you add

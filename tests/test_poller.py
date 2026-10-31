@@ -5,8 +5,6 @@ from __future__ import annotations
 import json
 from typing import Any
 
-import yaml
-
 from op_agent_engine.config import WorkflowConfig
 from op_agent_engine.openproject.client import OpenProjectClient
 from op_agent_engine.openproject.resolve import resolve_workflow
@@ -22,6 +20,17 @@ from tests.test_resolve import (
     schemas,
     workflow_mapping,
 )
+
+
+def _set_agent_tokens(monkeypatch) -> None:
+    for name in (
+        "OP_TOKEN_FRONTEND",
+        "OP_TOKEN_BACKEND",
+        "OP_TOKEN_DESIGNER",
+        "OP_TOKEN_REVIEWER",
+    ):
+        monkeypatch.setenv(name, "token")
+
 
 PRIORITIES: list[dict[str, Any]] = [
     {"id": 7, "name": "Low", "position": 1},
@@ -239,11 +248,10 @@ def test_cli_dry_run_logs_plan_and_writes_nothing(tmp_path, monkeypatch) -> None
     monkeypatch.setenv("OP_BASE_URL", BASE_URL)
     monkeypatch.setenv("OP_ENGINE_TOKEN", TOKEN)
     monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+    _set_agent_tokens(monkeypatch)
+    monkeypatch.setattr(cli, "_load_config", lambda settings=None: make_config())
 
-    config_path = tmp_path / "workflow.yaml"
-    config_path.write_text(yaml.safe_dump(workflow_mapping()), encoding="utf-8")
-
-    exit_code = cli.main(["dry-run", "--config", str(config_path)])
+    exit_code = cli.main(["dry-run"])
 
     assert exit_code == 0
     assert len(non_write_requests(fake.requests)) == len(fake.requests)
@@ -265,11 +273,10 @@ def test_cli_once_runs_a_poll_cycle(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("OP_BASE_URL", BASE_URL)
     monkeypatch.setenv("OP_ENGINE_TOKEN", TOKEN)
     monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+    _set_agent_tokens(monkeypatch)
+    monkeypatch.setattr(cli, "_load_config", lambda settings=None: make_config())
 
-    config_path = tmp_path / "workflow.yaml"
-    config_path.write_text(yaml.safe_dump(workflow_mapping()), encoding="utf-8")
-
-    exit_code = cli.main(["once", "--config", str(config_path)])
+    exit_code = cli.main(["once"])
 
     assert exit_code == 0
     # In M3, `once` claims: exactly one PATCH, and the work package is

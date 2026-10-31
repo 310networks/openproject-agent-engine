@@ -1,7 +1,8 @@
 # Runbook
 
-Commands that need API access assume `engine.env` is sourced:
-`set -a; . ~/.config/op-agent-engine/engine.env; set +a`.
+Commands that need API access assume `docker/.env` is sourced:
+`set -a; . docker/.env; set +a` (or run them through `docker compose run`,
+which passes `.env` to the container).
 
 ## Status and heartbeat
 
@@ -22,8 +23,9 @@ means the container is stopped or stuck — check
 
 - Touch `DATA_DIR/PAUSE`: the next poll stops claiming; running runs finish.
   Delete the file to resume. No restart needed.
-- `ENGINE_PAUSED=true` in `engine.env` plus restart for a persistent pause.
-- Per project: `enabled: false`. Per ticket: move it to `On Hold`.
+- `ENGINE_PAUSED=true` in `.env` plus `docker compose up -d` for a persistent
+  pause.
+- Per ticket: move it to `On Hold`.
 
 ## Inspect a run
 
@@ -85,5 +87,5 @@ add one cron entry on the host:
 - If branch protection is enabled later, give the reviewer a dedicated
   `GH_TOKEN`; otherwise the reviewer's merge is blocked by its own review.
 - `OP_*`/`GH_TOKEN` values are redacted to `***` in logs and `meta.json`.
-  Keep `config/engine.env` at mode `0600`; every other file in `config/` must
-  be world-readable, because the container's own user reads it.
+  Keep `docker/.env` at mode `0600`; every file in `config/` must be
+  world-readable, because the container's own user reads it.

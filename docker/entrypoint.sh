@@ -8,6 +8,9 @@
 # a configuration change is `docker compose restart`, not editing a live mount.
 # Anything the agents write themselves (sessions, logs, downloaded tools,
 # model cache) stays in the named volume and is never touched here.
+#
+# The engine's own configuration is environment variables, not a file, so this
+# script only validates the deployment variables and seeds agent credentials.
 set -eu
 
 umask 022
@@ -20,12 +23,13 @@ OPENCODE_DATA_DIR=${OPENCODE_DATA_DIR:-${XDG_DATA_HOME:-${HOME}/.local/share}/op
 log() { printf 'entrypoint: %s\n' "$*"; }
 die() { printf 'entrypoint: ERROR: %s\n' "$*" >&2; exit 1; }
 
-[ -f "${CONFIG_DIR}/workflow.yaml" ] || die \
-  "missing ${CONFIG_DIR}/workflow.yaml -- add it to ./config (see the README) and restart"
-
-: "${AGENT:?AGENT is not set -- use pi or opencode (see config/engine.env)}"
-: "${WORKSPACE_ROOT:?WORKSPACE_ROOT is not set (see config/engine.env)}"
-: "${DATA_DIR:?DATA_DIR is not set (see config/engine.env)}"
+# Fail at startup, with the variable named, instead of inside a poll or a run.
+: "${OP_BASE_URL:?OP_BASE_URL is not set -- your OpenProject URL (see .env)}"
+: "${OP_PROJECT:?OP_PROJECT is not set -- the OpenProject project identifier}"
+: "${GITHUB_REPO:?GITHUB_REPO is not set -- the repository as owner/name}"
+: "${AGENT:?AGENT is not set -- use pi or opencode}"
+: "${WORKSPACE_ROOT:?WORKSPACE_ROOT is not set (see the image defaults)}"
+: "${DATA_DIR:?DATA_DIR is not set (see the image defaults)}"
 
 mkdir -p "${AGENT_DIR}" \
          "${AGENT_DIR}/sessions" \
@@ -79,8 +83,7 @@ if [ ! -f "${AGENT_DIR}/auth.json" ]; then
   log "         fail unless the agent CLI gets its key from the environment"
 elif grep -q 'replace-with' "${AGENT_DIR}/auth.json"; then
   log "WARNING: ${CONFIG_DIR}/pi/auth.json still holds placeholder keys."
-  log "         Put a real provider key there, or pass it through the runner's"
-  log "         env: block in ${CONFIG_DIR}/workflow.yaml"
+  log "         Put a real provider key there, or mount a prepared config/."
 fi
 
 exec op-agent-engine "$@"

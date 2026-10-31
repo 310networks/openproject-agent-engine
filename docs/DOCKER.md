@@ -1,7 +1,7 @@
 # Docker image internals
 
 The engine runs as a container and Docker is the supported installation method:
-the setup, `config/` layout and every environment variable are documented in the
+the setup, the `.env` variables and the `config/` layout are documented in the
 [root README](../README.md). This page covers how the image is built and what
 happens inside it.
 
@@ -13,20 +13,20 @@ directory, which is `docker/` when you are looking at the repository.
 
 ## What is baked in versus mounted
 
-| Baked into the image | In `config/` (read-only) | Named volumes (read-write) |
-|---|---|---|
-| Python 3.12, `git`, `gh`, `ripgrep`, `fd`, `op` | `workflow.yaml` (yours; a checkout can seed it from `workflow.example.yaml`) | `/home/agent/agents` (`WORKSPACE_ROOT`) |
-| Node 22 and pi (`PI_VERSION`) | `engine.env` (seeded from `engine.env.example`, read by compose, never mounted) | `/home/agent/.local/share/op-agent-engine` (`DATA_DIR`) |
-| `agents/*/AGENTS.md` (seeds the workspace volume) | `pi/auth.json`, `pi/settings.json`, `pi/skills/` — **your** files | `/home/agent/.pi/agent` (pi state, model cache, tools) |
-| `prompts/` (`PROMPTS_DIR`) | `gitconfig`, `opencode/*.json` — **your** files | `/home/agent/.local/share/opencode` (opencode credentials and sessions) |
+| Baked into the image | In `.env` (host only) | In `config/` (read-only) | Named volumes (read-write) |
+|---|---|---|---|
+| Python 3.12, `git`, `gh`, `ripgrep`, `fd`, `op` | deployment values, limits, API tokens | `pi/auth.json`, `pi/settings.json`, `pi/skills/` — **your** files | `/home/agent/.pi/agent` (pi state, model cache, tools) |
+| Node 22 and pi (`PI_VERSION`) | — | `gitconfig`, `opencode/*.json` — **your** files | `/home/agent/.local/share/op-agent-engine` (`DATA_DIR`) |
+| `agents/*/AGENTS.md` (seeds the workspace volume) | — | — | `/home/agent/agents` (`WORKSPACE_ROOT`) |
+| `prompts/` (`PROMPTS_DIR`) | — | — | `/home/agent/.local/share/opencode` (opencode credentials and sessions) |
 
 `/config` is authoritative: the entrypoint copies those files into the writable
 volumes on **every start**, so applying a change is never editing a live mount:
 
 | Changed | Command |
 |---|---|
-| `config/workflow.yaml`, `pi/*`, `gitconfig`, `opencode/*` | `docker compose restart` |
-| `config/engine.env` (tokens, limits, `AGENT`) | `docker compose up -d` — compose must recreate the container; `restart` keeps the old environment |
+| `config/pi/*`, `gitconfig`, `opencode/*` | `docker compose restart` |
+| `.env` (tokens, limits, `AGENT`, project, repository) | `docker compose up -d` — compose must recreate the container; `restart` keeps the old environment |
 | the image tag | `docker compose pull && docker compose up -d` |
 
 ## The entrypoint
@@ -34,11 +34,12 @@ volumes on **every start**, so applying a change is never editing a live mount:
 `docker/entrypoint.sh` runs as `uid 10001` (`agent`) and, before `exec
 op-agent-engine "$@"`:
 
-1. refuses to start without `AGENT` (`pi` or `opencode`) or `WORKSPACE_ROOT`,
-   so a deployment that forgot one fails immediately rather than inside a run;
-2. copies `config/workflow.yaml`, `gitconfig`, `pi/{settings,auth}.json`,
-   `pi/skills/` and `opencode/{opencode,auth}.json` into the volumes, skipping
-   what is absent; `auth.json` files become `0600`;
+1. refuses to start without `OP_BASE_URL`, `OP_PROJECT`, `GITHUB_REPO`,
+   `AGENT` or `WORKSPACE_ROOT`, so a deployment that forgot one fails
+   immediately with the variable named rather than inside a run;
+2. copies `gitconfig`, `pi/{settings,auth}.json`, `pi/skills/` and
+   `opencode/{opencode,auth}.json` into the volumes, skipping what is absent;
+   `auth.json` files become `0600`;
 3. warns — and continues — when `config/pi/auth.json` still holds
    `replace-with…` placeholders, so a fresh deployment says "put a real provider
    key here" instead of failing 30 minutes into a run.
@@ -66,8 +67,8 @@ missing from the image (or owned by root) makes the container unusable with
 `DASHBOARD_PORT` (8765) on `127.0.0.1` only. It has no authentication: keep it
 on loopback or put it behind the reverse proxy. Override the bind address with
 `DASHBOARD_BIND=0.0.0.0` only if a proxy on another host needs it. Keep
-`DASHBOARD_PORT=8765` in `engine.env`, because that is the port the compose
-mapping publishes.
+`DASHBOARD_PORT=8765` in `.env`, because that is the port the compose mapping
+publishes.
 
 ## Images and releases
 
@@ -116,22 +117,20 @@ without a new tag.
   outside the tree would be dangling inside the container.
 - **Secrets.** `config/pi/auth.json` is a `0644` copy so the container user can
   read it; the host's own `auth.json` stays `0600`. If you do not want a key on
-  disk, use `config-sync.sh --no-auth` and pass the provider key through the
-  runner's `env:` block in `config/workflow.yaml` instead. `config/engine.env`
-  is `0600` and never mounted.
-- **`config/engine.env` is read on the host**, so it may stay `0600`; every
-  other file in `config/` must be world-readable because the container's own
-  user reads it.
+  disk, use `config-sync.sh --no-auth` and provide the provider key by other
+  means (for example an image built for your provider). `docker/.env` is `0600`
+  and never mounted.
+- **`docker/.env` is read on the host**, so it may stay `0600`; every file in
+  `config/` must be world-readable because the container's own user reads it.
 - **Snap-installed Docker cannot read `/tmp` or dot-directories**, so keep the
   deployment directory on a normal path such as `/opt/op-agent-engine` or
   `~/op-agent-engine`. `docker --env-file` fails with "permission denied"
   otherwise.
-- **Which agent CLI runs** is `AGENT` in `config/engine.env` (`pi` or
-  `opencode`), not something to set per agent: the workflow uses
-  `runner: "${AGENT}"`. Both runners are defined in `workflow.yaml`, so
-  switching is `AGENT=opencode` followed by `docker compose up -d` (a changed
-  env file needs a recreate), plus a rebuilt image when opencode was not
-  installed yet (`INSTALL_OPENCODE=true`).
+- **Which agent CLI runs** is `AGENT` in `.env` (`pi` or `opencode`), not
+  something to set per agent: every agent uses the selected runner. Switching
+  is `AGENT=opencode` followed by `docker compose up -d` (a changed env file
+  needs a recreate), plus a rebuilt image when opencode was not installed yet
+  (`INSTALL_OPENCODE=true`).
 - **opencode** is opt-in (`INSTALL_OPENCODE=true`). Its `run` mode works in the
   container; a host wrapper that `attach`es to a remote opencode server does
   not, because the agent would then work on the *server's* filesystem instead

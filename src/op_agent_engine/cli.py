@@ -1,12 +1,14 @@
 """Command line interface.
 
-Subcommands follow the plan: ``run``, ``once``, ``check-config``, ``status``
-and ``dry-run``. ``check-config`` validates the workflow file and resolves all
-OpenProject IDs. ``once`` performs a single poll and claims what the slot
-rules allow. ``dry-run`` performs a single poll and logs what would be
-claimed without writing anything. ``run`` starts the engine loop (poll,
-schedule, execute, sleep). ``status`` prints the heartbeat age, active runs
-and the last finished runs from the local store (M7).
+Subcommands: ``run``, ``once``, ``check-config``, ``status`` and ``dry-run``.
+``check-config`` validates the environment and resolves all OpenProject IDs.
+``once`` performs a single poll and claims what the slot rules allow.
+``dry-run`` performs a single poll and logs what would be claimed without
+writing anything. ``run`` starts the engine loop (poll, schedule, execute,
+sleep). ``status`` prints the heartbeat age, active runs and the last finished
+runs from the local store. ``provision`` and ``verify-token`` support the
+interactive setup script, ``dashboard`` serves the read-only UI and ``cleanup``
+is the retention job.
 """
 
 from __future__ import annotations
@@ -17,14 +19,11 @@ import json
 import os
 import sys
 from collections.abc import Sequence
-from pathlib import Path
 
 from pydantic import ValidationError
 
 from op_agent_engine import __version__
-from op_agent_engine.account_setup import AccountSetupError, run_provision_users
 from op_agent_engine.config import (
-    DEFAULT_ENGINE_CONFIG,
     ConfigError,
     EngineSettings,
     WorkflowConfig,
@@ -62,28 +61,15 @@ CONFIG_ERROR_EXIT = 1
 OK_EXIT = 0
 
 
-def default_config_path() -> Path:
-    return Path(os.environ.get("ENGINE_CONFIG", DEFAULT_ENGINE_CONFIG)).expanduser()
-
-
 def _add_common_options(
     parser: argparse.ArgumentParser, *, suppress_defaults: bool = False
 ) -> None:
     """Options accepted both before and after the subcommand.
 
-    The container command is ``run`` (``ENGINE_CONFIG`` names the file); users also type
-    ``--config PATH check-config``. Defining the same destination on both
-    parsers keeps both forms working. ``SUPPRESS`` on the subparser avoids
-    overwriting a value parsed before the subcommand.
+    ``SUPPRESS`` on the subparser avoids overwriting a value parsed before the
+    subcommand.
     """
     default: object = argparse.SUPPRESS if suppress_defaults else None
-    parser.add_argument(
-        "--config",
-        type=Path,
-        default=default,
-        metavar="PATH",
-        help=f"workflow configuration file (default: $ENGINE_CONFIG or {DEFAULT_ENGINE_CONFIG})",
-    )
     parser.add_argument(
         "--log-level",
         default=default,
@@ -205,6 +191,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="print the provisioning report as JSON",
     )
+    provision.add_argument(
+        "--passwords",
+        action="store_true",
+        help=(
+            "print only the generated passwords as login<TAB>password lines "
+            "(used by docker/provision-users.sh)"
+        ),
+    )
 
     cleanup = subparsers.add_parser(
         "cleanup",
@@ -224,30 +218,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="print the cleanup report as JSON",
     )
 
-    provision_users = subparsers.add_parser(
-        "provision-users",
-        help=(
-            "container install step: create the OpenProject accounts and "
-            "collect one API token per account"
-        ),
+    verify = subparsers.add_parser(
+        "verify-token",
+        help="verify that OP_VERIFY_TOKEN authenticates as --login",
     )
-    provision_users.add_argument(
-        "--config-dir",
-        type=Path,
-        default=None,
-        metavar="DIR",
-        help="directory holding workflow.yaml and engine.env (default: the "
-        "directory of $ENGINE_CONFIG, i.e. /config in the container)",
+    verify.add_argument(
+        "--login",
+        required=True,
+        metavar="LOGIN",
+        help="expected OpenProject login for the token",
     )
-    provision_users.add_argument(
-        "--reprompt-tokens",
+    verify.add_argument(
+        "--admin",
         action="store_true",
-        help=(
-            "ask for every API token again instead of reusing the valid "
-            "tokens already stored in engine.env"
-        ),
+        help="also require the account to be an OpenProject administrator",
     )
-
 
     return parser
 
@@ -258,13 +243,13 @@ def _subcommand_options() -> argparse.ArgumentParser:
     return parent
 
 
-def _load_config(path: Path) -> WorkflowConfig:
-    return WorkflowConfig.load(path)
+def _load_config(settings: EngineSettings | None = None) -> WorkflowConfig:
+    return WorkflowConfig.from_settings(settings or EngineSettings())
 
 
-def _config_summary(config: WorkflowConfig, path: Path) -> dict[str, object]:
+def _config_summary(config: WorkflowConfig) -> dict[str, object]:
     return {
-        "path": str(path),
+        "source": "environment",
         "statuses": config.openproject.statuses.by_key(),
         "agent_field": config.openproject.agent_field,
         "engine_user": config.openproject.engine_user,
@@ -343,14 +328,14 @@ async def _audit_against_api(
         )
 
 
-def _poll_once(config_path: Path, *, dry_run: bool) -> int:
+def _poll_once(*, dry_run: bool) -> int:
     try:
-        config = _load_config(config_path)
+        settings = EngineSettings()
+        config = _load_config(settings)
     except ConfigError as error:
         print(f"op-agent-engine: error: {error}", file=sys.stderr)
         return CONFIG_ERROR_EXIT
     try:
-        settings = EngineSettings()
         settings.require_api_values()
     except ConfigError as error:
         print(f"op-agent-engine: error: {error}", file=sys.stderr)
@@ -366,14 +351,14 @@ def _poll_once(config_path: Path, *, dry_run: bool) -> int:
         return CONFIG_ERROR_EXIT
 
 
-def _run(config_path: Path, *, dry_run: bool) -> int:
+def _run(*, dry_run: bool) -> int:
     try:
-        config = _load_config(config_path)
+        settings = EngineSettings()
+        config = _load_config(settings)
     except ConfigError as error:
         print(f"op-agent-engine: error: {error}", file=sys.stderr)
         return CONFIG_ERROR_EXIT
     try:
-        settings = EngineSettings()
         settings.require_api_values()
     except ConfigError as error:
         print(f"op-agent-engine: error: {error}", file=sys.stderr)
@@ -389,9 +374,10 @@ def _run(config_path: Path, *, dry_run: bool) -> int:
         return CONFIG_ERROR_EXIT
 
 
-def _check_config(path: Path, *, as_json: bool, offline: bool) -> int:
+def _check_config(*, as_json: bool, offline: bool) -> int:
     try:
-        config = _load_config(path)
+        settings = EngineSettings()
+        config = _load_config(settings)
     except ConfigError as error:
         print(f"op-agent-engine: error: {error}", file=sys.stderr)
         return CONFIG_ERROR_EXIT
@@ -400,7 +386,6 @@ def _check_config(path: Path, *, as_json: bool, offline: bool) -> int:
     provision_report: ProvisionReport | None = None
     if not offline:
         try:
-            settings = EngineSettings()
             settings.require_api_values()
             resolution = asyncio.run(_resolve_against_api(config, settings))
             if config.openproject.provisioning.enabled:
@@ -424,14 +409,14 @@ def _check_config(path: Path, *, as_json: bool, offline: bool) -> int:
         return CONFIG_ERROR_EXIT
 
     if as_json:
-        payload = _config_summary(config, path)
+        payload = _config_summary(config)
         payload["resolved"] = resolution.as_dict() if resolution is not None else None
         payload["provisioning"] = (
             provision_report.as_dict() if provision_report is not None else None
         )
         print(json.dumps(payload, indent=2))
     else:
-        print(f"Configuration OK: {path}")
+        print("Configuration OK (environment)")
         for line in config.summary():
             print(line)
         if resolution is None:
@@ -462,7 +447,6 @@ def _run_line(run: Run) -> str:
 
 
 def _dashboard(
-    config_path: Path,
     *,
     host: str | None,
     port: int | None,
@@ -471,7 +455,8 @@ def _dashboard(
 ) -> int:
     """Serve the read-only dashboard (no OpenProject token required)."""
     try:
-        config = _load_config(config_path)
+        settings = EngineSettings()
+        config = _load_config(settings)
     except ConfigError as error:
         print(f"op-agent-engine: error: {error}", file=sys.stderr)
         return CONFIG_ERROR_EXIT
@@ -484,7 +469,6 @@ def _dashboard(
     if refresh_seconds < 1:
         print("op-agent-engine: error: --refresh must be at least 1", file=sys.stderr)
         return CONFIG_ERROR_EXIT
-    settings = EngineSettings()
     bind_port = settings.dashboard_port if port is None else port
     if not 1 <= bind_port <= 65535:
         print("op-agent-engine: error: port must be between 1 and 65535", file=sys.stderr)
@@ -588,25 +572,21 @@ async def _provision_async(
         )
 
 
-def _provision(path: Path, *, apply: bool, as_json: bool) -> int:
-    try:
-        config = _load_config(path)
-    except ConfigError as error:
-        print(f"op-agent-engine: error: {error}", file=sys.stderr)
-        return CONFIG_ERROR_EXIT
+def _provision(*, apply: bool, as_json: bool, passwords: bool = False) -> int:
     try:
         settings = EngineSettings()
+        config = _load_config(settings)
         if not settings.op_base_url:
             raise ConfigError("missing required environment variables: OP_BASE_URL")
         provisioning_token(settings)
     except (ConfigError, ProvisioningError) as error:
         print(f"op-agent-engine: error: {error}", file=sys.stderr)
         return CONFIG_ERROR_EXIT
-    # ``--json`` is machine-readable output, so keep stdout pure JSON: route
-    # log records (for example httpx's INFO request lines) to stderr instead.
+    # Machine-readable output must keep stdout clean: route log records (for
+    # example httpx's INFO request lines) to stderr instead.
     configure_logging(
         os.environ.get("LOG_LEVEL", "INFO"),
-        stream=sys.stderr if as_json else None,
+        stream=sys.stderr if (as_json or passwords) else None,
     )
     try:
         report = asyncio.run(_provision_async(config, settings, apply=apply))
@@ -614,7 +594,10 @@ def _provision(path: Path, *, apply: bool, as_json: bool) -> int:
         print(f"op-agent-engine: error: {error}", file=sys.stderr)
         return CONFIG_ERROR_EXIT
 
-    if as_json:
+    if passwords:
+        for login, password in report.generated_passwords.items():
+            print(f"{login}\t{password}")
+    elif as_json:
         print(json.dumps(report.as_dict(), indent=2))
     else:
         for line in report.summary():
@@ -655,20 +638,41 @@ def _cleanup(*, days: int | None, as_json: bool, dry_run: bool) -> int:
     return OK_EXIT if not report.errors else CONFIG_ERROR_EXIT
 
 
-def _provision_users(args: argparse.Namespace) -> int:
-    config_dir = (
-        Path(args.config_dir).expanduser()
-        if args.config_dir is not None
-        else default_config_path().expanduser().parent
-    )
-    try:
-        return run_provision_users(
-            config_dir=config_dir,
-            reprompt_tokens=bool(args.reprompt_tokens),
+async def _verify_token_async(
+    base_url: str, token: str, login: str, *, admin: bool
+) -> str:
+    async with OpenProjectClient(base_url, token) as client:
+        payload = await client.get_json("/api/v3/users/me")
+    actual = payload.get("login") if isinstance(payload, dict) else None
+    if actual != login:
+        raise OpenProjectError(
+            f"token belongs to {actual!r}, expected {login!r}"
         )
-    except AccountSetupError as error:
+    if admin and payload.get("admin") is not True:
+        raise OpenProjectError(f"{login} is not an OpenProject administrator")
+    return login
+
+
+def _verify_token(login: str, *, admin: bool) -> int:
+    """Check ``OP_VERIFY_TOKEN`` through ``/api/v3/users/me``."""
+    settings = EngineSettings()
+    if not settings.op_base_url:
+        print(
+            "op-agent-engine: error: missing required environment variables: OP_BASE_URL",
+            file=sys.stderr,
+        )
+        return CONFIG_ERROR_EXIT
+    token = (os.environ.get("OP_VERIFY_TOKEN") or "").strip()
+    if not token:
+        print("op-agent-engine: error: OP_VERIFY_TOKEN is empty", file=sys.stderr)
+        return CONFIG_ERROR_EXIT
+    try:
+        asyncio.run(_verify_token_async(settings.op_base_url, token, login, admin=admin))
+    except OpenProjectError as error:
         print(f"op-agent-engine: error: {error}", file=sys.stderr)
         return CONFIG_ERROR_EXIT
+    print(f"ok: {login}")
+    return OK_EXIT
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -682,13 +686,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     if log_level:
         os.environ["LOG_LEVEL"] = str(log_level)
 
-    if args.command == "provision-users":
-        return _provision_users(args)
+    if args.command == "verify-token":
+        return _verify_token(args.login, admin=bool(args.admin))
 
-    config_path = (getattr(args, "config", None) or default_config_path()).expanduser()
     if args.command == "dashboard":
         return _dashboard(
-            config_path,
             host=args.host,
             port=args.port,
             limit=args.limit,
@@ -704,17 +706,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
 
     if args.command == "check-config":
-        return _check_config(config_path, as_json=args.json, offline=args.offline)
+        return _check_config(as_json=args.json, offline=args.offline)
 
     if args.command == "provision":
-        return _provision(config_path, apply=args.apply, as_json=args.json)
-
-    if args.command in ("once", "dry-run"):
-        return _poll_once(
-            config_path, dry_run=(args.command == "dry-run") or bool(args.dry_run)
+        return _provision(
+            apply=args.apply, as_json=args.json, passwords=bool(args.passwords)
         )
 
-    return _run(config_path, dry_run=bool(args.dry_run))
+    if args.command in ("once", "dry-run"):
+        return _poll_once(dry_run=(args.command == "dry-run") or bool(args.dry_run))
+
+    return _run(dry_run=bool(args.dry_run))
 
 
 if __name__ == "__main__":  # pragma: no cover

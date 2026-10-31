@@ -4,7 +4,8 @@
 > supported installation method; the systemd units and `install.sh` described
 > in the later milestones were removed. Treat those sections as design
 > history, and see the [README](../README.md) for how the engine is installed
-> and run today.
+> and run today. Configuration is environment variables now, not
+> `workflow.yaml` / `engine.env`; see [CONFIG.md](CONFIG.md).
 
 Implementation plan for an engine that monitors OpenProject work packages and dispatches coding agents (pi, OpenCode, or any CLI agent) to work on them. This document is the handoff for the building agent. Follow it in milestone order. Items marked **VERIFY** depend on external tool behavior that must be confirmed against the real tool (`--help`, API docs, a live instance) before relying on it.
 

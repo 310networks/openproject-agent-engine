@@ -8,8 +8,8 @@ OpenProject, and performs **every** status transition itself. Agents never
 change status.
 
 The engine runs as a container. The image carries Python, `git`, `gh`, the
-OpenProject CLI and the agent CLIs; you supply configuration and credentials in
-one directory.
+OpenProject CLI and the agent CLIs; you supply credentials and a handful of
+environment variables.
 
 ## How a ticket flows
 
@@ -35,10 +35,9 @@ and every engine comment starts with `ENGINE:`. Failed runs are retried up to
 
 ```bash
 git clone <engine-repo> && cd openproject-agent-engine/docker
-vim config/engine.env            # OP_BASE_URL + OP_PROVISION_TOKEN + AGENT (see below)
-vim config/workflow.yaml         # projects, repositories, agents
+./provision-users.sh             # asks for the deployment values, the admin
+                                 # token, then creates the users and tokens
 vim config/pi/auth.json          # provider key: pi (or config/opencode/opencode.json for opencode)
-./provision-users.sh             # create the accounts, mint one token each
 docker compose up -d
 ```
 
@@ -46,16 +45,13 @@ Before the first run, complete the one-time instance setup — statuses, the
 `AGENT` custom field and the Agent Worker role — in
 [docs/OPENPROJECT_SETUP.md](docs/OPENPROJECT_SETUP.md).
 
-`./provision-users.sh` creates the OpenProject accounts (the engine runtime user
-plus one per agent) and then interviews you for one API token each: it shows
-each generated password once at that account's token prompt, so you can sign in
-as the agent, create the token under **My account → Access tokens**, and paste
-it. At the `agent-engine` prompt it reminds you to make that user an
-administrator first (**Administration → Users → agent-engine → Administrator**),
-which is what lets the engine list users and edit work packages. Tokens are
-written to `config/engine.env` (mode `0600`) and the script finishes with
-`check-config`. Re-running is safe and is how you fix a token that belongs to
-the wrong account; `--reprompt-tokens` asks for all of them again.
+`./provision-users.sh` is the whole setup: it asks for the OpenProject URL,
+project identifier and repository, asks for an OpenProject administrator token
+(used once, never stored), creates the engine runtime user plus one account per
+agent, shows each generated password once at that account's token prompt, and
+verifies every token before writing `docker/.env` (mode `0600`). It finishes
+with `check-config`. Re-running is safe and is how you fix a token that belongs
+to the wrong account; `--reprompt-tokens` asks for all of them again.
 
 The dashboard is served at `http://127.0.0.1:8765`
 (see [docs/DASHBOARD.md](docs/DASHBOARD.md)).
@@ -70,42 +66,98 @@ mounted, so no UID/GID matching or home-directory layout is involved.
 | Path | What it is | Committed? |
 |---|---|---|
 | `docker-compose.yml` | `engine`, `dashboard` and the one-shot `provision` / `cleanup` / `check-config` tasks | yes |
-| `config/` | **your** configuration and credentials, mounted read-only at `/config` | templates yes, secrets no |
-| `provision-users.sh` | creates the OpenProject accounts and collects one token per account | yes |
+| `.env` | **your** deployment values and API tokens; written by `provision-users.sh` | template yes, secrets no |
+| `config/` | agent CLI credentials, settings, skills and git identity, mounted read-only at `/config` | templates yes, secrets no |
+| `provision-users.sh` | interactive setup: creates the accounts, collects one token each and writes `.env` | yes |
 | `config-sync.sh` | stages `~/.pi/agent`, `~/.gitconfig` and `~/.config/opencode` into `config/` (checkout only) | yes |
 | `Dockerfile`, `entrypoint.sh` | how the image is built and started — built by CI, not by you | yes |
 | `version.json` | the released tag; must equal `project.version` in `pyproject.toml` | yes |
 
-`config/workflow.yaml` is explained in [docs/CONFIG.md](docs/CONFIG.md); the
-repository root's `workflow.example.yaml` is the starting point. With the
-repository checked out, `./config-sync.sh` fills in `config/` from your own `~`
-and seeds `workflow.yaml` and `engine.env` for you.
+Compose reads `.env` automatically and passes it to the containers; the file is
+never mounted. The repository root's `docker/.env.example` is the commented
+reference. With the repository checked out, `./config-sync.sh` fills in
+`config/` from your own `~` and seeds `.env` for you.
 
 Image internals, upgrading and troubleshooting: [docs/DOCKER.md](docs/DOCKER.md).
 
-## `config/engine.env`
+## Environment variables
 
-Read by compose **on the host** and passed to the container as environment
-variables, so it may stay mode `0600` and is never mounted.
+The engine has no configuration file: the team, the runners and the status
+names are baked into the image, and everything deployment-specific is an
+environment variable in `docker/.env`. `provision-users.sh` writes the required
+ones for you.
 
 ### Required
 
 | Variable | Meaning |
 |---|---|
 | `OP_BASE_URL` | your OpenProject URL, e.g. `https://openproject.example.com` |
+| `OP_PROJECT` | identifier of the project the engine works on |
+| `GITHUB_REPO` | repository as `owner/name`, e.g. `310networks/example-project` |
 | `OP_ENGINE_TOKEN` | API token of the runtime user (must be an administrator) |
-| `OP_PROVISION_TOKEN` | API token of an administrator, used **only** by `./provision-users.sh` and `docker compose run --rm provision`; can be removed afterwards |
-| `OP_TOKEN_*` | one token per agent account, referenced from `workflow.yaml` as `${OP_TOKEN_*}` (e.g. `OP_TOKEN_FRONTEND`) |
-| `AGENT` | which agent CLI the agents run: `pi` or `opencode`; `workflow.yaml` uses it as `runner: "${AGENT}"`, so switching is one line here |
+| `AGENT` | which agent CLI the agents run: `pi` or `opencode` |
+| `OP_TOKEN_FRONTEND` | API token of `frontendEngineer` |
+| `OP_TOKEN_BACKEND` | API token of `backendEngineer` |
+| `OP_TOKEN_DESIGNER` | API token of `leadDesigner` |
+| `OP_TOKEN_REVIEWER` | API token of `codeReviewer` |
+
+`OP_PROVISION_TOKEN` is an administrator token used **only** by
+`./provision-users.sh` and `docker compose run --rm provision`. The script asks
+for it at run time and does not store it.
+
+### Agents
+
+The team is fixed in the image, one OpenProject account and one token each:
+
+| `AGENT` option | Login | Kind | Token |
+|---|---|---|---|
+| `FRONTEND` | `frontendEngineer` | implementer | `OP_TOKEN_FRONTEND` |
+| `BACKEND` | `backendEngineer` | implementer | `OP_TOKEN_BACKEND` |
+| `LEAD_DESIGNER` | `leadDesigner` | implementer | `OP_TOKEN_DESIGNER` |
+| `REVIEWER` | `codeReviewer` | reviewer | `OP_TOKEN_REVIEWER` |
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `AGENT_MODEL` | the CLI's default | model for every agent, e.g. `anthropic/claude-sonnet-4-5`; one token, no spaces |
+| `AGENT_TIMEOUT_SECONDS` | `3600` | hard limit per agent run |
+
+### Repository
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `GITHUB_REPO_DIR` | the repository name | clone directory under `WORKSPACE_ROOT` |
+| `GITHUB_DEFAULT_BRANCH` | `main` | branch the work branches are based on |
+| `GH_TOKEN` | — | GitHub token for the agents' `git`/`gh`; without it, pushes need another credential |
+
+### OpenProject object names
+
+Defaults match a stock OpenProject instance. Override only if your instance
+renames them.
+
+| Variable | Default |
+|---|---|
+| `OP_AGENT_FIELD` | `AGENT` |
+| `OP_ENGINE_USER` | `agent-engine` |
+| `OP_AGENT_ROLE` | `Agent Worker` |
+| `OP_EMAIL_DOMAIN` | `agent-engine.local` |
+| `OP_STATUS_NEW` | `New` |
+| `OP_STATUS_IN_PROGRESS` | `In Progress` |
+| `OP_STATUS_READY_FOR_REVIEW` | `Ready for Review` |
+| `OP_STATUS_IN_TESTING` | `In Testing` |
+| `OP_STATUS_ON_HOLD` | `On Hold` |
+| `OP_STATUS_REJECTED` | `Rejected` |
+| `OP_STATUS_CLOSED` | `Closed` |
+
+Status names are matched case- and whitespace-insensitively, so `In Progress`
+also matches OpenProject's default `In progress`.
 
 ### Paths
 
-Defaults come from the image, so they usually do not belong in `engine.env`.
-They follow the volume mounts in `docker-compose.yml`.
+Defaults come from the image, so they usually do not belong in `.env`. They
+follow the volume mounts in `docker-compose.yml`.
 
 | Variable | Container default | Meaning |
 |---|---|---|
-| `ENGINE_CONFIG` | `/config/workflow.yaml` | the workflow document |
 | `WORKSPACE_ROOT` | `/home/agent/agents` | agent workspaces (`agents/` from the image, plus the git clones) |
 | `DATA_DIR` | `/home/agent/.local/share/op-agent-engine` | SQLite store, run directories, heartbeat, lock |
 | `PROMPTS_DIR` | `/opt/op-agent-engine/prompts` | prompt templates shipped in the image |
@@ -131,16 +183,9 @@ They follow the volume mounts in `docker-compose.yml`.
 | `DASHBOARD_HOST` | `0.0.0.0` | bind address inside the container |
 | `DASHBOARD_PORT` | `8765` | must stay `8765`: that is the port the compose mapping publishes |
 
-### Optional
-
-| Variable | Meaning |
-|---|---|
-| `GH_TOKEN` | GitHub token for the agents' `git`/`gh`; without it, pushes need another credential |
-| `OPENROUTER_API_KEY` | not read by the engine — see "Agent provider credentials" below |
-
 ### Read by compose, not by the engine
 
-Set these in your shell or in a `.env` file next to `docker-compose.yml`:
+Set these in your shell or in `.env` next to `docker-compose.yml`:
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -151,7 +196,6 @@ Set these in your shell or in a `.env` file next to `docker-compose.yml`:
 
 | Path | Seeded to | Notes |
 |---|---|---|
-| `workflow.yaml` | `ENGINE_CONFIG` (read in place) | required: statuses, projects, agents, runners |
 | `gitconfig` | `~/.gitconfig` | recommended, otherwise `git commit` in a run fails |
 | `pi/settings.json` | `~/.pi/agent/settings.json` | default provider/model and pi preferences |
 | `pi/auth.json` | `~/.pi/agent/auth.json` | pi provider keys |
@@ -161,45 +205,36 @@ Set these in your shell or in a `.env` file next to `docker-compose.yml`:
 
 These files are templates with placeholder values: edit them in place, nothing
 has to be copied. Permissions matter: the container runs as its own user (uid
-10001), so everything here must be world-readable (`0644`) — except
-`engine.env`, which the host side reads and which may stay `0600`.
-`config-sync.sh` sets this up correctly.
+10001), so everything here must be world-readable (`0644`). `config-sync.sh`
+sets this up correctly.
 
-`.gitignore` keeps `engine.env`, `workflow.yaml`, `pi/skills/` and
-`opencode/auth.json` out of git, but the templates above *are* tracked, so
-`git status` will show your edits once you paste a real key into
-`config/pi/auth.json`. Never commit that: this directory is yours, not the
-project's.
+`.gitignore` keeps `docker/.env`, `pi/skills/` and `opencode/auth.json` out of
+git, but the templates above *are* tracked, so `git status` will show your edits
+once you paste a real key into `config/pi/auth.json`. Never commit that: this
+directory is yours, not the project's.
 
 ### Agent provider credentials
 
-The agent CLIs need a model provider key. Two ways, both without baking
-anything into the image:
-
-1. `config/pi/auth.json` (`AGENT=pi`) or the `apiKey` in
-   `config/opencode/opencode.json` (`AGENT=opencode`) — edit the template that
-   is already there.
-2. An environment variable in the runner's `env:` block in
-   `config/workflow.yaml`, e.g. `env: { OPENROUTER_API_KEY: "${OPENROUTER_API_KEY}" }`
-   with the value in `config/engine.env`. The engine only forwards a fixed set
-   of variables (`PATH`, `HOME`, `USER`, `LOGNAME`, `TZ`, `LANG`, `LC_ALL`) to
-   the agent, so a key in `engine.env` alone is not enough.
+The agent CLIs need a model provider key. Edit the template that is already
+there: `config/pi/auth.json` (`AGENT=pi`) or the `apiKey` in
+`config/opencode/opencode.json` (`AGENT=opencode`). Nothing is baked into the
+image.
 
 ## Day-to-day commands
 
 ```bash
 docker compose logs -f engine                # follow the engine
-docker compose run --rm check-config         # validate config without polling
-docker compose run --rm provision --apply    # create/refresh OpenProject users
+docker compose run --rm check-config         # validate the environment without polling
+docker compose run --rm provision             # create/refresh OpenProject users
 docker compose run --rm cleanup              # retention sweep
-docker compose restart                       # after editing workflow.yaml or pi/*
-docker compose up -d                         # after editing engine.env
+docker compose restart                       # after editing config/pi/*
+docker compose up -d                         # after editing .env, or to upgrade
 docker compose pull && docker compose up -d  # upgrade to the published image
 docker compose down                          # stop; volumes survive
 docker compose down -v                       # stop and delete all state (re-clones repos)
 ```
 
-`up -d`, not `restart`, after editing `config/engine.env`: a changed env file is
+`up -d`, not `restart`, after editing `docker/.env`: a changed environment is
 only picked up when the container is recreated.
 
 Schedule the retention sweep on the host:
@@ -223,7 +258,7 @@ remain; remove or lock them in **Administration → Users**.
 |---|---|
 | [docs/DOCKER.md](docs/DOCKER.md) | image internals: what is baked in, config staging, volumes, releases, troubleshooting |
 | [docs/OPENPROJECT_SETUP.md](docs/OPENPROJECT_SETUP.md) | one-time instance setup: statuses, `AGENT` field, Agent Worker role, admin engine user, tokens |
-| [docs/CONFIG.md](docs/CONFIG.md) | `workflow.yaml`, environment variables, CLI reference |
+| [docs/CONFIG.md](docs/CONFIG.md) | environment variables, the agent team, CLI reference |
 | [docs/DASHBOARD.md](docs/DASHBOARD.md) | read-only web UI: engine status, agents, sessions, totals |
 | [docs/RUNBOOK.md](docs/RUNBOOK.md) | status, pause, run inspection, `On Hold` handling, recovery, security |
 | [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md) | fake-agent test and manual acceptance checklist |

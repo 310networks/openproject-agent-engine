@@ -3,8 +3,7 @@
 .gitignore
 docker/config
 .env
-workflow.yaml
-engine.env
+docker/.env
 /*.bak.*
 
 # Agent working copies are cloned at runtime into a volume.
@@ -39,5 +38,3 @@ docker-compose*.yml
 # Keep the pieces the image actually copies.
 !prompts
 !agents
-!workflow.example.yaml
-!engine.env.example

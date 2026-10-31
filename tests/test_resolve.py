@@ -173,7 +173,7 @@ SENTENCE_STATUSES: list[dict[str, Any]] = [
 
 
 async def test_status_names_match_case_insensitively() -> None:
-    # OpenProject's default statuses are sentence case; workflow.yaml commonly
+    # OpenProject's default statuses are sentence case; the configuration commonly
     # uses title case. Both must resolve to the same status.
     resolution = await resolve(make_fake(statuses=SENTENCE_STATUSES))
 
