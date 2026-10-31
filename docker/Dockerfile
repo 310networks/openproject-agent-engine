@@ -5,10 +5,14 @@
 # tools they use (git, gh, rg, fd, op) are baked in, so a run inside the
 # container never depends on the host's installed agents.
 #
-# User configuration is *copied* into ./docker/config by config-sync.sh and
+# Build context is the repository root:
+#   docker build -f docker/Dockerfile -t kookster310/op-agent-engine:latest .
+# (published by CI only -- users pull).
+#
+# User configuration is *copied* into ./config by config-sync.sh and
 # mounted read-only at /config. Nothing from the host is mounted directly,
 # which is what keeps UID/GID and $HOME out of the picture: every path in here
-# belongs to the image's own user, and the files in ./docker/config are readable
+# belongs to the image's own user, and the files in ./config are readable
 # copies. See docs/DOCKER.md.
 
 # --- OpenProject CLI (agents call `op` during a run) ------------------------

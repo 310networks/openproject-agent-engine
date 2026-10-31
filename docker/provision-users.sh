@@ -7,27 +7,19 @@
 # Tokens are written back into config/engine.env, so nothing has to be
 # hand-edited and the engine starts with them already in place.
 #
-#   docker/provision-users.sh                      guided run
-#   docker/provision-users.sh --reprompt-tokens    enter the tokens again
+#   ./provision-users.sh                      guided run
+#   ./provision-users.sh --reprompt-tokens    enter the tokens again
 #
-# Needs docker/config/engine.env (OP_BASE_URL + OP_PROVISION_TOKEN) and
-# docker/config/workflow.yaml, plus the image (pulled if it is missing).
+# Needs config/engine.env (OP_BASE_URL + OP_PROVISION_TOKEN) and
+# config/workflow.yaml, plus the image (pulled if it is missing).
 set -eu
 
-# Work from the deployment directory: either this repository, or a directory
-# holding docker-compose.yml with this script copied next to it.
-script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-if [ -f "${script_dir}/docker-compose.yml" ]; then
-  deploy_dir=$script_dir
-elif [ -f "${script_dir}/../docker-compose.yml" ]; then
-  deploy_dir=$(CDPATH= cd -- "${script_dir}/.." && pwd)
-else
-  echo "provision-users: no docker-compose.yml next to this script" >&2
-  exit 2
-fi
+# The deployment directory is this script's directory: docker-compose.yml and
+# config/ live next to it.
+deploy_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 cd "$deploy_dir"
 
-config_dir="${deploy_dir}/docker/config"
+config_dir="${deploy_dir}/config"
 for file in "${config_dir}/engine.env" "${config_dir}/workflow.yaml"; do
   if [ ! -f "$file" ]; then
     echo "provision-users: missing $file" >&2
@@ -51,7 +43,7 @@ fi
 # own user cannot write to it (and handing the container your UID is exactly
 # what this design avoids). Work on a readable copy instead: it is mounted as
 # /config for this one command, and the result is copied back with mode 0600.
-work=$(mktemp -d "${config_dir}/../provision-tmp.XXXXXX")
+work=$(mktemp -d "${deploy_dir}/provision-tmp.XXXXXX")
 trap 'rm -rf "$work"' EXIT INT TERM
 cp "${config_dir}/engine.env" "${config_dir}/workflow.yaml" "$work/"
 chmod 0755 "$work"

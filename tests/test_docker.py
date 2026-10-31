@@ -2,7 +2,7 @@
 
 The container design relies on a few things lining up:
 
-* ``./docker/config`` is the only host bind mount, and it is read-only;
+* ``./config`` is the only host bind mount, and it is read-only;
 * the container paths ``docker/config-sync.sh`` writes into ``docker/config/engine.env``
   are exactly the mount points declared in ``docker-compose.yml``;
 * the image never receives operator state or secrets (``.dockerignore``);
@@ -26,7 +26,10 @@ from pathlib import Path
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-COMPOSE = REPO_ROOT / "docker-compose.yml"
+DOCKER_DIR = REPO_ROOT / "docker"
+COMPOSE = DOCKER_DIR / "docker-compose.yml"
+DOCKERFILE = DOCKER_DIR / "Dockerfile"
+BUILD_OVERLAY = DOCKER_DIR / "docker-compose.build.yml"
 DOCKERIGNORE = REPO_ROOT / ".dockerignore"
 SYNC = REPO_ROOT / "docker" / "config-sync.sh"
 VERSION_FILE = REPO_ROOT / "docker" / "version.json"
@@ -291,7 +294,7 @@ def test_config_is_the_only_bind_mount_and_it_is_read_only() -> None:
     binds = [v for v in _service("engine")["volumes"] if str(v).startswith(("./", "/"))]
     binds = [v for v in binds if not str(v).startswith("/home/agent/")]
 
-    assert binds == ["./docker/config:/config:ro"]
+    assert binds == ["./config:/config:ro"]
 
 
 def test_volume_mount_points_exist_in_the_image() -> None:
@@ -300,7 +303,7 @@ def test_volume_mount_points_exist_in_the_image() -> None:
     A volume whose mount point is missing from the image starts out owned by
     root, and the container's own user then cannot write to it.
     """
-    dockerfile = (REPO_ROOT / "Dockerfile").read_text()
+    dockerfile = DOCKERFILE.read_text()
     mkdirs = " ".join(dockerfile.split("\n"))
 
     # /config is the read-only bind mount; it is not a volume.
@@ -349,22 +352,71 @@ def test_generated_env_uses_container_paths_only(tmp_path: Path) -> None:
 
 
 def test_compose_pulls_and_never_builds() -> None:
-    # Deployments must work from docker-compose.yml + config/ alone, so the
-    # published image is the only source of the engine.
+    # Deployments must work from docker/docker-compose.yml + docker/config/
+    # alone, so the published image is the only source of the engine -- there is
+    # deliberately no build file to overlay.
     compose = _compose()
     assert "build" not in compose
     for name, service in compose["services"].items():
         assert "build" not in service, f"{name} must not build"
+    assert not BUILD_OVERLAY.exists(), "users pull the image; do not ship a build path"
 
-    overlay = yaml.safe_load((REPO_ROOT / "docker-compose.build.yml").read_text())
-    for name in compose["services"]:
-        assert "build" in overlay["services"][name], f"{name} missing from build overlay"
+
+def test_docker_readme_documents_every_environment_variable() -> None:
+    """The deployment README is the env-var reference; keep it complete."""
+    from op_agent_engine.config import EngineSettings
+
+    readme = (DOCKER_DIR / "README.md").read_text()
+    missing = [
+        name.upper()
+        for name in EngineSettings.model_fields
+        if name.upper() not in readme
+    ]
+    assert not missing, f"undocumented in docker/README.md: {missing}"
+
+    # Compose-level variables are not engine settings, so they are easy to
+    # forget when one of them is added to the compose file.
+    compose_text = COMPOSE.read_text()
+    for name in set(re.findall(r"\$\{(OP_AGENT_ENGINE_TAG|DASHBOARD_BIND)", compose_text)):
+        assert name in readme, name
+    # The image defaults the README promises must match the Dockerfile.
+    dockerfile = DOCKERFILE.read_text()
+    for name, value in (
+        ("ENGINE_CONFIG", "/config/workflow.yaml"),
+        ("WORKSPACE_ROOT", "/home/agent/agents"),
+        ("DATA_DIR", "/home/agent/.local/share/op-agent-engine"),
+    ):
+        assert f"{name}={value}" in dockerfile, name
+        assert value in readme, f"{name} default is stale in docker/README.md"
+
+
+def test_every_docker_artifact_lives_under_docker() -> None:
+    """The docker/ directory is the whole deployment; the root stays code."""
+    for name in (
+        "Dockerfile",
+        "docker-compose.yml",
+        "entrypoint.sh",
+        "config-sync.sh",
+        "provision-users.sh",
+        "version.json",
+    ):
+        assert (DOCKER_DIR / name).is_file(), f"docker/{name} missing"
+
+    for stale in ("Dockerfile", "docker-compose.yml", "docker-compose.build.yml"):
+        assert not (REPO_ROOT / stale).exists(), f"{stale} belongs in docker/"
+
+    # .dockerignore is the one exception: docker only reads it from the build
+    # context root, which is the repository.
+    assert (REPO_ROOT / ".dockerignore").is_file()
+    # CI builds from the repository context with the Dockerfile under docker/.
+    workflow = WORKFLOW.read_text()
+    assert "file: docker/Dockerfile" in workflow
 
 
 def test_image_defaults_the_container_paths(tmp_path: Path) -> None:
     # A pull-only user writes a config/engine.env with just the URL and tokens,
     # so the paths have to come from the image and match the mounts.
-    dockerfile = (REPO_ROOT / "Dockerfile").read_text()
+    dockerfile = DOCKERFILE.read_text()
     targets = {str(v).split(":")[1] for v in _service("engine")["volumes"]}
     expected = {
         "ENGINE_CONFIG": "/config/workflow.yaml",

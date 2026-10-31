@@ -57,26 +57,25 @@ The read-only dashboard is served at `http://127.0.0.1:8765` (see [docs/DASHBOAR
 
 ### Prefer containers?
 
-The image is published on Docker Hub, so nothing is built locally: a
-`docker-compose.yml` and a `docker/` directory holding your configuration are
-all you need.
+Everything Docker lives in [`docker/`](docker/), and that directory is the
+whole deployment — nothing is built locally, the image is pulled from Docker
+Hub.
 
 ```bash
-mkdir -p ~/op-agent-engine/docker/config && cd ~/op-agent-engine
-curl -fsSLO https://raw.githubusercontent.com/310networks/openproject-agent-engine/main/docker-compose.yml
-curl -fsS --create-dirs -o docker/provision-users.sh \
-  https://raw.githubusercontent.com/310networks/openproject-agent-engine/main/docker/provision-users.sh
-chmod +x docker/provision-users.sh
+mkdir -p ~/op-agent-engine/config && cd ~/op-agent-engine
+repo=https://raw.githubusercontent.com/310networks/openproject-agent-engine/main
+curl -fsSLO "$repo/docker/docker-compose.yml"
+curl -fsS -o provision-users.sh "$repo/docker/provision-users.sh" && chmod +x provision-users.sh
 
-# write docker/config/{engine.env,workflow.yaml} and, optionally,
-# docker/config/{gitconfig,pi/{auth,settings}.json,pi/skills/,opencode/}
+# write config/{engine.env,workflow.yaml} and, optionally,
+# config/{gitconfig,pi/{auth,settings}.json,pi/skills/,opencode/}
 docker compose pull
-./docker/provision-users.sh             # create users + mint tokens, then:
+./provision-users.sh                    # create users + mint tokens, then:
 docker compose up -d
 ```
 
 The agent CLIs are baked into the image; your configuration, credentials and
-skills live in `docker/config/`, mounted read-only and never committed.
+skills live in `config/`, mounted read-only and never committed.
 `docker/config.example/` shows the shape of each optional file, and
 `docker/config-sync.sh` (from a checkout) stages your own `~` into it
 (see [docs/DOCKER.md](docs/DOCKER.md)).
@@ -93,7 +92,8 @@ skills live in `docker/config/`, mounted read-only and never committed.
 | Doc | Contents |
 |---|---|
 | [docs/INSTALL.md](docs/INSTALL.md) | install options, systemd service, updates |
-| [docs/DOCKER.md](docs/DOCKER.md) | container image, `docker/config` layout, compose services |
+| [docker/README.md](docker/README.md) | the deployment directory: file layout, every environment variable, commands |
+| [docs/DOCKER.md](docs/DOCKER.md) | the `docker/` deployment: image, `config/`, compose services |
 | [docs/OPENPROJECT_SETUP.md](docs/OPENPROJECT_SETUP.md) | one-time instance setup: statuses, `AGENT` field, Agent Worker role, admin engine user, tokens |
 | [docs/CONFIG.md](docs/CONFIG.md) | `workflow.yaml`, environment variables, CLI reference |
 | [docs/DASHBOARD.md](docs/DASHBOARD.md) | read-only web UI: engine status, agents, sessions, totals |

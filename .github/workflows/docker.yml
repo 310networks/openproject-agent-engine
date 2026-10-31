@@ -108,6 +108,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
+          file: docker/Dockerfile
           # The engine itself is architecture independent; only amd64 is
           # published so `op`/node/gh do not have to be cross-built. Add
           # linux/arm64 here after checking the builder stage below.
