@@ -1,4 +1,4 @@
-"""Prompt rendering (PLAN section 10).
+"""Prompt rendering.
 
 Templates live in a ``prompts/`` directory (``<kind>.txt.j2``) and are
 rendered with Jinja2 in ``StrictUndefined`` mode into
@@ -33,7 +33,7 @@ PROMPTS_DIR_NAME = "prompts"
 #: Kinds the engine can render (implement/fix/resume/review).
 KINDS = ("implement", "fix", "resume", "review")
 
-#: PLAN section 10: cap on later human comments in a fix prompt.
+#:: cap on later human comments in a fix prompt.
 MAX_LATER_HUMAN_COMMENTS = 5
 
 
@@ -67,7 +67,7 @@ class PromptRenderer:
 
 
 def resolve_template_dir(settings: EngineSettings) -> Path:
-    """Locate the prompts directory (PLAN section 17).
+    """Locate the prompts directory.
 
     Order: explicit ``PROMPTS_DIR``, the ``prompts/`` directory next to
     ``WORKSPACE_ROOT`` (the engine checkout when the workspaces live in
@@ -116,7 +116,7 @@ def select_fix_context(
     author_names: Mapping[int, str] | None = None,
     max_human_comments: int = MAX_LATER_HUMAN_COMMENTS,
 ) -> FixContext:
-    """Select the comments a fix pass needs (PLAN section 10).
+    """Select the comments a fix pass needs.
 
     * ``feedback``: the latest comment authored by the reviewer user.
     * ``later_human_comments``: comments authored by humans (not an agent user
@@ -149,7 +149,7 @@ def select_fix_context(
 
     feedback_comment = comments[feedback_index]
     human_comments: list[PromptComment] = []
-    for comment in comments[feedback_index + 1 :]:
+    for comment in comments[feedback_index + 1:]:
         if comment.author_id is None:
             continue
         if comment.author_id in agent_user_ids or comment.author_id == engine_user_id:

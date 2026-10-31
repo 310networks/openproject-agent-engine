@@ -1,4 +1,4 @@
-"""Outcome verification for implementer, fix and reviewer runs (PLAN section 4).
+"""Outcome verification for implementer, fix and reviewer runs.
 
 Implement and fix runs (M6):
 
@@ -113,7 +113,7 @@ def decide_implementer_outcome(
     result_line: str | None,
     pr_found: bool,
 ) -> OutcomeDecision:
-    """Apply the PLAN section 4 rules for implement/fix runs.
+    """Apply the rules for implement/fix runs.
 
     Order matters:
 
@@ -157,7 +157,7 @@ def decide_reviewer_outcome(
     pr_merged: bool,
     rejection_comment_found: bool,
 ) -> OutcomeDecision:
-    """Apply the PLAN section 4 rules for review runs.
+    """Apply the rules for review runs.
 
     External verification is authoritative: a merged PR means approval even
     when the agent exited non-zero (it may have been killed right after the

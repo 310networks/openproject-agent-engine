@@ -1,4 +1,4 @@
-"""Table-driven tests for every eligibility rule (PLAN section 8)."""
+"""Table-driven tests for every eligibility rule."""
 
 from __future__ import annotations
 
@@ -33,6 +33,7 @@ async def make_ctx(
     *,
     config: WorkflowConfig | None = None,
     max_concurrent_runs: int = 2,
+    max_runs_per_agent: int = 1,
 ) -> Any:
     fake = make_fake()
     cfg = config or config_with()
@@ -42,7 +43,11 @@ async def make_ctx(
     finally:
         await client.aclose()
     return build_eligibility_context(
-        cfg, resolution, priority_position={}, max_concurrent_runs=max_concurrent_runs
+        cfg,
+        resolution,
+        priority_position={},
+        max_concurrent_runs=max_concurrent_runs,
+        max_runs_per_agent=max_runs_per_agent,
     )
 
 
@@ -266,12 +271,27 @@ CASES: list[dict[str, Any]] = [
         "eligible": False,
         "reason": "already has an active run",
     },
-    # Rule 8: target agent has no active run.
+    # Rule 8: target agent has a free run slot.
     {
         "id": "rule8_active_run_for_agent",
-        "external": {"active_run_agent_keys": frozenset({"IMPL"})},
+        "external": {"active_run_counts_by_agent": {"IMPL": 1}},
         "eligible": False,
         "reason": "agent 'IMPL' already has an active run",
+    },
+    {
+        "id": "rule8_second_run_allowed_by_per_agent_limit",
+        "external": {"active_run_counts_by_agent": {"IMPL": 1}},
+        "max_runs_per_agent": 2,
+        "eligible": True,
+        "agent_key": "IMPL",
+        "status_key": "new",
+    },
+    {
+        "id": "rule8_per_agent_limit_reached",
+        "external": {"active_run_counts_by_agent": {"IMPL": 2}},
+        "max_runs_per_agent": 2,
+        "eligible": False,
+        "reason": "agent 'IMPL' already has 2 active runs",
     },
     # Rule 9: global slot available.
     {
@@ -295,6 +315,7 @@ async def test_eligibility_rule(case: dict[str, Any]) -> None:
     ctx = await make_ctx(
         config=case.get("config"),
         max_concurrent_runs=case.get("max_concurrent_runs", 2),
+        max_runs_per_agent=case.get("max_runs_per_agent", 1),
     )
     if case.get("ctx_overrides"):
         ctx = replace(ctx, **case["ctx_overrides"])

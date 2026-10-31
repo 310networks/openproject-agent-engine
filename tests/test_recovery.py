@@ -1,4 +1,4 @@
-"""Tests for startup crash recovery (PLAN section 13, milestone M7)."""
+"""Tests for startup crash recovery."""
 
 from __future__ import annotations
 

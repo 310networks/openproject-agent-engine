@@ -1,4 +1,4 @@
-"""Tests for the SQLite run store and the engine lock (PLAN section 12)."""
+"""Tests for the SQLite run store and the engine lock."""
 
 from __future__ import annotations
 
@@ -87,10 +87,13 @@ def test_double_claim_same_work_package_raises(store: Store) -> None:
         begin(store, work_package_id=100, agent="REVIEWER")
 
 
-def test_second_active_run_for_same_agent_raises(store: Store) -> None:
+def test_second_active_run_for_same_agent_is_allowed(store: Store) -> None:
+    # The scheduler enforces MAX_RUNS_PER_AGENT; the store only guards the work
+    # package, so a configurable per-agent limit can exceed one.
     begin(store, work_package_id=100, agent="IMPL")
-    with pytest.raises(ClaimConflictError):
-        begin(store, work_package_id=200, agent="IMPL")
+    begin(store, work_package_id=200, agent="IMPL")
+
+    assert store.active_run_counts_by_agent() == {"IMPL": 2}
 
 
 def test_conflict_does_not_leave_a_row(store: Store) -> None:
@@ -192,7 +195,7 @@ def test_active_queries(store: Store) -> None:
 
     assert store.active_run_count() == 2
     assert store.active_work_package_ids() == frozenset({100, 200})
-    assert store.active_agent_keys() == frozenset({"IMPL", "REVIEWER"})
+    assert store.active_run_counts_by_agent() == {"IMPL": 1, "REVIEWER": 1}
     active = store.active_runs()
     assert [run.work_package_id for run in active] == [100, 200]
 

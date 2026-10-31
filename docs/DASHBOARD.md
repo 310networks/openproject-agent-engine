@@ -18,7 +18,7 @@ glance:
 
 The `dashboard` compose service runs it, so `docker compose up -d` serves the
 dashboard at <http://127.0.0.1:8765> with no extra step. It reads the same
-`config/` and the same volumes as the engine:
+`.env` and the same volumes as the engine:
 
 ```bash
 docker compose up -d dashboard

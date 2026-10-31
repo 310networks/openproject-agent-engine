@@ -1,0 +1,250 @@
+# Current state
+
+What the repository contains today. This replaces the old `PLAN.md` design
+document: it describes the implemented system, not a roadmap.
+
+- **Version:** `0.2.0` (`pyproject.toml`, `docker/version.json`).
+- **Package:** `op_agent_engine` (Python 3.12), installed into a container image
+  and published as `kookster310/op-agent-engine`.
+- **Deployment:** Docker Compose only. Nothing is built or installed on the
+  host, and nothing is mounted from the host.
+- **Configuration:** environment variables only (`docker/.env`). There is no
+  workflow YAML and no agent config/auth file to mount.
+- **Instance model:** one engine process against one OpenProject project and
+  one GitHub repository. A file lock (`DATA_DIR/engine.lock`) keeps it
+  single-instance.
+
+## Runtime topology
+
+`docker/docker-compose.yml` starts the long-lived and one-shot services from
+the same image:
+
+| Service | Command | Purpose |
+|---|---|---|
+| `engine` | `run` | poll, claim, execute and verify runs |
+| `dashboard` | `dashboard` | read-only web UI on port 8765 |
+| `cleanup` | `cleanup` | retention sweep, run from host cron |
+| `provision` | `provision --apply --json` | create/reconcile OpenProject users |
+| `check-config` | `check-config` | validate the environment and resolve IDs |
+
+Named volumes hold all mutable state; there are no bind mounts:
+
+| Volume | Mount | Contents |
+|---|---|---|
+| `agent-workspace` | `/home/agent/agents` | `AGENTS.md` standards, one clone per agent, per-run worktrees when enabled |
+| `engine-data` | `/home/agent/.local/share/op-agent-engine` | SQLite store, `runs/<id>/`, heartbeat, pause flag, engine lock |
+| `pi-agent` | `/home/agent/.pi/agent` | pi sessions, logs, model cache, downloaded tools |
+| `opencode-data` | `/home/agent/.local/share/opencode` | opencode sessions and history |
+
+`docker/entrypoint.sh` validates the required variables, creates the state
+directories, writes the agents' git identity from `GIT_AUTHOR_NAME` /
+`GIT_AUTHOR_EMAIL`, and execs the engine. Provider credentials are environment
+variables; no credential file is seeded.
+
+## Control flow
+
+One loop iteration:
+
+1. **Resolve** the workflow against OpenProject (statuses, `AGENT` field,
+   users, types, projects). Resolution is cached for the process.
+2. **Poll** (`poller.py`): list candidate work packages by dispatch priority,
+   then apply the eligibility rules. Cheap rules run first; blockers and
+   children are fetched only when they can change the decision.
+3. **Schedule** (`scheduler.py`): re-check the slot rules against the store,
+   then claim work packages with an optimistic-locking `PATCH` (status,
+   assignee, `lockVersion`). A claim inserts a `runs` row first; a database
+   conflict means another claimant won.
+4. **Dispatch** (`dispatcher.py`): prepare the workspace, render the prompt,
+   run the agent CLI, verify the outcome externally, apply the status
+   transition and engine comment, and write the run record.
+5. **Recover/retain**: failed runs feed the crash-retry counter; `recovery.py`
+   marks stale running rows interrupted on startup; `cleanup` removes run
+   directories older than `RUN_RETENTION_DAYS`.
+
+The poller is read-only; only the scheduler writes claims; only the dispatcher
+writes outcomes and OpenProject transitions. Agents never change status.
+
+## Ticket flow
+
+| Observed state | Engine action | Run kind | Verified outcome | Transition |
+|---|---|---|---|---|
+| `New`, eligible, `AGENT` set | claim, `In Progress` | implement | open PR | `Ready for Review` |
+| implement run reports `BLOCKED` | claim, `In Progress` | implement/fix | — | `On Hold` + comment |
+| `Ready for Review`, open PR | claim, `In Testing` | review | PR merged | `Closed` |
+| `Ready for Review`, open PR | claim, `In Testing` | review | `REJECTED` + reviewer comment | `Rejected` |
+| `Ready for Review`, no PR | — | — | — | `On Hold` + comment |
+| `Rejected`, eligible | claim, `In Progress` | fix | open PR | `Ready for Review` |
+
+`On Hold` is terminal until a human moves the ticket. Branch names are
+`op-<projectId>-<workPackageId>`; every engine comment starts with `ENGINE:`.
+
+A rejection accepted past `MAX_REJECTIONS` moves the ticket to `On Hold` with a
+summary comment instead of `Rejected`. A run that keeps failing increments the
+crash counter; past `MAX_CRASH_RETRIES` the ticket moves to `On Hold` with the
+log tail in an escalation comment. An existing open PR is authoritative for
+implement/fix runs (no retry), and a merged PR is authoritative for reviews.
+
+## Concurrency
+
+Three independent limits apply:
+
+| Limit | Variable | Default | Enforced by |
+|---|---|---|---|
+| one run per work package | — | always | unique partial index in SQLite |
+| runs per agent | `MAX_RUNS_PER_AGENT` | `1` | scheduler (and eligibility) |
+| runs in total | `MAX_CONCURRENT_RUNS` | `1` | scheduler and eligibility |
+
+With `MAX_RUNS_PER_AGENT > 1`, each run gets its own git worktree under the
+agent workspace (`worktrees/<branch>`); the agent's shared clone stays
+detached. Workspace preparation is serialized per agent, and the worktree is
+removed after the agent exits. With the default of 1, the agent's clone is
+checked out directly.
+
+## Agents and runners
+
+The team is fixed in code and in the image (`agents/*/AGENTS.md`):
+
+| `AGENT` option | OpenProject login | Kind | Token variable |
+|---|---|---|---|
+| `FRONTEND` | `frontendEngineer` | implementer | `OP_TOKEN_FRONTEND` |
+| `BACKEND` | `backendEngineer` | implementer | `OP_TOKEN_BACKEND` |
+| `LEAD_DESIGNER` | `leadDesigner` | implementer | `OP_TOKEN_DESIGNER` |
+| `REVIEWER` | `codeReviewer` | reviewer | `OP_TOKEN_REVIEWER` |
+
+`AGENT` selects the CLI for every agent:
+
+- `pi -p --approve --no-extensions --no-context-files --no-session --model ...`
+- `opencode run --auto --model ... --file ...`
+
+`AGENT_MODEL` is optional. The runner forwards the agent's OpenProject CLI
+credentials plus a fixed allowlist of provider/GitHub environment variables
+(`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GH_TOKEN`, ...); see
+[CONFIG.md](CONFIG.md#provider-credentials). The engine's own tokens are not
+forwarded.
+
+Agent results are read from the last `RESULT:` line of the log
+(`BLOCKED ...`, `REJECTED ...`, or a successful completion). The prompt
+templates live in `prompts/` and are rendered per run.
+
+## Configuration
+
+Everything is an environment variable; `docker/provision-users.sh` writes the
+required ones to `docker/.env` and the documented template is
+`docker/.env.example`. The full reference, including provider variables,
+object names, limits and compose-only settings, is [CONFIG.md](CONFIG.md).
+
+Required values: `OP_BASE_URL`, `OP_PROJECT`, `GITHUB_REPO`, `OP_ENGINE_TOKEN`,
+`AGENT`, the four `OP_TOKEN_*` agent tokens, and one model provider key.
+`OP_PROVISION_TOKEN` is an administrator token used only for provisioning; the
+setup script asks for it and does not store it, and `verify-token` uses a
+transient `OP_VERIFY_TOKEN`.
+
+The image sets container paths (`WORKSPACE_ROOT`, `DATA_DIR`, `PROMPTS_DIR`)
+and the dashboard bind address, so a normal `.env` holds only deployment
+values, credentials and deliberate tuning.
+
+## Provisioning and tokens
+
+`docker/provision-users.sh` is the supported setup path:
+
+1. prompts for the OpenProject URL, project, repository and branch;
+2. asks for an OpenProject administrator token (used once, never written);
+3. runs `provision --apply --json --passwords` in the container, which creates
+   or reconciles the engine user, the four agent users and the `Agent Worker`
+   role/memberships, and shows each new password;
+4. prompts for one token per account and verifies it with
+   `verify-token --login ...` (the engine token is also checked for admin);
+5. writes `docker/.env` (mode `0600`) and runs `check-config`.
+
+The engine user must be an OpenProject administrator; the agent users only get
+the project-scoped `Agent Worker` role. Re-running the script is safe and is the
+supported way to fix a wrong token (`--reprompt-tokens`).
+
+## State and artifacts
+
+`DATA_DIR` (volume `engine-data`) contains:
+
+- `engine.sqlite3` — `runs` and `crash_counts` tables;
+- `runs/<id>/` — `prompt.txt`, `stdout.log`, `stderr.log`, `meta.json`;
+- `heartbeat` — last completed poll timestamp (dashboard staleness);
+- `engine.paused` — present means no new claims;
+- `engine.lock` — single-instance `flock`.
+
+`meta.json` records the run identity, argv, cwd, redacted env, state, outcome,
+transition, PR URL and timings. The store keeps run history after the
+artifacts are cleaned up; `cleanup` only removes old run directories.
+
+Crash recovery kills leftover process groups (using PID + start-time identity
+to survive PID reuse), marks their runs interrupted, and lets the normal
+retry/eligibility path decide what happens next.
+
+## Dashboard
+
+The `dashboard` service reads the store and run metadata without writing. It
+serves a read-only page at `/`, a JSON snapshot at `/api/status`, and
+`/healthz`. It has no
+authentication: compose publishes it on `127.0.0.1` only. See
+[DASHBOARD.md](DASHBOARD.md).
+
+## CLI
+
+| Command | Purpose |
+|---|---|
+| `run` | start the engine loop |
+| `once` | one poll, claim and execute pass |
+| `dry-run` | one poll and log the plan without writing |
+| `check-config` | validate the environment and resolve OpenProject IDs |
+| `status` | heartbeat, active runs, recent runs |
+| `dashboard` | serve the read-only UI |
+| `provision` | create/reconcile users and memberships |
+| `verify-token` | check `OP_VERIFY_TOKEN` via `/api/v3/users/me` |
+| `cleanup` | retention sweep |
+
+All commands read the same environment; there is no `--config` option.
+`--log-level` is accepted before or after the subcommand.
+
+## Repository map
+
+| Path | Contents |
+|---|---|
+| `src/op_agent_engine/config.py` | `EngineSettings`, the fixed team, workflow construction from env |
+| `src/op_agent_engine/engine.py` | loop, heartbeat, pause, signal handling |
+| `src/op_agent_engine/poller.py`, `eligibility.py` | candidate fetch and dispatch rules |
+| `src/op_agent_engine/scheduler.py` | slot rules, claim protocol |
+| `src/op_agent_engine/dispatcher.py` | workspace, prompt, run, verify, transition, record |
+| `src/op_agent_engine/runners/` | generic command runner and process supervision |
+| `src/op_agent_engine/workspace.py` | clone/fetch, checkout or worktree, cleanup |
+| `src/op_agent_engine/outcomes.py` | implementer/reviewer result verification |
+| `src/op_agent_engine/store.py` | SQLite run store and engine lock |
+| `src/op_agent_engine/recovery.py` | startup crash recovery |
+| `src/op_agent_engine/retention.py` | run-directory cleanup |
+| `src/op_agent_engine/openproject/` | API client, resolution, activities, work packages |
+| `src/op_agent_engine/provision.py` | user/role reconciliation |
+| `src/op_agent_engine/dashboard.py`, `dashboard_assets/` | read-only UI |
+| `prompts/` | prompt templates |
+| `agents/` | the engineering standard per agent workspace |
+| `docker/` | image, compose file, entrypoint and setup script |
+| `docs/` | configuration, deployment, setup, runbook, dashboard, acceptance, verification |
+
+## Tests and release
+
+- `pytest` covers eligibility tables, scheduler/slot rules, the claim protocol,
+  dispatcher outcomes, workspace preparation (including per-agent worktrees),
+  store/recovery/retention, the CLI, dashboard, provisioning and Docker
+  packaging. The end-to-end test drives a fake agent through a full ticket
+  cycle with fake OpenProject and GitHub backends.
+- `.github/workflows/docker.yml` runs the suite and publishes the image when
+  image inputs change. `docker/version.json` must equal the package version;
+  `tests/test_docker.py` enforces that.
+- Releases bump both version files, tag `vX.Y.Z`, and push; the workflow refuses
+  a tag that disagrees with `docker/version.json`.
+
+## Known limits
+
+- One OpenProject project and one GitHub repository per deployment.
+- The team is fixed; adding a member is a code change, not configuration.
+- opencode is opt-in at image build time (`INSTALL_OPENCODE=true`).
+- The dashboard has no authentication and no write actions.
+- Agents can run in parallel only with per-run worktrees; the default per-agent
+  limit is 1.
+- A single engine instance is assumed; the lock prevents a second one.

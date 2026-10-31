@@ -1,4 +1,4 @@
-"""Tests for outcome verification (PLAN sections 4 and 10)."""
+"""Tests for outcome verification."""
 
 from pathlib import Path
 
@@ -131,7 +131,7 @@ def test_review_merged_pr_is_approved() -> None:
 
 
 def test_review_merged_pr_wins_over_a_bad_exit_code() -> None:
-    """External verification is authoritative (PLAN section 4)."""
+    """External verification is authoritative."""
     decision = decide_reviewer_outcome(
         exit_code=-9,
         timed_out=True,

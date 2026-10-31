@@ -3,12 +3,12 @@
 For each item in the :class:`~op_agent_engine.poller.DispatchPlan` (already
 ordered by dispatch priority) the scheduler re-checks the slot rules against
 the store — the source of truth for active runs — and then claims the work
-package (PLAN section 9):
+package:
 
-1. Insert a ``runs`` row with state ``running``. The unique partial indexes
-   make double-claiming a work package or a second run for the same agent
-   impossible; a failed insert means someone else won and the item is
-   skipped.
+1. Insert a ``runs`` row with state ``running``. A unique partial index makes
+   double-claiming a work package impossible; a failed insert means someone
+   else won and the item is skipped. The per-agent limit is checked before
+   the insert (``MAX_RUNS_PER_AGENT``).
 2. Patch the OpenProject work package: status to ``In Progress`` (implement
    and fix) or ``In Testing`` (review) and assignee to the agent user, using
    the candidate's ``lockVersion``.
@@ -42,9 +42,8 @@ from op_agent_engine.store import Store
 
 logger = get_logger(__name__)
 
-# Run kind per candidate status (PLAN section 12: implement | fix | resume |
-# review). In Progress and In Testing are the crash-recovery candidates of
-# PLAN section 13.
+# Run kind per candidate status: implement, fix, resume or review.
+# In Progress and In Testing are the crash-recovery candidates.
 KIND_BY_STATUS_KEY = {
     "new": "implement",
     "rejected": "fix",
@@ -125,12 +124,14 @@ class Scheduler:
         store: Store,
         *,
         max_concurrent_runs: int,
+        max_runs_per_agent: int = 1,
     ) -> None:
         self._client = client
         self._config = config
         self._resolution = resolution
         self._store = store
         self._max_concurrent_runs = max_concurrent_runs
+        self._max_runs_per_agent = max_runs_per_agent
 
     async def schedule(
         self, plan: DispatchPlan, *, dry_run: bool = False
@@ -143,11 +144,11 @@ class Scheduler:
         claimed: list[ClaimedRun] = []
         skipped: list[SkippedItem] = []
         active_work_packages = self._store.active_work_package_ids()
-        active_agents = self._store.active_agent_keys()
+        active_by_agent = self._store.active_run_counts_by_agent()
         active_count = self._store.active_run_count()
         for item in plan.items:
             blocker = self._slot_blocker(
-                item, active_work_packages, active_agents, active_count
+                item, active_work_packages, active_by_agent, active_count
             )
             if blocker is not None:
                 skipped.append(SkippedItem(item, blocker))
@@ -192,13 +193,17 @@ class Scheduler:
                 )
                 # Simulate the slot consumption so later items see it.
                 active_work_packages = active_work_packages | {item.work_package.id}
-                active_agents = active_agents | {item.agent_key}
+                active_by_agent[item.agent_key] = (
+                    active_by_agent.get(item.agent_key, 0) + 1
+                )
                 active_count += 1
                 continue
             try:
                 claimed.append(await self._claim(item))
                 active_work_packages = active_work_packages | {item.work_package.id}
-                active_agents = active_agents | {item.agent_key}
+                active_by_agent[item.agent_key] = (
+                    active_by_agent.get(item.agent_key, 0) + 1
+                )
                 active_count += 1
             except ClaimError as error:
                 skipped.append(SkippedItem(item, str(error)))
@@ -228,13 +233,18 @@ class Scheduler:
         self,
         item: DispatchItem,
         active_work_packages: frozenset[int],
-        active_agents: frozenset[str],
+        active_by_agent: dict[str, int],
         active_count: int,
     ) -> str | None:
         if item.work_package.id in active_work_packages:
             return "work package already has an active run"
-        if item.agent_key in active_agents:
-            return f"agent '{item.agent_key}' already has an active run"
+        if active_by_agent.get(item.agent_key, 0) >= self._max_runs_per_agent:
+            if self._max_runs_per_agent == 1:
+                return f"agent '{item.agent_key}' already has an active run"
+            return (
+                f"agent '{item.agent_key}' already has "
+                f"{self._max_runs_per_agent} active runs"
+            )
         if active_count >= self._max_concurrent_runs:
             return "no global run slot available"
         return None
@@ -335,7 +345,7 @@ class Scheduler:
         *,
         expected_status_id: int,
     ) -> None:
-        """PATCH status + assignee with optimistic locking (PLAN section 9).
+        """PATCH status + assignee with optimistic locking.
 
         On HTTP 409 the work package is re-read: if its status is no longer
         ``expected_status_id`` the claim is aborted, otherwise the patch is

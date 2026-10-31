@@ -187,8 +187,6 @@ prompt_token() {
 
 # --- main -------------------------------------------------------------------
 
-mkdir -p "${deploy_dir}/config"
-
 image=$(docker compose config --images 2>/dev/null | head -n 1 || true)
 if [ -n "${image:-}" ] && ! docker image inspect "$image" >/dev/null 2>&1; then
   say "pulling $image"
@@ -320,5 +318,6 @@ if ! compose_run engine check-config; then
 fi
 
 step 7 "Next"
+info "set the model provider key in .env (e.g. ANTHROPIC_API_KEY=...)"
 info "start the engine: docker compose up -d"
 info "follow it with:    docker compose logs -f engine"

@@ -9,11 +9,10 @@
 #   docker build -f docker/Dockerfile -t kookster310/op-agent-engine:latest .
 # (published by CI only -- users pull).
 #
-# User configuration is *copied* into ./config by config-sync.sh and
-# mounted read-only at /config. Nothing from the host is mounted directly,
-# which is what keeps UID/GID and $HOME out of the picture: every path in here
-# belongs to the image's own user, and the files in ./config are readable
-# copies. See docs/DOCKER.md.
+# Nothing from the host is mounted. Deployment settings and provider keys are
+# environment variables in docker/.env; everything the container writes lives in
+# named volumes. That keeps UID/GID and $HOME out of the picture. See
+# docs/DOCKER.md.
 
 # --- OpenProject CLI (agents call `op` during a run) ------------------------
 # Built from source: the released binary (v0.5.5) predates the `op

@@ -1,4 +1,4 @@
-"""Crash recovery helpers (PLAN section 13).
+"""Crash recovery helpers.
 
 On startup every ``running`` row is marked ``interrupted``. Before that, the
 process group recorded for each such run is terminated so a hard engine crash
@@ -7,7 +7,7 @@ identity recorded at launch: if the PID now belongs to a different process
 (PID reuse after a reboot or a long downtime) it is left alone.
 
 The ``interrupted`` state never increments the crash counter; only a run that
-actually failed or timed out does (PLAN section 13).
+actually failed or timed out does.
 """
 
 from __future__ import annotations

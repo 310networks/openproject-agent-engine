@@ -83,9 +83,9 @@ add one cron entry on the host:
 
 - Ticket and PR content is untrusted input; the engine never executes it.
 - Agents run as the image's own unprivileged user (`uid 10001`), never as the
-  host user; the container mounts only `config/` (read-only) and named volumes.
+  host user; nothing is mounted from the host, only named volumes.
 - If branch protection is enabled later, give the reviewer a dedicated
   `GH_TOKEN`; otherwise the reviewer's merge is blocked by its own review.
 - `OP_*`/`GH_TOKEN` values are redacted to `***` in logs and `meta.json`.
-  Keep `docker/.env` at mode `0600`; every file in `config/` must be
-  world-readable, because the container's own user reads it.
+  Keep `docker/.env` at mode `0600`; it is read by compose on the host and is
+  never mounted.

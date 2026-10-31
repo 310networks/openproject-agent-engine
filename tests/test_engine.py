@@ -1,4 +1,4 @@
-"""Integration tests for the engine loop (PLAN section 3, milestones M4/M5).
+"""Integration tests for the engine loop.
 
 The engine runs against the fake OpenProject with a real store and a
 dispatcher whose runner is a fake (no process is spawned) and whose

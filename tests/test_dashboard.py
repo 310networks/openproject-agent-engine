@@ -61,6 +61,7 @@ def _settings(data_dir: Path) -> EngineSettings:
         op_base_url="https://openproject.example",
         poll_interval_seconds=60,
         max_concurrent_runs=2,
+        max_runs_per_agent=3,
     )
 
 
@@ -146,6 +147,7 @@ def test_snapshot_engine_status(snapshot: tuple[dict[str, Any], Path]) -> None:
     assert engine["heartbeat_age_seconds"] is not None
     assert engine["active_runs"] == 1
     assert engine["max_concurrent_runs"] == 2
+    assert engine["max_runs_per_agent"] == 3
 
 
 def test_snapshot_counts(snapshot: tuple[dict[str, Any], Path]) -> None:
@@ -382,7 +384,7 @@ def test_cli_dashboard_uses_env_port(
     monkeypatch.setenv("DASHBOARD_HOST", "127.0.0.1")
 
     assert cli.main(["dashboard"]) == 0
-    # ``None`` lets EngineSettings supply the value from .env.
+    # ``None`` lets EngineSettings supply the value from.env.
     assert captured == {"host": None, "port": 9333}
 
 

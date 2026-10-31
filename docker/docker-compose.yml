@@ -9,12 +9,12 @@
 #   docker compose pull && docker compose up -d
 #   docker compose logs -f engine
 #
-# Nothing from the host is mounted except ./config (read-only), which holds the
-# agent CLI credentials and skills. Runtime state lives in named volumes, so the
+# Nothing is mounted from the host: provider credentials and settings are
+# environment variables in .env, and all state lives in named volumes, so the
 # container user never has to match a host UID and the whole directory can be
 # copied to another machine as-is.
 #
-#   OP_AGENT_ENGINE_TAG=0.1.0 docker compose up -d    # pin a version,
+#   OP_AGENT_ENGINE_TAG=0.2.0 docker compose up -d    # pin a version,
 #                                                    # default is `latest`
 #
 # The image itself is built and published by .github/workflows/docker.yml;
@@ -32,16 +32,13 @@ x-engine: &engine
     - path: .env
       required: false
   volumes:
-    # Agent CLI credentials, settings and skills. Read-only; the entrypoint
-    # copies from here into the writable volumes below on every start.
-    - ./config:/config:ro
-    # pi state: auth, settings, skills, model cache, sessions, downloaded tools.
+    # pi state: model cache, sessions, logs, downloaded tools.
     - pi-agent:/home/agent/.pi/agent
     # Engine state: SQLite store, run directories, heartbeat, engine lock.
     - engine-data:/home/agent/.local/share/op-agent-engine
     # Agent workspaces: AGENTS.md (seeded from the image) plus the git clones.
     - agent-workspace:/home/agent/agents
-    # opencode state (credentials, sessions), only used when the image is built
+    # opencode state (sessions, history), only used when the image is built
     # with INSTALL_OPENCODE=true. Empty and unused otherwise.
     - opencode-data:/home/agent/.local/share/opencode
   restart: unless-stopped

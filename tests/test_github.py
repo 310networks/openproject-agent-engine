@@ -1,4 +1,4 @@
-"""Tests for the GitHub lookup via the ``gh`` CLI (PLAN section 16)."""
+"""Tests for the GitHub lookup via the ``gh`` CLI."""
 
 import json
 import stat

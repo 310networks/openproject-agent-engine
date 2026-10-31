@@ -7,7 +7,7 @@ extracts the agent's final ``RESULT:`` line from the tail of stdout.
 
 Killing the process group is what makes the timeout reliable: agent CLIs
 spawn their own children (shells, compilers, git), and all of them must die
-with the run (PLAN section 4: "timeouts kill the process group").
+with the run.
 """
 
 from __future__ import annotations
@@ -151,7 +151,7 @@ async def run_command(
     started_at = time.monotonic()
     if on_spawned is not None:
         # The process start identity (boot id + starttime ticks) makes later
-        # cleanup PID-reuse safe (PLAN section 13). Fall back to a timestamp
+        # cleanup PID-reuse safe. Fall back to a timestamp
         # on platforms without /proc; recovery then refuses to kill the PID.
         identity = process_start_identity(process.pid) or datetime.now(UTC).isoformat()
         on_spawned(process.pid, process.pid, identity)
@@ -191,7 +191,7 @@ async def run_command(
         except asyncio.CancelledError:
             # Graceful shutdown exceeded or the engine is stopping: terminate
             # the whole group and re-raise so the engine marks the run
-            # interrupted (PLAN section 13).
+            # interrupted.
             logger.warning(
                 "run cancelled; sending SIGTERM to process group %d",
                 process.pid,

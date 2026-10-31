@@ -788,6 +788,7 @@ class EngineSettings(BaseSettings):
 
     poll_interval_seconds: int = Field(default=60, gt=0)
     max_concurrent_runs: int = Field(default=1, gt=0)
+    max_runs_per_agent: int = Field(default=1, gt=0)
     max_rejections: int = Field(default=3, ge=0)
     max_crash_retries: int = Field(default=2, ge=0)
     run_timeout_seconds: int = Field(default=3600, gt=0)

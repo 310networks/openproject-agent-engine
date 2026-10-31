@@ -1,4 +1,4 @@
-"""Workspace preparation (PLAN section 11).
+"""Workspace preparation.
 
 Each agent has a workspace under ``WORKSPACE_ROOT``:
 
@@ -8,19 +8,24 @@ Each agent has a workspace under ``WORKSPACE_ROOT``:
 
 Branch naming: ``op-<projectId>-<workPackageId>``.
 
+The engine keeps one clone per agent. When ``MAX_RUNS_PER_AGENT`` allows more
+than one run at a time, each run gets its own git worktree under
+``worktrees/<branch>`` instead of sharing the clone's checkout; the scheduler
+still allows only one run per work package.
+
 Checkout rules:
 
-* implementer: if ``origin/<branch>`` exists, check it out (``git checkout
-  -B <branch> origin/<branch>``); otherwise create it from
-  ``origin/<default_branch>``.
-* reviewer: check out ``origin/<branch>`` read-only; if it does not exist
-  the run cannot start (no PR to review).
+* implementer: if ``origin/<branch>`` exists, check it out; otherwise create it
+  from ``origin/<default_branch>``.
+* reviewer: check out ``origin/<branch>`` read-only; if it does not exist the
+  run cannot start (no PR to review).
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -54,6 +59,8 @@ class Workspace:
     repo_dir: Path
     branch: str
     standard_path: Path
+    #: The agent's shared clone; set when ``repo_dir`` is a git worktree.
+    base_repo_dir: Path | None = None
 
 
 def clone_url_for(github_repo: str, gh_token: str | None = None) -> str:
@@ -122,6 +129,7 @@ async def prepare_workspace(
     role: str,
     gh_token: str | None = None,
     clone_url: str | None = None,
+    use_worktree: bool = False,
 ) -> Workspace:
     """Clone/fetch the repository and check out the run branch.
 
@@ -173,19 +181,64 @@ async def prepare_workspace(
                     f"(repository {github_repo})"
                 )
             base = f"origin/{default_branch}"
-        await run_git(["checkout", "--quiet", "-B", branch, base], cwd=repo_dir)
     elif role == "reviewer":
         if not remote_branch_exists:
             raise WorkspaceError(
                 f"no remote branch origin/{branch} to review (repository "
                 f"{github_repo})"
             )
-        await run_git(
-            ["checkout", "--quiet", "-B", branch, f"origin/{branch}"], cwd=repo_dir
-        )
+        base = f"origin/{branch}"
     else:
         raise WorkspaceError(f"unknown agent kind {role!r}")
 
+    if use_worktree:
+        # A run may share the agent with another run. Give it its own working
+        # tree so the two checkouts (and the agents' edits) cannot collide.
+        # The shared clone stays detached so every run branch is free to use.
+        worktree_dir = workspace_dir / "worktrees" / branch
+        await run_git(["worktree", "prune"], cwd=repo_dir)
+        if worktree_dir.exists():
+            with contextlib.suppress(GitError):
+                await run_git(
+                    ["worktree", "remove", "--force", str(worktree_dir)],
+                    cwd=repo_dir,
+                )
+            if worktree_dir.exists():
+                shutil.rmtree(worktree_dir, ignore_errors=True)
+            await run_git(["worktree", "prune"], cwd=repo_dir)
+        if not await _head_is_detached(repo_dir):
+            await run_git(
+                ["checkout", "--quiet", "--detach", base],
+                cwd=repo_dir,
+            )
+        worktree_dir.parent.mkdir(parents=True, exist_ok=True)
+        await run_git(
+            [
+                "worktree",
+                "add",
+                "--force",
+                "-B",
+                branch,
+                str(worktree_dir),
+                base,
+            ],
+            cwd=repo_dir,
+        )
+        logger.info(
+            "workspace ready: %s on branch %s (worktree of %s)",
+            worktree_dir,
+            branch,
+            repo_dir,
+            extra={"repo_dir": str(worktree_dir), "branch": branch},
+        )
+        return Workspace(
+            repo_dir=worktree_dir,
+            branch=branch,
+            standard_path=standard_path,
+            base_repo_dir=repo_dir,
+        )
+
+    await run_git(["checkout", "--quiet", "-B", branch, base], cwd=repo_dir)
     logger.info(
         "workspace ready: %s on branch %s",
         repo_dir,
@@ -193,3 +246,26 @@ async def prepare_workspace(
         extra={"repo_dir": str(repo_dir), "branch": branch},
     )
     return Workspace(repo_dir=repo_dir, branch=branch, standard_path=standard_path)
+
+
+async def _head_is_detached(repo_dir: Path) -> bool:
+    try:
+        await run_git(["symbolic-ref", "--quiet", "HEAD"], cwd=repo_dir)
+    except GitError:
+        return True
+    return False
+
+
+async def cleanup_workspace(workspace: Workspace) -> None:
+    """Remove a per-run worktree; a shared clone is left alone."""
+    if workspace.base_repo_dir is None:
+        return
+    with contextlib.suppress(GitError):
+        await run_git(
+            ["worktree", "remove", "--force", str(workspace.repo_dir)],
+            cwd=workspace.base_repo_dir,
+        )
+    if workspace.repo_dir.exists():
+        shutil.rmtree(workspace.repo_dir, ignore_errors=True)
+    with contextlib.suppress(GitError):
+        await run_git(["worktree", "prune"], cwd=workspace.base_repo_dir)

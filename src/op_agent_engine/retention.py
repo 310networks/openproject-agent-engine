@@ -1,4 +1,4 @@
-"""Run-directory retention (PLAN section 16).
+"""Run-directory retention.
 
 Each run writes its artifacts to ``DATA_DIR/runs/<runId>/`` (``prompt.txt``,
 ``stdout.log``, ``stderr.log`` and ``meta.json``). The retention job removes

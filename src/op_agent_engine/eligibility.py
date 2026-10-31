@@ -1,4 +1,4 @@
-"""Eligibility rules for dispatching work packages (PLAN section 8).
+"""Eligibility rules for dispatching work packages.
 
 Each rule is evaluated in order; the first failure short-circuits with a
 reason. Rules that depend on data the poller must fetch (blockers, children)
@@ -8,7 +8,7 @@ arguments so the rules stay pure and table-testable.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from op_agent_engine.config import WorkflowConfig
@@ -17,7 +17,7 @@ from op_agent_engine.openproject.workpackage import WorkPackage
 
 # Statuses the engine may dispatch. The recovery statuses are only eligible
 # when the work package is already assigned to the matching agent user and has
-# no active run (PLAN sections 8 and 13).
+# no active run.
 DISPATCH_STATUS_KEYS = frozenset(
     {"new", "rejected", "ready_for_review", "in_progress", "in_testing"}
 )
@@ -42,6 +42,7 @@ class EligibilityContext:
     priority_position: dict[int, int]
     max_concurrent_runs: int
     agent_project_ids: dict[str, frozenset[int]]
+    max_runs_per_agent: int = 1
 
 
 def build_eligibility_context(
@@ -50,6 +51,7 @@ def build_eligibility_context(
     *,
     priority_position: dict[int, int],
     max_concurrent_runs: int,
+    max_runs_per_agent: int = 1,
 ) -> EligibilityContext:
     enabled_project_ids = frozenset(
         resolution.projects[project.identifier].id
@@ -124,6 +126,7 @@ def build_eligibility_context(
         priority_position=priority_position,
         max_concurrent_runs=max_concurrent_runs,
         agent_project_ids=agent_project_ids,
+        max_runs_per_agent=max_runs_per_agent,
     )
 
 
@@ -143,10 +146,10 @@ def evaluate_eligibility(
     blocker_status_keys: Sequence[tuple[int, str]] = (),
     has_children: bool = False,
     active_run_work_package_ids: frozenset[int] = frozenset(),
-    active_run_agent_keys: frozenset[str] = frozenset(),
+    active_run_counts_by_agent: Mapping[str, int] | None = None,
     global_slots_used: int = 0,
 ) -> EligibilityResult:
-    """Apply the PLAN section 8 rules in order.
+    """Apply the rules in order.
 
     ``blocker_status_keys`` is a sequence of ``(work_package_id, status_key)``
     for each unfinished blocker of ``wp``. A blocker whose status is ``closed``
@@ -238,13 +241,17 @@ def evaluate_eligibility(
             "already has an active run", agent_key=agent_key, status_key=status_key
         )
 
-    # Rule 8: the target agent has no active run (one per agent).
-    if agent_key in active_run_agent_keys:
-        return _reject(
-            f"agent '{agent_key}' already has an active run",
-            agent_key=agent_key,
-            status_key=status_key,
-        )
+    # Rule 8: the target agent has a free run slot (``MAX_RUNS_PER_AGENT``).
+    agent_runs = (active_run_counts_by_agent or {}).get(agent_key, 0)
+    if agent_runs >= ctx.max_runs_per_agent:
+        if ctx.max_runs_per_agent == 1:
+            reason = f"agent '{agent_key}' already has an active run"
+        else:
+            reason = (
+                f"agent '{agent_key}' already has "
+                f"{ctx.max_runs_per_agent} active runs"
+            )
+        return _reject(reason, agent_key=agent_key, status_key=status_key)
 
     # Rule 9: a global run slot is available.
     if global_slots_used >= ctx.max_concurrent_runs:

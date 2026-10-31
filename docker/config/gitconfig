@@ -1,7 +1,0 @@
-# docker/config/gitconfig -- the identity the agents commit with. Without it
-# `git commit` fails with "Author identity unknown".
-[user]
-	name = AI Agent
-	email = agent@example.com
-[init]
-	defaultBranch = main

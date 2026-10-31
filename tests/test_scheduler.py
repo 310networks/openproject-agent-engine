@@ -1,4 +1,4 @@
-"""Tests for the scheduler and the claim protocol (PLAN section 9).
+"""Tests for the scheduler and the claim protocol.
 
 The claim protocol is exercised against the fake OpenProject, which mirrors
 the verified live behaviour: ``lockVersion`` is required in the PATCH body,
@@ -65,6 +65,7 @@ async def make_scheduler(
     *,
     work_packages: list[dict[str, Any]] | None = None,
     max_concurrent_runs: int = 2,
+    max_runs_per_agent: int = 1,
     client_kwargs: dict[str, Any] | None = None,
     **fake_overrides: Any,
 ) -> tuple[Scheduler, FakeOpenProject, Store, OpenProjectClient]:
@@ -78,7 +79,12 @@ async def make_scheduler(
     )
     store = Store(tmp_path / "engine.db")
     scheduler = Scheduler(
-        client, config, resolution, store, max_concurrent_runs=max_concurrent_runs
+        client,
+        config,
+        resolution,
+        store,
+        max_concurrent_runs=max_concurrent_runs,
+        max_runs_per_agent=max_runs_per_agent,
     )
     return scheduler, fake, store, client
 
@@ -395,6 +401,32 @@ async def test_second_item_for_same_agent_is_skipped_within_a_pass(tmp_path: Pat
         assert report.skipped_count == 1
         assert report.skipped[0].item.work_package.id == 101
         assert report.skipped[0].reason == "agent 'IMPL' already has an active run"
+    finally:
+        await client.aclose()
+        store.close()
+
+
+async def test_per_agent_limit_allows_parallel_runs(tmp_path: Path) -> None:
+    scheduler, _fake, store, client = await make_scheduler(
+        tmp_path,
+        work_packages=seed_entries(
+            wp(100, status=1, agent=11),
+            wp(101, status=1, agent=11),
+            wp(102, status=1, agent=11),
+        ),
+        max_concurrent_runs=4,
+        max_runs_per_agent=2,
+    )
+    try:
+        report = await scheduler.schedule(
+            plan(make_item(100), make_item(101), make_item(102))
+        )
+
+        assert report.claimed_count == 2
+        assert [item.item.work_package.id for item in report.claimed] == [100, 101]
+        assert report.skipped_count == 1
+        assert report.skipped[0].item.work_package.id == 102
+        assert report.skipped[0].reason == "agent 'IMPL' already has 2 active runs"
     finally:
         await client.aclose()
         store.close()

@@ -1,4 +1,4 @@
-"""Tests for prompt rendering (PLAN section 10)."""
+"""Tests for prompt rendering."""
 
 from pathlib import Path
 

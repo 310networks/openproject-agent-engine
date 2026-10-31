@@ -1,4 +1,4 @@
-"""Tests for the run-directory retention job (PLAN section 16, M9)."""
+"""Tests for the run-directory retention job."""
 
 from __future__ import annotations
 

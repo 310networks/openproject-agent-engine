@@ -1,4 +1,4 @@
-"""Tests for workspace preparation (PLAN section 11).
+"""Tests for workspace preparation.
 
 Uses local bare repositories over ``file://`` URLs so no network access is
 needed.
@@ -14,6 +14,7 @@ from op_agent_engine.workspace import (
     GitError,
     Workspace,
     WorkspaceError,
+    cleanup_workspace,
     clone_url_for,
     prepare_workspace,
 )
@@ -224,3 +225,30 @@ def test_clone_url_for() -> None:
     assert clone_url_for("acme/thing", "tok123") == (
         "https://x-access-token:tok123@github.com/acme/thing.git"
     )
+
+async def test_parallel_agents_use_separate_worktrees(
+    tmp_path: Path, git_repo: GitFixture
+) -> None:
+    root = _workspace_root(tmp_path)
+
+    first = await _prepare(root, git_repo, use_worktree=True)
+    second = await _prepare(root, git_repo, work_package_id=101, use_worktree=True)
+
+    # Same agent, same clone, different checkouts.
+    assert first.repo_dir != second.repo_dir
+    assert first.branch != second.branch
+    assert first.base_repo_dir == second.base_repo_dir
+    assert (first.repo_dir / "README.md").is_file()
+    assert (second.repo_dir / "README.md").is_file()
+    assert _git(["-C", str(first.repo_dir), "branch", "--show-current"]).strip() == (
+        first.branch
+    )
+
+    await cleanup_workspace(first)
+    await cleanup_workspace(second)
+
+    assert not first.repo_dir.exists()
+    assert not second.repo_dir.exists()
+    # The shared clone and the checkout of a later run survive.
+    assert first.base_repo_dir is not None
+    assert (first.base_repo_dir / ".git").exists()

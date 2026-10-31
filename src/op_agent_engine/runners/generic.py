@@ -1,9 +1,9 @@
 """The generic command runner: fills placeholders and executes.
 
-A runner is a pure command template (PLAN section 6): argv, cwd, env and
+A runner is a pure command template: argv, cwd, env and
 optional stdin_file with ``{placeholder}`` substitution. The engine knows
 nothing about the agent CLI itself. The only contract is the final
-``RESULT:`` line on stdout (PLAN section 10).
+``RESULT:`` line on stdout.
 """
 
 from __future__ import annotations
@@ -28,7 +28,54 @@ from op_agent_engine.runners.base import (
 
 #: Inherited environment: the minimum an agent CLI needs to behave like a
 #: manual run (section 6). Everything else is passed explicitly.
-_INHERITED_ENV_VARS = ("PATH", "HOME", "USER", "LOGNAME", "TZ", "LANG", "LC_ALL")
+_BASE_ENV_VARS = ("PATH", "HOME", "USER", "LOGNAME", "TZ", "LANG", "LC_ALL")
+
+#: Provider credentials and endpoints the agent CLIs read directly. The
+#: deployment supplies them as environment variables; no auth.json or
+#: settings.json is mounted. GH_TOKEN/GITHUB_TOKEN let the agents push and open
+#: pull requests with gh.
+_AGENT_ENV_VARS = (
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_OAUTH_TOKEN",
+    "ANTHROPIC_BASE_URL",
+    "OPENAI_API_KEY",
+    "OPENAI_BASE_URL",
+    "AZURE_OPENAI_API_KEY",
+    "AZURE_OPENAI_ENDPOINT",
+    "AZURE_OPENAI_API_VERSION",
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+    "GOOGLE_CLOUD_PROJECT",
+    "GOOGLE_CLOUD_LOCATION",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "OPENROUTER_API_KEY",
+    "XAI_API_KEY",
+    "DEEPSEEK_API_KEY",
+    "GROQ_API_KEY",
+    "CEREBRAS_API_KEY",
+    "MISTRAL_API_KEY",
+    "TOGETHER_API_KEY",
+    "FIREWORKS_API_KEY",
+    "HF_TOKEN",
+    "NVIDIA_API_KEY",
+    "OPENCODE_API_KEY",
+    "MOONSHOT_API_KEY",
+    "KIMI_API_KEY",
+    "ZAI_API_KEY",
+    "MINIMAX_API_KEY",
+    "COPILOT_GITHUB_TOKEN",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "AWS_REGION",
+    "AWS_PROFILE",
+    "AWS_BEARER_TOKEN_BEDROCK",
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+)
+
+_INHERITED_ENV_VARS = _BASE_ENV_VARS + _AGENT_ENV_VARS
 
 #: An argv element that is nothing but one placeholder, e.g. ``{model}``.
 _WHOLE_PLACEHOLDER = re.compile(r"\{[a-z_]+\}")

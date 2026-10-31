@@ -1,18 +1,18 @@
-"""Execution of claimed runs (PLAN section 4; milestones M4, M5 and M6).
+"""Execution of claimed runs.
 
 The dispatcher takes one claimed run to completion:
 
-1. Prepare the workspace (clone/fetch/checkout, PLAN section 11).
-2. Render the prompt into the per-run directory (PLAN section 10).
-3. Run the agent through the runner abstraction (PLAN section 6).
+1. Prepare the workspace (clone/fetch/checkout).
+2. Render the prompt into the per-run directory.
+3. Run the agent through the runner abstraction.
 4. Verify the outcome against external state and apply the OpenProject status
-   transition plus engine comment (PLAN section 4).
-5. Record the run in the store and write ``meta.json`` (PLAN section 16).
+   transition plus engine comment.
+5. Record the run in the store and write ``meta.json``.
 
 Implement runs (M4) verify an open PR for the branch. The PR is
  authoritative, exactly like a merged PR for a review: a run that was killed
  or timed out after opening the PR is not retried, and a resume run whose PR
- is already open does not start the agent at all (PLAN section 4). Review runs (M5)
+ is already open does not start the agent at all. Review runs (M5)
 first require an open PR (otherwise the work package goes to On Hold with an
 engine comment and the reviewer is not started), then verify that the PR was
 merged (approved) or that the reviewer reported ``RESULT: REJECTED`` together
@@ -38,6 +38,7 @@ they use the same external verification as implement and fix runs.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import UTC, datetime
 from pathlib import Path
@@ -86,7 +87,12 @@ from op_agent_engine.runners.base import OnSpawned, RunRequest, RunResult
 from op_agent_engine.runners.generic import GenericRunner
 from op_agent_engine.scheduler import ClaimedRun
 from op_agent_engine.store import FAILED, SUCCEEDED, Store
-from op_agent_engine.workspace import Workspace, WorkspaceError, prepare_workspace
+from op_agent_engine.workspace import (
+    Workspace,
+    WorkspaceError,
+    cleanup_workspace,
+    prepare_workspace,
+)
 
 logger = get_logger(__name__)
 
@@ -162,6 +168,10 @@ class Dispatcher:
             if prompts is not None
             else PromptRenderer(self._resolve_template_dir())
         )
+        # Two concurrent runs for one agent share a clone. Serialize workspace
+        # preparation so fetch/worktree operations cannot race; the agents
+        # themselves then run in separate worktrees.
+        self._workspace_locks: dict[str, asyncio.Lock] = {}
 
     # -- main entry point ---------------------------------------------------
 
@@ -260,8 +270,8 @@ class Dispatcher:
         if workspace is None:
             return
 
-        # A fix pass needs the reviewer feedback and the rejection number
-        # (PLAN section 10); both come from the work package history.
+        # A fix pass needs the reviewer feedback and the rejection number;
+        # both come from the work package history.
         fix_context: FixContext | None = None
         attempt = 1
         if claimed.kind == "fix":
@@ -308,6 +318,7 @@ class Dispatcher:
             ),
         )
         result = await self._run(request, run_id)
+        await cleanup_workspace(workspace)
 
         # External check: open PR for the branch?
         try:
@@ -335,7 +346,7 @@ class Dispatcher:
         wp = claimed.item.work_package
         repo = self._repo_github(wp.project_id)
 
-        # A review needs a PR to look at (PLAN section 4). Without one the
+        # A review needs a PR to look at. Without one the
         # work package goes to On Hold and the reviewer is not started.
         try:
             pr = await self._gh.find_pr(repo, claimed.branch)
@@ -386,8 +397,9 @@ class Dispatcher:
             self._render_prompt(claimed, workspace, pr=pr),
         )
         result = await self._run(request, run_id)
+        await cleanup_workspace(workspace)
 
-        # Approved? A merged PR is authoritative (PLAN section 4).
+        # Approved? A merged PR is authoritative.
         try:
             merged = await self._gh.find_pr(repo, workspace.branch, state="merged")
         except GitHubError as error:
@@ -497,7 +509,7 @@ class Dispatcher:
         changes to Rejected). The current rejection has not been applied yet,
         so ``previous + 1`` is the number this review would produce. With the
         default ``MAX_REJECTIONS=3`` rejection 3 is allowed and rejection 4
-        moves the work package to On Hold (PLAN section 4).
+        moves the work package to On Hold.
         """
         wp = claimed.item.work_package
         try:
@@ -790,7 +802,7 @@ class Dispatcher:
     ) -> None:
         """``Ready for Review`` without a PR: On Hold plus an engine comment.
 
-        The reviewer is not started (PLAN section 4); the work package was
+        The reviewer is not started; the work package was
         already claimed, so it is In Testing when the comment is posted.
         """
         wp = claimed.item.work_package
@@ -956,7 +968,7 @@ class Dispatcher:
         Re-reads the work package first: if its status is no longer
         ``expected_status_key`` a human (or another actor) changed it and the
         transition is aborted. On HTTP 409 the patch is retried once with the
-        fresh lockVersion (same protocol as the claim, PLAN section 9).
+        fresh lockVersion (same protocol as the claim).
         """
         expected_id = self._resolution.statuses[expected_status_key].id
         target_id = self._resolution.statuses[status_key].id
@@ -1131,18 +1143,21 @@ class Dispatcher:
         """Prepare the workspace; record the failure and return None if it fails."""
         wp = claimed.item.work_package
         agent = self._config.agents[claimed.item.agent_key]
+        lock = self._workspace_locks.setdefault(agent.workspace, asyncio.Lock())
         try:
-            return await prepare_workspace(
-                root=self._workspace_root(),
-                agent_workspace=agent.workspace,
-                github_repo=self._repo_github(wp.project_id),
-                clone_dir=self._repo_dir(wp.project_id),
-                default_branch=self._repo_default_branch(wp.project_id),
-                project_id=wp.project_id,
-                work_package_id=wp.id,
-                role=agent.kind,
-                gh_token=self._gh_token(),
-            )
+            async with lock:
+                return await prepare_workspace(
+                    root=self._workspace_root(),
+                    agent_workspace=agent.workspace,
+                    github_repo=self._repo_github(wp.project_id),
+                    clone_dir=self._repo_dir(wp.project_id),
+                    default_branch=self._repo_default_branch(wp.project_id),
+                    project_id=wp.project_id,
+                    work_package_id=wp.id,
+                    role=agent.kind,
+                    gh_token=self._gh_token(),
+                    use_worktree=self._settings.max_runs_per_agent > 1,
+                )
         except WorkspaceError as error:
             await self._fail_before_run(
                 run_id, claimed, f"workspace preparation failed: {error}"
@@ -1240,7 +1255,7 @@ class Dispatcher:
             prompt = with_standard(prompt, workspace.standard_path)
         return prompt
 
-    # -- meta.json (PLAN section 16) -------------------------------------------
+    # -- meta.json -------------------------------------------
 
     def _write_meta(
         self,

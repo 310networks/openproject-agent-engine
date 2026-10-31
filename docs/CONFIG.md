@@ -8,7 +8,8 @@ only supplies its URL, project, repository and tokens.
 
 `docker/provision-users.sh` writes the required variables for you; the
 commented reference is [`docker/.env.example`](../docker/.env.example). The
-full variable tables are in the [root README](../README.md#environment-variables).
+[root README](../README.md) covers getting started; this page is the full
+reference.
 
 ## Required
 
@@ -54,15 +55,79 @@ Status names come from `OP_STATUS_*` and are matched case- and
 whitespace-insensitively, so `In Progress` also matches OpenProject's default
 `In progress`.
 
+## Repository and object names
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `GITHUB_REPO_DIR` | the repository name | clone directory under `WORKSPACE_ROOT` |
+| `GITHUB_DEFAULT_BRANCH` | `main` | branch the work branches are based on |
+| `OP_AGENT_FIELD` | `AGENT` | custom field that routes a work package to an agent |
+| `OP_ENGINE_USER` | `agent-engine` | OpenProject login of the runtime user |
+| `OP_AGENT_ROLE` | `Agent Worker` | role granted to the agent users |
+| `OP_EMAIL_DOMAIN` | `agent-engine.local` | email domain for generated accounts |
+| `OP_STATUS_NEW` | `New` | |
+| `OP_STATUS_IN_PROGRESS` | `In Progress` | |
+| `OP_STATUS_READY_FOR_REVIEW` | `Ready for Review` | |
+| `OP_STATUS_IN_TESTING` | `In Testing` | |
+| `OP_STATUS_ON_HOLD` | `On Hold` | |
+| `OP_STATUS_REJECTED` | `Rejected` | |
+| `OP_STATUS_CLOSED` | `Closed` | |
+
+## Provider credentials
+
+The agent CLI reads its model provider key from the environment; no
+`auth.json`, `settings.json` or opencode config is mounted. Set one of these
+in `docker/.env` (the one your `AGENT_MODEL` provider needs):
+
+`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`,
+`OPENAI_API_KEY`, `OPENAI_BASE_URL`, `AZURE_OPENAI_API_KEY`,
+`AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_VERSION`, `GEMINI_API_KEY`,
+`GOOGLE_API_KEY`, `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION`,
+`GOOGLE_APPLICATION_CREDENTIALS`, `OPENROUTER_API_KEY`, `XAI_API_KEY`,
+`DEEPSEEK_API_KEY`, `GROQ_API_KEY`, `CEREBRAS_API_KEY`, `MISTRAL_API_KEY`,
+`TOGETHER_API_KEY`, `FIREWORKS_API_KEY`, `HF_TOKEN`, `NVIDIA_API_KEY`,
+`OPENCODE_API_KEY`, `MOONSHOT_API_KEY`, `KIMI_API_KEY`, `ZAI_API_KEY`,
+`MINIMAX_API_KEY`, `COPILOT_GITHUB_TOKEN`, `AWS_ACCESS_KEY_ID`,
+`AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_REGION`, `AWS_PROFILE`,
+`AWS_BEARER_TOKEN_BEDROCK`, `GH_TOKEN` and `GITHUB_TOKEN`.
+
+The engine forwards exactly these variables to the agent process and keeps the
+rest of its own environment (the OpenProject tokens) out of it.
+
 ## Runtime variables
 
-`POLL_INTERVAL_SECONDS`, `MAX_CONCURRENT_RUNS`, `MAX_REJECTIONS`,
-`MAX_CRASH_RETRIES`, `RUN_TIMEOUT_SECONDS`, `STOP_GRACE_SECONDS`,
-`RUN_RETENTION_DAYS`, `ENGINE_PAUSED`, `LOG_LEVEL`, `GH_TOKEN`,
-`WORKSPACE_ROOT`, `DATA_DIR`, `PROMPTS_DIR`, `DASHBOARD_HOST` and
-`DASHBOARD_PORT` work as before; see the README for defaults. The image sets
-the paths and the dashboard bind address, so `.env` normally only holds the
-deployment values and the limits.
+| Variable | Default | Meaning |
+|---|---|---|
+| `POLL_INTERVAL_SECONDS` | `60` | how often OpenProject is polled |
+| `MAX_CONCURRENT_RUNS` | `1` | agent runs in parallel across all agents |
+| `MAX_RUNS_PER_AGENT` | `1` | concurrent runs per agent; the global limit still applies |
+| `MAX_REJECTIONS` | `3` | rejections before an agent stops retrying a work package |
+| `MAX_CRASH_RETRIES` | `2` | retries after a crashed run |
+| `RUN_TIMEOUT_SECONDS` | `3600` | hard limit per run |
+| `AGENT_TIMEOUT_SECONDS` | `3600` | hard limit per agent run (wins over the above) |
+| `STOP_GRACE_SECONDS` | `60` | shutdown budget; compose allows 90 s |
+| `RUN_RETENTION_DAYS` | `30` | `cleanup` removes older run directories |
+| `ENGINE_PAUSED` | `false` | `true` stops new runs without stopping the container |
+| `LOG_LEVEL` | `INFO` | `DEBUG` for verbose logs |
+| `WORKSPACE_ROOT` | image | agent workspaces and git clones |
+| `DATA_DIR` | image | SQLite store, run directories, heartbeat, lock |
+| `PROMPTS_DIR` | image | prompt templates |
+| `DASHBOARD_HOST` | image | bind address inside the container |
+| `DASHBOARD_PORT` | `8765` | port the compose mapping publishes |
+| `GIT_AUTHOR_NAME` | `OP_ENGINE_USER` | identity for the commits the agents make |
+| `GIT_AUTHOR_EMAIL` | `OP_ENGINE_USER@OP_EMAIL_DOMAIN` | author email for those commits |
+
+The image sets the container paths and the dashboard bind address, so `.env`
+normally only holds the deployment values, the provider key and the limits.
+
+## Compose-only
+
+Set these in `.env` or your shell; the engine never reads them.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `OP_AGENT_ENGINE_TAG` | `latest` | image tag to run, e.g. `0.2.0` to pin a release |
+| `DASHBOARD_BIND` | `127.0.0.1` | host interface that publishes `DASHBOARD_PORT`; the dashboard has no authentication |
 
 ## Dispatching rules
 

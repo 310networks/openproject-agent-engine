@@ -1,4 +1,4 @@
-"""Tests for the runner abstraction (PLAN section 6)."""
+"""Tests for the runner abstraction."""
 
 import asyncio
 import dataclasses
@@ -127,6 +127,33 @@ def test_build_request_env_layers(tmp_path: Path) -> None:
     # Inherited minimum.
     assert request.env.get("PATH")
     assert "HOME" in request.env
+
+
+def test_build_request_forwards_provider_credentials(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    monkeypatch.setenv("GH_TOKEN", "ghp-test")
+    monkeypatch.setenv("OP_ENGINE_TOKEN", "engine-secret")
+
+    runner = GenericRunner(_config())
+    request = runner.build_request(
+        "FE",
+        run_id=1,
+        work_package_id=100,
+        run_dir=tmp_path / "run",
+        repo_dir=tmp_path / "repo",
+        workspace_dir=tmp_path / "ws",
+        branch="op-4-100",
+        prompt_file=tmp_path / "prompt.txt",
+        timeout_seconds=120,
+    )
+
+    # The agent CLI reads its key and gh credential from the environment.
+    assert request.env["ANTHROPIC_API_KEY"] == "sk-ant-test"
+    assert request.env["GH_TOKEN"] == "ghp-test"
+    # The engine's own OpenProject token is not forwarded to the agent.
+    assert "OP_ENGINE_TOKEN" not in request.env
 
 
 def test_build_request_unknown_placeholder_raises(tmp_path: Path) -> None:

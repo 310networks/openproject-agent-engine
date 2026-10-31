@@ -318,6 +318,7 @@ class DashboardData:
                 "poll_interval_seconds": self.settings.poll_interval_seconds,
                 "active_runs": running,
                 "max_concurrent_runs": self.settings.max_concurrent_runs,
+                "max_runs_per_agent": self.settings.max_runs_per_agent,
             },
             "counts": {
                 **counts,

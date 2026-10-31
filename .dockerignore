@@ -1,7 +1,6 @@
 # Never ship operator state or secrets into the image.
 .git
 .gitignore
-docker/config
 .env
 docker/.env
 /*.bak.*

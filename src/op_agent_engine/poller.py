@@ -24,10 +24,10 @@ from op_agent_engine.openproject.workpackage import WorkPackage, parse_work_pack
 
 logger = get_logger(__name__)
 
-# Statuses that start a fresh workflow step (PLAN section 8).
+# Statuses that start a fresh workflow step.
 CANDIDATE_STATUS_KEYS = ("new", "rejected", "ready_for_review")
 
-# Statuses recovered after a crash or a retryable failure (PLAN section 13).
+# Statuses recovered after a crash or a retryable failure.
 # They are only queried when assigned to an agent user, so a work package that
 # a human put into In Progress/In Testing is never touched.
 RECOVERY_STATUS_KEYS = ("in_progress", "in_testing")
@@ -76,11 +76,13 @@ class Poller:
         resolution: OpenProjectResolution,
         *,
         max_concurrent_runs: int = 1,
+        max_runs_per_agent: int = 1,
     ) -> None:
         self._client = client
         self._config = config
         self._resolution = resolution
         self._max_concurrent_runs = max_concurrent_runs
+        self._max_runs_per_agent = max_runs_per_agent
 
     async def poll(self) -> DispatchPlan:
         ctx = await self._build_context()
@@ -158,6 +160,7 @@ class Poller:
             self._resolution,
             priority_position=priority_position,
             max_concurrent_runs=self._max_concurrent_runs,
+            max_runs_per_agent=self._max_runs_per_agent,
         )
 
     async def _fetch_priority_positions(self) -> dict[int, int]:

@@ -1,12 +1,12 @@
-"""SQLite persistence for runs and crash counters (PLAN section 12).
+"""SQLite persistence for runs and crash counters.
 
 The store is the engine's single source of truth for which work packages and
-agents have active runs. The unique partial indexes make double-claiming a
-work package or starting a second run for the same agent impossible at the
-database level: the insert simply fails.
+agents have active runs. A unique partial index makes double-claiming a work
+package impossible at the database level: the insert simply fails. The
+per-agent capacity is enforced by the scheduler (``MAX_RUNS_PER_AGENT``).
 
 The engine runs as a single instance; :class:`EngineLock` guards startup with
-an exclusive non-blocking ``flock`` on ``DATA_DIR/engine.lock`` (PLAN §9).
+an exclusive non-blocking ``flock`` on ``DATA_DIR/engine.lock``.
 """
 
 from __future__ import annotations
@@ -20,10 +20,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-# Run artifact directory name (PLAN section 16).
+# Run artifact directory name.
 RUNS_DIR_NAME = "runs"
 
-# Run states (PLAN section 12).
+# Run states.
 RUNNING = "running"
 SUCCEEDED = "succeeded"
 FAILED = "failed"
@@ -55,8 +55,6 @@ CREATE TABLE IF NOT EXISTS runs (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS one_active_per_wp
   ON runs(work_package_id) WHERE state = 'running';
-CREATE UNIQUE INDEX IF NOT EXISTS one_active_per_agent
-  ON runs(agent) WHERE state = 'running';
 
 CREATE TABLE IF NOT EXISTS crash_counts (
   work_package_id INTEGER PRIMARY KEY,
@@ -88,7 +86,7 @@ _RUN_COLUMNS = (
 
 
 class ClaimConflictError(Exception):
-    """A work package or agent already has an active run."""
+    """A work package already has an active run."""
 
 
 @dataclass(frozen=True)
@@ -182,6 +180,9 @@ class Store:
         for name in ("display_id", "subject"):
             if name not in columns:
                 self._conn.execute(f"ALTER TABLE runs ADD COLUMN {name} TEXT")
+        # ``MAX_RUNS_PER_AGENT`` replaced the one-run-per-agent database rule;
+        # drop the index so an existing deployment can run more than one.
+        self._conn.execute("DROP INDEX IF EXISTS one_active_per_agent")
 
     @property
     def path(self) -> Path:
@@ -216,8 +217,9 @@ class Store:
     ) -> int:
         """Insert a ``running`` run row and return its id.
 
-        Raises :class:`ClaimConflictError` when the work package or the agent
-        already has a ``running`` row (unique partial indexes).
+        Raises :class:`ClaimConflictError` when the work package already has a
+        ``running`` row (unique partial index). The per-agent limit is enforced
+        by the scheduler, because it is configurable (``MAX_RUNS_PER_AGENT``).
 
         ``run_dir_template`` may contain a single ``{id}`` placeholder, which
         is filled with the new run id (the run directory is named after the
@@ -256,8 +258,7 @@ class Store:
                 self._conn.commit()
         except sqlite3.IntegrityError as error:
             raise ClaimConflictError(
-                f"work package {work_package_id} or agent '{agent}' already has "
-                "an active run"
+                f"work package {work_package_id} already has an active run"
             ) from error
         return run_id
 
@@ -354,12 +355,14 @@ class Store:
             ).fetchall()
         return frozenset(int(row["work_package_id"]) for row in rows)
 
-    def active_agent_keys(self) -> frozenset[str]:
+    def active_run_counts_by_agent(self) -> dict[str, int]:
+        """Running runs per agent key (an agent with no run is absent)."""
         with self._lock:
             rows = self._conn.execute(
-                "SELECT agent FROM runs WHERE state = ?", (RUNNING,)
+                "SELECT agent, COUNT(*) AS n FROM runs WHERE state = ? GROUP BY agent",
+                (RUNNING,),
             ).fetchall()
-        return frozenset(str(row["agent"]) for row in rows)
+        return {str(row["agent"]): int(row["n"]) for row in rows}
 
     def finished_runs(self, limit: int = 20) -> list[Run]:
         """Most recently finished runs, newest first."""

@@ -1,4 +1,4 @@
-"""End-to-end fake-agent cycle (PLAN sections 19 and M9 acceptance).
+"""End-to-end fake-agent cycle.
 
 One work package goes ``New`` -> ``Ready for Review`` -> ``Closed`` in two
 polls, using the real ``GenericRunner`` to spawn ``tests/fakes/fake_agent.sh``.

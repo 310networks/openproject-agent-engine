@@ -1,5 +1,5 @@
 #!/bin/sh
-# Fake CLI agent for manual acceptance and end-to-end tests (PLAN section 19).
+# Fake CLI agent for manual acceptance and end-to-end tests.
 #
 # Behavior is selected with FAKE_AGENT_BEHAVIOR. When the variable is unset the
 # first argument (the rendered prompt file) decides: a prompt that mentions

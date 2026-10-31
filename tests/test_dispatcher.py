@@ -1,4 +1,4 @@
-"""Tests for the dispatcher (PLAN section 4, milestones M4 and M5).
+"""Tests for the dispatcher.
 
 The dispatcher is exercised against the fake OpenProject (HAL-shaped
 responses, lockVersion semantics) with a fake runner (no real process), a
@@ -1220,7 +1220,7 @@ async def test_review_closes_an_already_merged_pr_without_running_the_agent(
 async def test_merged_pr_wins_over_a_rejection_result(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """External verification is authoritative (PLAN section 4)."""
+    """External verification is authoritative."""
     runner = FakeRunner(make_result(tmp_path, result_line="RESULT: REJECTED nope"))
     dispatcher, fake, store, client, _ = await make_review_dispatcher(
         tmp_path, monkeypatch, runner=runner, gh=FakeGitHub(pr=PR, merged=MERGED_PR)
@@ -1403,7 +1403,7 @@ async def test_review_dry_run_claim_is_not_executed(
 async def test_fix_pass_uses_latest_reviewer_and_later_human_comments(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Comment selection (PLAN section 10): latest reviewer feedback, later
+    """Comment selection: latest reviewer feedback, later
     human comments, no other agent or engine comments, at most 5 human ones."""
     start = datetime(2026, 2, 10, 12, 0, tzinfo=UTC)
     human_comments = [

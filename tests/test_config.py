@@ -278,12 +278,14 @@ def test_engine_settings_reads_environment(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setenv("AGENT", "opencode")
     monkeypatch.setenv("WORKSPACE_ROOT", "/srv/agents")
     monkeypatch.setenv("MAX_CONCURRENT_RUNS", "2")
+    monkeypatch.setenv("MAX_RUNS_PER_AGENT", "3")
     monkeypatch.setenv("ENGINE_PAUSED", "true")
 
     settings = EngineSettings()
 
     assert settings.op_base_url == "https://openproject.example.com"
     assert settings.max_concurrent_runs == 2
+    assert settings.max_runs_per_agent == 3
     assert settings.engine_paused is True
     assert settings.agent == "opencode"
     assert settings.op_project == "demo"

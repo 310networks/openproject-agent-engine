@@ -706,7 +706,7 @@ def _membership_role_ids(membership: dict[str, Any]) -> set[int]:
     return {
         role_id
         for role in roles
-        if (role_id := _href_id(role)) is not None
+        if (role_id:= _href_id(role)) is not None
     }
 
 

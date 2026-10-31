@@ -1,6 +1,6 @@
 """Engine loop: poll, schedule, and execute runs.
 
-The loop (PLAN section 3):
+The loop:
 
 1. Take the exclusive engine lock (``DATA_DIR/engine.lock``) so that only one
    engine instance runs at a time.
@@ -192,6 +192,7 @@ class Engine:
             self._config,
             resolution,
             max_concurrent_runs=self._settings.max_concurrent_runs,
+            max_runs_per_agent=self._settings.max_runs_per_agent,
         )
         scheduler = Scheduler(
             client,
@@ -199,6 +200,7 @@ class Engine:
             resolution,
             store,
             max_concurrent_runs=self._settings.max_concurrent_runs,
+            max_runs_per_agent=self._settings.max_runs_per_agent,
         )
         dispatcher = (
             None
@@ -210,6 +212,7 @@ class Engine:
             extra={
                 "poll_interval_seconds": self._settings.poll_interval_seconds,
                 "max_concurrent_runs": self._settings.max_concurrent_runs,
+                "max_runs_per_agent": self._settings.max_runs_per_agent,
                 "paused": self._settings.engine_paused,
                 "store": str(store.path),
             },
@@ -310,7 +313,7 @@ class Engine:
         return is_paused(self._settings)
 
     def _write_heartbeat(self) -> None:
-        """Record the time of the last completed poll (PLAN section 15)."""
+        """Record the time of the last completed poll."""
         write_heartbeat(self._settings)
 
     async def _execute_claimed(
@@ -434,6 +437,7 @@ async def _run_once_async(
             config,
             resolution,
             max_concurrent_runs=settings.max_concurrent_runs,
+            max_runs_per_agent=settings.max_runs_per_agent,
         )
         plan = await poller.poll()
         if not dry_run:
@@ -448,6 +452,7 @@ async def _run_once_async(
                 resolution,
                 store,
                 max_concurrent_runs=settings.max_concurrent_runs,
+                max_runs_per_agent=settings.max_runs_per_agent,
             )
             report = await scheduler.schedule(plan, dry_run=True)
             logger.info(
@@ -482,6 +487,7 @@ async def _run_once_async(
                 resolution,
                 store,
                 max_concurrent_runs=settings.max_concurrent_runs,
+                max_runs_per_agent=settings.max_runs_per_agent,
             )
             report = await scheduler.schedule(plan)
             logger.info(

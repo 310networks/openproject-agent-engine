@@ -755,7 +755,7 @@ class FakeOpenProject:
         page_size = min(self.max_page_size, int(params.get("pageSize", 20)))
         offset = int(params.get("offset", 1))
         start = max(0, (offset - 1) * page_size)
-        page = elements[start : start + page_size]
+        page = elements[start: start + page_size]
         payload: dict[str, JSON] = {
             "_type": "Collection",
             "count": len(page),

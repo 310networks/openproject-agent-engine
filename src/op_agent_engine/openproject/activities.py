@@ -190,7 +190,7 @@ def count_status_changes(
 ) -> int:
     """How many times the history moved a work package to *status_name*.
 
-    Used for rejection counting (PLAN section 4). OpenProject aggregates
+    Used for rejection counting. OpenProject aggregates
     consecutive same-user journals, so a single journal can hold the final
     target of a short burst; counting details matches the visible history.
     """

@@ -1,4 +1,4 @@
-"""GitHub lookups through the ``gh`` CLI (PLAN section 16: external checks).
+"""GitHub lookups through the ``gh`` CLI.
 
 The engine never talks to the GitHub API directly: it uses the host's
 existing ``gh`` authentication (or ``GH_TOKEN`` when set).
