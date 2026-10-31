@@ -107,8 +107,13 @@ runners:
     #                    other discovered context file. The workspace standard
     #                    below is the only standing context; the agent reads
     #                    repository files it needs explicitly.
+    # --no-session       do not persist a pi session per run. The engine keeps
+    #                    the full transcript in runs/<id>/stdout.log, so a
+    #                    session file adds nothing and (in a container) would
+    #                    grow the agent volume forever.
     argv: ["pi", "-p", "--approve", "--no-extensions", "--no-context-files",
-           "--model", "{model}", "@{prompt_file}", "Follow the instructions in the attached prompt file."]
+           "--no-session", "--model", "{model}", "@{prompt_file}",
+           "Follow the instructions in the attached prompt file."]
     model: null                    # e.g. "anthropic/claude-sonnet-4-5"
     cwd: "{repo_dir}"
     env: {}                        # pi still uses the host's provider credentials

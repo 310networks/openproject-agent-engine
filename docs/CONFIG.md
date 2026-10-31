@@ -37,7 +37,7 @@ agents:
 runners:
   pi:
     argv: ["pi", "-p", "--approve", "--no-extensions", "--no-context-files",
-           "--model", "{model}", "@{prompt_file}",
+           "--no-session", "--model", "{model}", "@{prompt_file}",
            "Follow the instructions in the attached prompt file."]
     model: null                # optional default for every agent using this runner
     cwd: "{repo_dir}"
@@ -67,7 +67,7 @@ Field notes:
   ```yaml
   runners:
     pi:
-      argv: ["pi", "-p", "--approve", "--no-extensions", "--no-context-files", "--model", "{model}", "@{prompt_file}", "..."]
+      argv: ["pi", "-p", "--approve", "--no-extensions", "--no-context-files", "--no-session", "--model", "{model}", "@{prompt_file}", "..."]
     opencode:
       argv: ["opencode", "run", "--auto", "--model", "{model}", "--file", "{prompt_file}", "..."]
   agents:
@@ -95,6 +95,10 @@ Field notes:
   (`pi-dashboard`, built-in MCP/codemode/tool-search, ...) out of unattended
   runs, where they can block or hang print mode. Skills are separate flags
   (`--skill`/`--no-skills`) and stay available.
+- **No session per run.** `--no-session` stops pi writing a resumable session
+  file for every run. The run directory already keeps the complete transcript
+  (`runs/<id>/stdout.log`), so the session adds nothing and otherwise grows
+  the agent directory without bound.
 
 ## Environment variables (`engine.env`)
 
