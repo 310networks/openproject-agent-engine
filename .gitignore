@@ -4,6 +4,17 @@
 /workflow.yaml
 /engine.env
 /*.bak.*
+# staged container configuration: only the empty skeleton is committed.
+# Everything else in here is a copy of the operator's credentials, settings,
+# skills and git identity, so it must never reach the repository.
+/config/*
+!/config/.gitkeep
+!/config/pi
+/config/pi/*
+!/config/pi/.gitkeep
+!/config/pi/skills
+/config/pi/skills/*
+!/config/pi/skills/.gitkeep
 # agent working repos
 agents/*/repositories/
 

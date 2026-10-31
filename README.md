@@ -29,6 +29,8 @@ and every engine comment starts with `ENGINE:`. Failed runs are retried up to
 
 ## Quick start
 
+### Install Script - systemd
+
 1. Clone the repo, copy the config files, and update OP_BASE_URL and OP_PROVISION_TOKEN
 ```bash
 git clone <engine-repo> ~/op-agent-engine && cd ~/op-agent-engine
@@ -36,13 +38,15 @@ cp workflow.example.yaml ./workflow.yaml
 cp engine.env.example ./engine.env
 chmod 600 ./engine.env
 ```
+
 2. Setup the required statuses, AGENT custom field, and Agent Worker role: [docs/OPENPROJECT_SETUP.md](docs/OPENPROJECT_SETUP.md)
 
-3. Run interactive install.sh script
-./install.sh
+3. Run the interactive installer:
+
 ```bash
 ./install.sh
 ```
+
 The installer will ask the user to create API tokens for each of the agent users it created.
 It will provide the login so the the user can login as the agent and create the API token.
 
@@ -50,6 +54,23 @@ At the `agent-engine` token prompt it reminds you to make that user an administr
 which is required for the engine to list users and edit work packages.
 
 The read-only dashboard is served at `http://127.0.0.1:8765` (see [docs/DASHBOARD.md](docs/DASHBOARD.md)).
+
+### Prefer containers?
+
+The image is published on Docker Hub, so a `docker-compose.yml` and a `config/`
+directory are all you need:
+
+```bash
+mkdir -p ~/op-agent-engine/config/pi && cd ~/op-agent-engine
+curl -fsSLO https://raw.githubusercontent.com/310networks/openproject-agent-engine/main/docker-compose.yml
+# then write config/engine.env, config/workflow.yaml and optionally
+# config/pi/{auth.json,settings.json}, config/pi/skills/ and config/gitconfig
+docker compose pull && docker compose up -d
+```
+
+The agent CLIs are baked into the image; your config, credentials and skills are
+mounted from `./config`, never baked and never committed
+(see [docs/DOCKER.md](docs/DOCKER.md)).
 
 ## Uninstall
 
@@ -63,6 +84,7 @@ The read-only dashboard is served at `http://127.0.0.1:8765` (see [docs/DASHBOAR
 | Doc | Contents |
 |---|---|
 | [docs/INSTALL.md](docs/INSTALL.md) | install options, systemd service, updates |
+| [docs/DOCKER.md](docs/DOCKER.md) | container image, `./config` staging, compose services |
 | [docs/OPENPROJECT_SETUP.md](docs/OPENPROJECT_SETUP.md) | one-time instance setup: statuses, `AGENT` field, Agent Worker role, admin engine user, tokens |
 | [docs/CONFIG.md](docs/CONFIG.md) | `workflow.yaml`, environment variables, CLI reference |
 | [docs/DASHBOARD.md](docs/DASHBOARD.md) | read-only web UI: engine status, agents, sessions, totals |

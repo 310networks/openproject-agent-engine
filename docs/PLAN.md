@@ -16,7 +16,7 @@ Implementation plan for an engine that monitors OpenProject work packages and di
 
 | Area | Decision |
 |---|---|
-| Runtime | Python 3.12, asyncio, SQLite (stdlib `sqlite3`). Runs as a systemd service on the same host as the agents (pi and others). Not containerized. |
+| Runtime | Python 3.12, asyncio, SQLite (stdlib `sqlite3`). Runs as a systemd service on the same host as the agents (pi and others), or in a container that bakes the agent CLIs and mounts only staged config (`docs/DOCKER.md`). |
 | Polling | 60 seconds, configurable (`POLL_INTERVAL_SECONDS`). |
 | Agent routing | OpenProject custom field `AGENT` (list type) with values `FRONTEND`, `BACKEND`, `LEAD_DESIGNER`. |
 | Statuses | `New`, `In Progress`, `Ready for Review`, `In Testing`, `On Hold`, `Rejected`, `Closed`. Names are configurable. `On Hold` is ignored by the engine. `In Testing` is set when a work package is claimed by `codeReviewer`. |

@@ -1,0 +1,84 @@
+# Docker Compose deployment of the agent engine.
+#
+# Pull-only: this file needs no repository checkout. All you supply is this
+# file plus a ./config directory (workflow.yaml, engine.env, and optionally
+# pi/auth.json, pi/settings.json, pi/skills/ and a gitconfig):
+#
+#   docker compose pull && docker compose up -d
+#   docker compose logs -f engine
+#
+# Nothing from the host is mounted except ./config (read-only). Runtime state
+# lives in named volumes, so the container user never has to match a host UID
+# and the whole directory can be copied to another machine as-is.
+#
+#   OP_AGENT_ENGINE_TAG=0.1.0 docker compose up -d    # pin a version,
+#                                                    # default is `latest`
+#
+# Building the image from a checkout instead: docker-compose.build.yml.
+# See docs/DOCKER.md.
+
+name: op-agent-engine
+
+x-engine: &engine
+  # Published by .github/workflows/docker.yml; the tag comes from
+  # docker/version.json.
+  image: kookster310/op-agent-engine:${OP_AGENT_ENGINE_TAG:-latest}
+  env_file:
+    - config/engine.env
+  volumes:
+    # User-supplied configuration. Read-only; the entrypoint copies from here
+    # into the writable volumes below on every start.
+    - ./config:/config:ro
+    # pi state: auth, settings, skills, model cache, sessions, downloaded tools.
+    - pi-agent:/home/agent/.pi/agent
+    # Engine state: SQLite store, run directories, heartbeat, engine lock.
+    - engine-data:/home/agent/.local/share/op-agent-engine
+    # Agent workspaces: AGENTS.md (seeded from the image) plus the git clones.
+    - agent-workspace:/home/agent/agents
+  restart: unless-stopped
+  # STOP_GRACE_SECONDS (60) + the runner's 20 s SIGKILL grace, with margin.
+  stop_grace_period: 90s
+
+services:
+  engine:
+    <<: *engine
+    container_name: op-agent-engine
+    command: ["run"]
+
+  # Read-only dashboard. It has no authentication, so publish it on loopback
+  # and reach it through a reverse proxy if it must be remote.
+  dashboard:
+    <<: *engine
+    container_name: op-agent-engine-dashboard
+    command: ["dashboard"]
+    depends_on:
+      - engine
+    ports:
+      # Keep DASHBOARD_PORT=8765 in config/engine.env: this publishes 8765.
+      - "${DASHBOARD_BIND:-127.0.0.1}:8765:8765"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/healthz', timeout=5)"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  # One-shot tasks. The cleanup job replaces deploy/op-agent-engine-cleanup.timer:
+  #   0 4 * * *  cd /opt/op-agent-engine && docker compose run --rm cleanup
+  cleanup:
+    <<: *engine
+    profiles: ["tasks"]
+    restart: "no"
+    command: ["cleanup"]
+
+  # Validates config/workflow.yaml + config/engine.env without running a poll.
+  check-config:
+    <<: *engine
+    profiles: ["tasks"]
+    restart: "no"
+    command: ["check-config"]
+
+volumes:
+  pi-agent:
+  engine-data:
+  agent-workspace:

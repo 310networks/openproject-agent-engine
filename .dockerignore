@@ -1,0 +1,46 @@
+# Never ship operator state or secrets into the image.
+.git
+.gitignore
+config
+.env
+workflow.yaml
+engine.env
+/*.bak.*
+
+# Agent working copies are cloned at runtime into a volume.
+agents/*/repositories
+
+# Development and runtime leftovers.
+.venv
+venv
+__pycache__
+*.py[cod]
+*.egg-info
+build
+dist
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+htmlcov
+*.sqlite3
+*.sqlite3-*
+*.log
+*.swp
+
+# Not needed to build or run the engine.
+.github
+tests
+docs
+*.md
+!README.md
+install.sh
+uninstall.sh
+docker-compose*.yml
+
+# Keep the pieces the image actually copies.
+!deploy
+!prompts
+!agents
+!workflow.example.yaml
+!engine.env.example

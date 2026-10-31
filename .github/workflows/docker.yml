@@ -1,0 +1,136 @@
+name: docker
+
+# Builds the engine image and pushes it to Docker Hub.
+#
+# The image tag comes from docker/version.json, which must match
+# `project.version` in pyproject.toml (tests/test_docker.py enforces that).
+# A `v<version>` git tag must match it too, so releasing is:
+#
+#   1. bump docker/version.json and pyproject.toml
+#   2. commit, then `git tag v<version> && git push origin main --tags`
+#
+# Tags pushed: `<version>`, `latest` (main and release tags) and `sha-<short>`.
+# Required repository secrets: DOCKERHUB_USERNAME, DOCKERHUB_TOKEN.
+# Optional repository variables (defaults come from the Dockerfile):
+# PI_VERSION, GH_VERSION, OP_CLI_REF, INSTALL_OPENCODE.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "Dockerfile"
+      - ".dockerignore"
+      - "docker/**"
+      - "docker-compose.yml"
+      - "src/**"
+      - "prompts/**"
+      - "agents/**"
+      - "pyproject.toml"
+      - ".github/workflows/docker.yml"
+    tags: ["v*"]
+  workflow_dispatch:
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: kookster310/op-agent-engine
+  VERSION_FILE: docker/version.json
+
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: install
+        run: pip install -e ".[dev]"
+
+      - name: ruff
+        run: ruff check .
+
+      - name: mypy
+        run: mypy
+
+      - name: pytest
+        run: pytest
+
+  publish:
+    name: build and push
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: read version
+        id: version
+        run: |
+          version=$(python -c "import json; print(json.load(open('${VERSION_FILE}'))['version'])")
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: check the git tag matches docker/version.json
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          expected="v${{ steps.version.outputs.version }}"
+          if [ "${GITHUB_REF_NAME}" != "${expected}" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match ${VERSION_FILE} (expected ${expected})"
+            exit 1
+          fi
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=raw,value=${{ steps.version.outputs.version }}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/') }}
+            type=sha,format=short
+
+      - name: build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          # The engine itself is architecture independent; only amd64 is
+          # published so `op`/node/gh do not have to be cross-built. Add
+          # linux/arm64 here after checking the builder stage below.
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            PI_VERSION=${{ vars.PI_VERSION || '1.4.0' }}
+            GH_VERSION=${{ vars.GH_VERSION || '2.80.0' }}
+            OP_CLI_REF=${{ vars.OP_CLI_REF || '259f293a' }}
+            INSTALL_OPENCODE=${{ vars.INSTALL_OPENCODE || 'false' }}
+
+      - name: summary
+        run: |
+          {
+            echo "### op-agent-engine ${{ steps.version.outputs.version }}"
+            echo
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+            echo
+            echo "Pull with \`docker pull ${IMAGE}:${{ steps.version.outputs.version }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
