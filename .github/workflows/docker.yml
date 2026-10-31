@@ -123,6 +123,24 @@ jobs:
             OP_CLI_REF=${{ vars.OP_CLI_REF || '259f293a' }}
             INSTALL_OPENCODE=${{ vars.INSTALL_OPENCODE || 'false' }}
 
+      # Deployment is pull-only, so an image nobody can pull is a broken
+      # release. Anonymous pull also catches a repository that was left private
+      # or a token scoped to the wrong namespace.
+      - name: verify the image pulls without credentials
+        run: |
+          docker logout >/dev/null 2>&1 || true
+          for attempt in 1 2 3 4 5 6; do
+            if docker pull "${IMAGE}:${{ steps.version.outputs.version }}"; then
+              exit 0
+            fi
+            echo "attempt ${attempt} failed (registry propagation?), retrying"
+            sleep 20
+          done
+          echo "::error::cannot pull ${IMAGE} anonymously. Make the Docker Hub" \
+            "repository public (Repository settings -> Visibility -> Public)" \
+            "and check that DOCKERHUB_USERNAME owns it."
+          exit 1
+
       - name: summary
         run: |
           {
