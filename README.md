@@ -1,10 +1,19 @@
-# openproject-agent-engine
+# OpenProject Agent Engine
+
+[![Docker image](https://img.shields.io/badge/Docker-kookster310%2Fop--agent--engine-2496ED?logo=docker&logoColor=white)](https://hub.docker.com/r/kookster310/op-agent-engine)
+[![Latest tag](https://img.shields.io/docker/v/kookster310/op-agent-engine?sort=semver&logo=docker&logoColor=white&label=latest%20tag)](https://hub.docker.com/r/kookster310/op-agent-engine/tags)
 
 Polls OpenProject work packages and dispatches CLI coding agents (currently
 supports pi and OpenCode) to work on them. OpenProject is the system of record:
 the engine claims work, prepares a per-agent clone, renders a prompt, runs the
 agent, verifies the outcome against GitHub and OpenProject, and performs
 **every** status transition itself. Agents never change status.
+
+## Demo
+
+[![Watch the OpenProject Agent Engine demo](docs/op-agent-engine-demo-poster.jpg)](docs/op-agent-engine-demo.mp4)
+
+Click the preview to watch the demo (84 seconds, MP4).
 
 ## How a ticket flows
 
@@ -63,6 +72,11 @@ starts with `ENGINE:`.
    docker compose up -d
    docker compose logs -f engine
    ```
+
+   This pulls [`kookster310/op-agent-engine:latest`](https://hub.docker.com/r/kookster310/op-agent-engine)
+   by default. Pin a release by setting `OP_AGENT_ENGINE_TAG=<version>` in
+   `docker/.env` — see the
+   [published tags](https://hub.docker.com/r/kookster310/op-agent-engine/tags).
 
    After adding a project or changing its `GIT_REPO` / `AGENT` setup in
    OpenProject, run `docker compose restart engine`. After changing
