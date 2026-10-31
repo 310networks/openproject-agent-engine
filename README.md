@@ -1,15 +1,11 @@
 # openproject-agent-engine
 
-Polls OpenProject work packages and dispatches CLI coding agents (pi,
-OpenCode, or any configured command) to work on them. OpenProject is the
+Polls OpenProject work packages and dispatches CLI coding agents (currently supports pi,
+OpenCode) to work on them. OpenProject is the
 system of record: the engine claims work, prepares a per-agent clone, renders
 a prompt, runs the agent, verifies the outcome against GitHub and
 OpenProject, and performs **every** status transition itself. Agents never
 change status.
-
-The engine runs as a container. The image carries Python, `git`, `gh`, the
-OpenProject CLI and the agent CLIs; you supply credentials and a handful of
-environment variables.
 
 ## How a ticket flows
 
@@ -27,9 +23,9 @@ and every engine comment starts with `ENGINE:`. Failed runs are retried up to
 
 ## Requirements
 
-- Docker Engine with Compose v2 (nothing else is installed on the host).
+- Docker
 - OpenProject 17 (API v3) with a project, plus one-time administrator access.
-- A GitHub repository the engine can clone, push to and merge into.
+- A GitHub token with access to the repositories being worked on. Must be able to push and merge.
 
 ## Quick start
 
