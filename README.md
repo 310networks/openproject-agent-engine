@@ -34,13 +34,14 @@ agent, verifies the outcome against GitHub and OpenProject, and performs
 
    It asks for the OpenProject URL and project identifier(s), asks for an
    administrator token (used once, never stored).
+
    It creates the engine user and one account per agent, 
    prints each generated password at that account's
    token prompt, verifies every token and writes to `docker/.env`.
    It finishes with `check-config`. Re-running is safe; `--reprompt-tokens`
    asks for all tokens again.
 
-3. Add the model provider key to `docker/.env`, for example:
+4. Add the model provider key to `docker/.env`, for example:
 
    ```bash
    ANTHROPIC_API_KEY=sk-ant-...
@@ -49,14 +50,14 @@ agent, verifies the outcome against GitHub and OpenProject, and performs
    The full list of accepted provider variables is in
    [docs/CONFIG.md](docs/CONFIG.md#provider-credentials).
 
-4. Start the stack:
+5. Start the stack:
 
    ```bash
    docker compose up -d
    docker compose logs -f engine
    ```
 
-5. Notes
+6. Notes
 
    After adding a project or changing its `GIT_REPO` / `AGENT` setup in
    OpenProject, run `docker compose restart engine`. After changing
