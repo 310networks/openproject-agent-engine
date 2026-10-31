@@ -35,11 +35,12 @@ agent, verifies the outcome against GitHub and OpenProject, and performs
    It asks for the OpenProject URL and project identifier(s), as well as an
    administrator token (used once, never stored).
 
-   It creates the engine user and one account per agent, 
-   prints each generated password at that account's
-   token prompt, verifies every token and writes to `docker/.env`.
-   It finishes with `check-config`. Re-running is safe; `--reprompt-tokens`
-   asks for all tokens again.
+   It creates the engine user and one account per agent, prints each generated
+   password at that account's token prompt, verifies every token and writes to
+   `docker/.env`. Passwords are shown once — record them; a later run cannot
+   recover them, so a forgotten password must be reset under
+   **Administration → Users**. It finishes with `check-config`. Re-running is
+   safe; `--reprompt-tokens` asks for all tokens again.
 
 4. Add the model provider key to `docker/.env`, for example:
 

@@ -75,7 +75,7 @@ and permissions** (the API is read-only for roles):
 
 - **Agent Worker** (shared by all four agent users): *View work packages*,
   *Add comments*, *Become assignee/responsible*. No other write permissions —
-  agents can never change status.
+  agents can never change status. Leave every workflow transition unchecked.
 
 The `agent-engine` user is an **administrator** instead of a project role:
 *Administration → Users → agent-engine → Administrator*. An administrator
@@ -83,45 +83,5 @@ has every project permission and can list users, so it needs no project role
 and no project membership. `provision` creates only the agents'
 memberships.
 
-## 6. Workflow transitions
-
-Nothing to configure for the engine user: it is an administrator and is not
-restricted by project-role workflows. The engine enforces its own status
-transitions client-side, and `On Hold` is terminal for it. For the **Agent
-Worker** role leave every transition unchecked so agents cannot change
-status.
-
-## 7. Users and tokens
-
-Only an admin token is needed before this step: `./provision-users.sh` asks for
-it at run time (it is never stored). `op-agent-engine provision --apply` (run
-by the script, or manually with `OP_PROVISION_TOKEN` set) creates the five users
-(`frontendEngineer`, `backendEngineer`, `leadDesigner`, `codeReviewer`,
-`agent-engine`) and one membership per agent in the configured project. The
-engine user is created as a regular user; **make it an administrator** as
-described in [section 5](#5-roles) before using its token. Provisioning never
-deletes, deactivates or renames logins.
-
-The users' passwords are randomly generated. Administrators cannot mint API
-tokens for other users, so log in as each user and create the token under
-**My account → Access tokens**.
-
-`./provision-users.sh` (in the deployment directory) shows each newly created
-account's generated password at that user's token prompt, asks for the token one
-at a time — the `agent-engine` runtime token plus one per agent — verifies it
-against `/api/v3/users/me`, and writes it to `docker/.env` (mode `0600`).
-The passwords are shown once and not saved, so record them if you may need to
-sign in again; a later run cannot recover them for an existing account, so a
-forgotten password has to be reset in **Administration → Users**.
-
-| Variable | Owner |
-|---|---|
-| `OP_ENGINE_TOKEN` | `agent-engine` — runtime polling and transitions |
-| `OP_PROVISION_TOKEN` | an administrator — `provision`/`check-config` only (asked for at run time, not stored) |
-| `OP_TOKEN_FRONTEND` / `OP_TOKEN_BACKEND` / `OP_TOKEN_DESIGNER` / `OP_TOKEN_REVIEWER` | the four agent users — passed into agent runs |
-
-`OP_ENGINE_TOKEN` belongs to the administrator `agent-engine` user, which is
-what lets startup list agent logins via `GET /api/v3/users`; keep it on the
-service host only. Because that token is admin-capable, `OP_PROVISION_TOKEN`
-may be omitted after setup and `provision`/`check-config` fall back to it.
-`check-config` verifies every token belongs to the right login.
+The engine and agent accounts, their tokens and `docker/.env` are created by
+`./provision-users.sh`; see the [README quick start](../README.md#quick-start).
