@@ -67,7 +67,7 @@ Projects**, choose a text format, and choose **For all projects** (the API
 cannot create custom fields). One field is assigned to every project, so there
 is no per-project enablement — the same manual step as the `AGENT`
 work-package field; see
-[OPENPROJECT_SETUP.md](OPENPROJECT_SETUP.md#3-custom-fields-git_repo-agent).
+[OPENPROJECT_SETUP.md](OPENPROJECT_SETUP.md#3-project-attribute-git_repo).
 
 `GITHUB_REPO_DIR` is a single-project clone-directory override. For multiple
 projects the directory is derived from the repository name and made unique.
