@@ -139,24 +139,3 @@ container environment variables. Users pull; they do not build.
 | `GH_VERSION` | `2.80.0` | GitHub CLI version |
 | `OP_CLI_REF` | `259f293a` | OpenProject CLI commit (`op`) built from source |
 | `INSTALL_OPENCODE` | `false` | `true` also installs opencode |
-
-## Everyday commands
-
-```bash
-docker compose ps                            # what is running
-docker compose logs -f engine                # follow the engine
-docker compose run --rm check-config         # validate config, no polling
-docker compose run --rm cleanup              # retention sweep (replaces the timer)
-docker compose run --rm provision --apply    # re-provision users, no interview
-docker compose restart                       # after editing workflow.yaml, pi/, opencode/, gitconfig
-docker compose up -d                         # after editing engine.env (recreates)
-docker compose pull && docker compose up -d  # upgrade
-docker compose down                          # stop; volumes survive
-docker compose down -v                       # stop and delete all state (re-clones repos)
-```
-
-Nightly cleanup instead of the systemd timer:
-
-```cron
-0 4 * * * cd /opt/op-agent-engine && docker compose run --rm cleanup
-```
