@@ -1,24 +1,11 @@
 # op-agent-engine Docker Container
 
-Copy ./docker/ to `/opt/op-agent-engine` (or anywhere else), edit your configuration in
-`config/`, and run compose.
 Docker Hub (`kookster310/op-agent-engine`).
-
-| Path | What it is | Committed? |
-|---|---|---|
-| `docker-compose.yml` | `engine`, `dashboard` and the one-shot `provision` / `cleanup` / `check-config` tasks | yes |
-| `config/` | **your** configuration and credentials, mounted read-only at `/config` | templates yes, secrets no |
-| `provision-users.sh` | creates the OpenProject accounts and collects one token per account | yes |
-| `config-sync.sh` | stages `~/.pi/agent`, `~/.gitconfig` and `~/.config/opencode` into `config/` (checkout only) | yes |
-| `Dockerfile`, `entrypoint.sh` | how the image is built and started — built by CI, not by you | yes |
-| `version.json` | the released tag; must equal `project.version` in `pyproject.toml` | yes |
-
-Full documentation: [../docs/DOCKER.md](../docs/DOCKER.md).
 
 ## Quick start
 
 ```bash
-cd /opt/op-agent-engine          # wherever you put this directory
+git clone https://310networks/openproject-agent-engine && cd openproject-agent-engine/docker
 vim config/engine.env            # OP_BASE_URL + OP_PROVISION_TOKEN (see below)
 vim config/workflow.yaml         # projects, repositories, agents
 vim config/pi/auth.json          # provider key (or use the runner env instead)
@@ -31,6 +18,18 @@ docker compose up -d
 repository root is the starting point. If you have the repository checked out,
 `./config-sync.sh` fills in `config/` from your own `~` and seeds
 `workflow.yaml` and `engine.env` for you.
+
+
+| Path | What it is | Committed? |
+|---|---|---|
+| `docker-compose.yml` | `engine`, `dashboard` and the one-shot `provision` / `cleanup` / `check-config` tasks | yes |
+| `config/` | **your** configuration and credentials, mounted read-only at `/config` | templates yes, secrets no |
+| `provision-users.sh` | creates the OpenProject accounts and collects one token per account | yes |
+| `config-sync.sh` | stages `~/.pi/agent`, `~/.gitconfig` and `~/.config/opencode` into `config/` (checkout only) | yes |
+| `Dockerfile`, `entrypoint.sh` | how the image is built and started — built by CI, not by you | yes |
+| `version.json` | the released tag; must equal `project.version` in `pyproject.toml` | yes |
+
+Full documentation: [../docs/DOCKER.md](../docs/DOCKER.md).
 
 ## `config/engine.env`
 
