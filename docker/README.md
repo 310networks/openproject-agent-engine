@@ -1,14 +1,13 @@
 # op-agent-engine Docker Container
 
-Copy ./docker/ to `/opt/op-agent-engine` (or anywhere else), put your configuration in
+Copy ./docker/ to `/opt/op-agent-engine` (or anywhere else), edit your configuration in
 `config/`, and run compose.
 Docker Hub (`kookster310/op-agent-engine`).
 
 | Path | What it is | Committed? |
 |---|---|---|
 | `docker-compose.yml` | `engine`, `dashboard` and the one-shot `provision` / `cleanup` / `check-config` tasks | yes |
-| `config/` | **your** configuration and credentials, mounted read-only at `/config` | no — skeleton only |
-| `config.example/` | non-personal examples of the optional agent files | yes |
+| `config/` | **your** configuration and credentials, mounted read-only at `/config` | templates yes, secrets no |
 | `provision-users.sh` | creates the OpenProject accounts and collects one token per account | yes |
 | `config-sync.sh` | stages `~/.pi/agent`, `~/.gitconfig` and `~/.config/opencode` into `config/` (checkout only) | yes |
 | `Dockerfile`, `entrypoint.sh` | how the image is built and started — built by CI, not by you | yes |
@@ -22,6 +21,7 @@ Full documentation: [../docs/DOCKER.md](../docs/DOCKER.md).
 cd /opt/op-agent-engine          # wherever you put this directory
 vim config/engine.env            # OP_BASE_URL + OP_PROVISION_TOKEN (see below)
 vim config/workflow.yaml         # projects, repositories, agents
+vim config/pi/auth.json          # provider key (or use the runner env instead)
 ./provision-users.sh             # create the accounts, mint one token each
 docker compose up -d
 ```
@@ -107,18 +107,25 @@ Set these in your shell or in a `.env` file next to `docker-compose.yml`:
 | `opencode/opencode.json` | `~/.config/opencode/opencode.json` | only with `INSTALL_OPENCODE=true` |
 | `opencode/auth.json` | `~/.local/share/opencode/auth.json` | where opencode keeps credentials |
 
-Copy the shapes from `config.example/`, then edit. Permissions matter: the
-container runs as its own user (uid 10001), so everything here must be
-world-readable (`0644`) — except `engine.env`, which the host side reads and
-which may stay `0600`. `config-sync.sh` sets this up correctly.
+These files are templates with placeholder values: edit them in place, nothing
+has to be copied. Permissions matter: the container runs as its own user (uid
+10001), so everything here must be world-readable (`0644`) — except
+`engine.env`, which the host side reads and which may stay `0600`.
+`config-sync.sh` sets this up correctly.
+
+`.gitignore` keeps `engine.env`, `workflow.yaml`, `pi/skills/` and
+`opencode/auth.json` out of git, but the templates above *are* tracked, so
+`git status` will show your edits once you paste a real key into
+`config/pi/auth.json`. Never commit that: this directory is yours, not the
+project's.
 
 ### Agent provider credentials
 
 The agent CLIs need a model provider key. Two ways, both without baking
 anything into the image:
 
-1. `config/pi/auth.json` (and `config/opencode/auth.json` for opencode) — see
-   `config.example/pi/auth.json`.
+1. `config/pi/auth.json` (and `config/opencode/auth.json` for opencode) — edit
+   the template that is already there.
 2. An environment variable in the runner's `env:` block in
    `config/workflow.yaml`, e.g. `env: { OPENROUTER_API_KEY: "${OPENROUTER_API_KEY}" }`
    with the value in `config/engine.env`. The engine only forwards a fixed set

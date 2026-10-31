@@ -7,10 +7,9 @@
 # except engine.env is world-readable, so the image's own user can read it
 # without any UID/GID matching.
 #
-# ./docker/config is never committed (it is git-ignored): it holds copies of the
-# operator's own credentials, settings, skills and git identity, so this script
-# is what creates it. The non-personal shapes it expects are documented in
-# ./docker/config.example, which *is* committed.
+# ./docker/config ships as templates you edit in place. This script replaces
+# them with the operator's own files when they exist; the values it writes are
+# real credentials, and only the templates are committed (see .gitignore).
 #
 # Usage:
 #   docker/config-sync.sh              copy config and report what changed

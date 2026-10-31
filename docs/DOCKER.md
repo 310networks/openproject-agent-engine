@@ -43,33 +43,30 @@ docker/                        <- the whole deployment
 ├── docker-compose.yml         services: engine, dashboard, one-shot tasks
 ├── provision-users.sh         create the OpenProject accounts and tokens
 ├── config-sync.sh             stage your ~ into config/ (checkout only)
-├── config.example/            committed examples, copy what you need
-│   ├── gitconfig
-│   ├── pi/{settings,auth}.json
-│   └── opencode/opencode.json
-├── config/                    yours, never committed
-│   ├── engine.env             required  OP_BASE_URL + tokens (mode 0600)
-│   ├── workflow.yaml          required  project, repository, agents
-│   ├── gitconfig              recommended  identity for agent commits
+├── config/                    yours: edit in place
+│   ├── engine.env             required  OP_BASE_URL + tokens (mode 0600, git-ignored)
+│   ├── workflow.yaml          required  project, repository, agents (git-ignored)
+│   ├── gitconfig              identity for agent commits (template)
 │   ├── pi/
-│   │   ├── auth.json          provider credentials (or keys via env)
-│   │   ├── settings.json      optional  default provider/model
-│   │   └── skills/            optional  skills available to every run
+│   │   ├── auth.json          provider credentials (template, placeholder key)
+│   │   ├── settings.json      default provider/model (template)
+│   │   └── skills/            skills available to every run (git-ignored)
 │   └── opencode/
-│       └── opencode.json      optional  only with INSTALL_OPENCODE=true
+│       ├── opencode.json      only with INSTALL_OPENCODE=true (template)
+│       └── auth.json          opencode credentials (git-ignored)
 ├── Dockerfile                 image definition (CI builds it, you do not)
 ├── version.json               the published tag, see "Images and releases"
 └── entrypoint.sh              seeds /config into the volumes, then execs
 ```
 
-Your configuration is never part of the repository. Only the empty skeleton
-(`config/{,pi/,pi/skills/,opencode/}`, each with a `.gitkeep`) is committed;
-`.gitignore` allow-lists the skeleton and ignores everything else, because the
-rest is a copy of your credentials, settings, skills and git identity.
-`config.example/` is the committed, non-personal counterpart: it documents the
-shape of each optional file (`pi/settings.json`, `pi/auth.json`,
-`opencode/opencode.json`, `gitconfig`) so you can fill them in without
-guessing.
+`config/` ships as templates so nothing has to be copied around: edit
+`gitconfig`, `pi/settings.json`, `pi/auth.json` and `opencode/opencode.json` in
+place. Those four are committed (with placeholder values, enforced by
+`tests/test_docker.py`), while everything that can hold a real secret or your
+own content — `engine.env`, `workflow.yaml`, `pi/skills/`,
+`opencode/auth.json`, anything else you add — is git-ignored. Your edits to the
+templates will show up in `git status`, so do not commit them once they hold a
+real key.
 
 `config-sync.sh` does that filling for you when you have the repository
 checked out: it creates the tree, seeds `workflow.yaml` and `engine.env` from
@@ -105,10 +102,9 @@ chmod 600 config/engine.env
 # workflow.yaml: the same document a systemd install uses (see CONFIG.md).
 curl -fsS -o config/workflow.yaml "$repo/workflow.example.yaml"
 
-# Agent configuration: optional. Copy the examples and edit them, or bring
-# your own files (a checkout can do this for you: ./config-sync.sh).
-cp -r ~/.pi/agent/auth.json config/pi/auth.json             # provider keys
-cp ~/.gitconfig config/gitconfig                            # recommended
+# Agent configuration: the templates in config/ are yours to edit in place.
+$EDITOR config/pi/auth.json       # provider key (or use the runner env instead)
+$EDITOR config/gitconfig          # identity for agent commits
 
 ./provision-users.sh                              # create users, mint tokens
 docker compose run --rm --no-deps check-config     # validate before starting
@@ -118,8 +114,8 @@ docker compose logs -f engine
 ```
 
 `docker/docker-compose.yml` only pulls, so a checkout changes nothing about
-deployment. From a checkout, `cd docker && ./config-sync.sh` stages the whole
-`config/` for you from your own `~`.
+deployment. From a checkout, `cd docker && ./config-sync.sh` fills in the whole
+`config/` — including `engine.env` and `workflow.yaml` — from your own `~`.
 
 ## Creating the users and tokens
 
@@ -169,9 +165,9 @@ one-time passwords and the verification are identical. For a non-interactive
 run, `docker compose run --rm provision --apply` provisions without the
 interview.
 
-Provider credentials for the agent CLI are separate from all of this: either
-`config/pi/auth.json` (see `config.example/pi/auth.json` for the shape) or
-provider keys in the runner's `env:` block in `config/workflow.yaml`.
+Provider credentials for the agent CLI are separate from all of this: either a
+real key in the `config/pi/auth.json` template, or provider keys in the runner's
+`env:` block in `config/workflow.yaml`.
 
 ## The dashboard
 

@@ -6,9 +6,8 @@ The container design relies on a few things lining up:
 * the container paths ``docker/config-sync.sh`` writes into ``docker/config/engine.env``
   are exactly the mount points declared in ``docker-compose.yml``;
 * the image never receives operator state or secrets (``.dockerignore``);
-* the repository ships no operator configuration -- ``docker/config/`` is
-  created by the sync script from the operator's own files, and
-  ``docker/config.example/`` holds only non-personal shapes.
+* ``docker/config/`` ships as templates edited in place -- nothing that can
+  hold a real secret or the operator's own content may be committed in it.
 
 These tests fail when one of them drifts, which is otherwise only visible after
 a full image build.
@@ -104,32 +103,48 @@ def _generated_env(tmp_path: Path) -> dict[str, str]:
 # -- repository contents -----------------------------------------------------
 
 
-def test_repository_ships_only_the_config_skeleton() -> None:
-    # docker/config/ holds the operator's own credentials and settings, so only
-    # the empty skeleton may be committed there.
-    for skeleton in (
+def test_committed_config_is_templates_only() -> None:
+    # docker/config/ ships as templates that are edited in place, so the only
+    # committed files there are the templates and the empty skeleton.
+    templates = {
+        "docker/config/gitconfig",
+        "docker/config/pi/auth.json",
+        "docker/config/pi/settings.json",
+        "docker/config/opencode/opencode.json",
+    }
+    expected = templates | {
         "docker/config/.gitkeep",
         "docker/config/pi/.gitkeep",
         "docker/config/pi/skills/.gitkeep",
         "docker/config/opencode/.gitkeep",
-    ):
-        assert (REPO_ROOT / skeleton).is_file(), f"{skeleton} missing"
+    }
+    tracked = {
+        path
+        for path in _git("ls-files", "-z", "docker/config").split("\0")
+        if path
+    }
+    assert tracked == expected, tracked ^ expected
+    # Nothing ignored may sneak in as an untracked addition either.
+    untracked = {
+        path
+        for path in _git(
+            "ls-files", "--others", "--exclude-standard", "-z", "docker/config"
+        ).split("\0")
+        if path
+    }
+    assert untracked == set(), untracked
 
-    # Whatever git knows about (tracked or about to be added) is skeleton only.
-    for args in (("ls-files",), ("ls-files", "--others", "--exclude-standard")):
-        paths = [path for path in _git(*args, "-z", "docker/config").split("\0") if path]
-        assert all(path.endswith(".gitkeep") for path in paths), paths
-
+    # Everything that can hold a real secret or the operator's own content
+    # stays out of git, while the templates next to it do not.
     for operator_file in (
         "docker/config/engine.env",
         "docker/config/workflow.yaml",
-        "docker/config/gitconfig",
-        "docker/config/pi/auth.json",
-        "docker/config/pi/settings.json",
         "docker/config/pi/skills/demo/SKILL.md",
-        "docker/config/opencode/opencode.json",
+        "docker/config/opencode/auth.json",
     ):
         assert _is_ignored(operator_file), f"{operator_file} must be git-ignored"
+    for template in templates:
+        assert not _is_ignored(template), f"{template} must be committed"
 
 
 def _git(*args: str) -> str:
@@ -156,7 +171,6 @@ def test_dockerignore_keeps_secrets_and_state_out_of_the_image() -> None:
 
     for required in (
         "docker/config",
-        "docker/config.example",
         ".git",
         "workflow.yaml",
         "engine.env",
@@ -165,32 +179,39 @@ def test_dockerignore_keeps_secrets_and_state_out_of_the_image() -> None:
         assert required in patterns
 
 
-def test_config_examples_are_valid_and_free_of_operator_data() -> None:
-    examples = REPO_ROOT / "docker" / "config.example"
+def test_committed_config_templates_are_valid_and_free_of_operator_data() -> None:
+    config = REPO_ROOT / "docker" / "config"
 
     for name in ("pi/settings.json", "pi/auth.json", "opencode/opencode.json"):
-        payload = json.loads((examples / name).read_text())
+        payload = json.loads((config / name).read_text())
         assert isinstance(payload, dict), name
 
-    # Placeholders only: no real keys, no personal paths or identities.
-    for path in examples.rglob("*"):
-        if not path.is_file():
-            continue
+    # Placeholders only: this is the file a real key gets pasted into, so the
+    # committed version must never contain one.
+    for path in (
+        config / "gitconfig",
+        config / "pi" / "settings.json",
+        config / "pi" / "auth.json",
+        config / "opencode" / "opencode.json",
+    ):
         text = path.read_text()
         assert "/home/" not in text, f"{path} leaks a personal path"
         assert "310networks" not in text, f"{path} leaks an operator host"
+        assert "@example.com" not in text or path.name == "gitconfig", path
         for line in text.splitlines():
             if '"key"' in line:
                 assert "replace-with" in line, f"{path} looks like a real key"
+        if path.name == "gitconfig":
+            assert "agent@example.com" in text, "gitconfig must not name a real person"
 
     # opencode json is only read when the image is built with it, but the
     # schema key must point at the real config URL.
-    assert "opencode.ai/config.json" in (examples / "opencode" / "opencode.json").read_text()
+    assert "opencode.ai/config.json" in (config / "opencode" / "opencode.json").read_text()
 
 
 def test_entrypoint_seeds_every_documented_config_file() -> None:
     entrypoint = (REPO_ROOT / "docker" / "entrypoint.sh").read_text()
-    examples = REPO_ROOT / "docker" / "config.example"
+    config = REPO_ROOT / "docker" / "config"
 
     assert 'seed_file "${CONFIG_DIR}/pi/settings.json"' in entrypoint
     # auth files hold keys and must not be world-readable in the volume.
@@ -200,7 +221,7 @@ def test_entrypoint_seeds_every_documented_config_file() -> None:
     assert 'for src in "${CONFIG_DIR}"/opencode/*.json' in entrypoint
     assert 'auth.json) seed_file "${src}" "${OPENCODE_DATA_DIR}/auth.json" 0600 ;;' in entrypoint
     assert '"${OPENCODE_CONFIG_DIR}/${src##*/}" 0644' in entrypoint
-    assert (examples / "gitconfig").is_file()
+    assert (config / "gitconfig").is_file()
 
 
 def test_container_scripts_are_executable() -> None:

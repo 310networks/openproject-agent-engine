@@ -2,7 +2,6 @@
 .git
 .gitignore
 docker/config
-docker/config.example
 .env
 workflow.yaml
 engine.env

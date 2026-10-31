@@ -70,9 +70,16 @@ if [ -d "${CONFIG_DIR}/pi/skills" ]; then
   log "seeded ${AGENT_DIR}/skills ($(find "${AGENT_DIR}/skills" -name SKILL.md | wc -l) skills)"
 fi
 
+# The shipped templates are edited in place, so a placeholder key is the normal
+# state of a fresh deployment -- say so once instead of failing 30 minutes later
+# inside a run.
 if [ ! -f "${AGENT_DIR}/auth.json" ]; then
   log "WARNING: no pi credentials at ${CONFIG_DIR}/pi/auth.json -- runs will"
   log "         fail unless the agent CLI gets its key from the environment"
+elif grep -q 'replace-with' "${AGENT_DIR}/auth.json"; then
+  log "WARNING: ${CONFIG_DIR}/pi/auth.json still holds placeholder keys."
+  log "         Put a real provider key there, or pass it through the runner's"
+  log "         env: block in ${CONFIG_DIR}/workflow.yaml"
 fi
 
 exec op-agent-engine "$@"

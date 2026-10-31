@@ -1,9 +1,9 @@
 # Docker Compose deployment of the agent engine.
 #
 # Every Docker artifact lives in this directory, and deployment is pull-only:
-# nothing is built here. All you supply is this file plus ./config
-# (workflow.yaml, engine.env, and optionally gitconfig, pi/{auth,settings}.json,
-# pi/skills/ and opencode/*.json -- see ./config.example):
+# nothing is built here. All you supply is this file plus ./config: edit
+# engine.env (tokens), workflow.yaml (your projects and agents) and the agent
+# templates that ship next to them:
 #
 #   docker compose pull && docker compose up -d
 #   docker compose logs -f engine
