@@ -84,3 +84,40 @@ def test_formatter_formats_exceptions() -> None:
         )
     payload = json.loads(formatter.format(record))
     assert "ValueError: boom" in payload["exception"]
+
+
+def test_provider_api_key_env_names_are_redacted() -> None:
+    stream = io.StringIO()
+    configure_logging(
+        "INFO",
+        stream=stream,
+        environ={
+            "OPENROUTER_API_KEY": "sk-or-plaintext",
+            "ANTHROPIC_API_KEY": "sk-ant-plaintext",
+        },
+    )
+    get_logger("test").info("using sk-or-plaintext and sk-ant-plaintext")
+    record = stream.getvalue().strip()
+
+    assert "sk-or-plaintext" not in record
+    assert "sk-ant-plaintext" not in record
+    assert REDACTED in record
+
+
+def test_extra_field_with_provider_key_name_is_redacted() -> None:
+    stream = io.StringIO()
+    configure_logging("INFO", stream=stream, environ={})
+    get_logger("test").info("hello", extra={"OPENCODE_API_KEY": "plain", "OP_TOKEN_X": "plain"})
+    payload = json.loads(stream.getvalue().strip())
+
+    assert payload["OPENCODE_API_KEY"] == REDACTED
+    assert payload["OP_TOKEN_X"] == REDACTED
+
+
+def test_non_secret_names_stay_visible() -> None:
+    from op_agent_engine.logging import is_secret_name
+
+    assert not is_secret_name("MAX_REJECTIONS")
+    assert not is_secret_name("WORKSPACE_ROOT")
+    assert not is_secret_name("OPENCODE")
+    assert is_secret_name("OPENROUTER_API_KEY")

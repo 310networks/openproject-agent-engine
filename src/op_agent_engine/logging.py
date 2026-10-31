@@ -4,9 +4,15 @@ Logs go to stdout as one JSON object per line. Journald captures stdout, so no
 file handling is required in the service.
 
 Secret handling: values of environment variables whose names start with ``OP_``
-or equal ``GH_TOKEN`` are registered as secrets when logging is configured, and
-their literal values are replaced with ``***`` wherever they appear in a log
-event or extra field. Extra fields whose *name* looks secret are redacted too.
+or ``GH_TOKEN``, or that end with a credential suffix such as ``_API_KEY``,
+``_TOKEN``, ``_PASSWORD`` or ``_SECRET``, are registered as secrets when logging
+is configured, and their literal values are replaced with ``***`` wherever they
+appear in a log event or extra field. Extra fields whose *name* looks secret are
+redacted too.
+
+The suffix rule covers the provider keys the agent CLIs read (for example
+``OPENROUTER_API_KEY`` or ``ANTHROPIC_API_KEY``), which do not share the
+engine's ``OP_`` prefix.
 """
 
 from __future__ import annotations
@@ -22,6 +28,7 @@ from typing import Any, TextIO
 REDACTED = "***"
 
 _SECRET_PREFIXES = ("OP_", "GH_TOKEN")
+_SECRET_SUFFIXES = ("_API_KEY", "_TOKEN", "_PASSWORD", "_SECRET")
 
 _STANDARD_RECORD_KEYS = frozenset(
     {
@@ -56,7 +63,10 @@ _secret_values: set[str] = set()
 
 def is_secret_name(name: str) -> bool:
     """Return True when an environment/extra field name denotes a secret."""
-    return any(name.startswith(prefix) for prefix in _SECRET_PREFIXES)
+    upper = name.upper()
+    if any(upper.startswith(prefix) for prefix in _SECRET_PREFIXES):
+        return True
+    return any(upper.endswith(suffix) for suffix in _SECRET_SUFFIXES)
 
 
 def register_secrets(environ: Mapping[str, str] | None = None) -> None:
