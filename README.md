@@ -65,7 +65,10 @@ mkdir -p ~/op-agent-engine/config/pi && cd ~/op-agent-engine
 curl -fsSLO https://raw.githubusercontent.com/310networks/openproject-agent-engine/main/docker-compose.yml
 # then write config/engine.env, config/workflow.yaml and optionally
 # config/pi/{auth.json,settings.json}, config/pi/skills/ and config/gitconfig
-docker compose pull && docker compose up -d
+docker compose pull
+docker compose run --rm provision --apply   # create users, prints passwords once
+# paste each account's OP_TOKEN_* into config/engine.env, then:
+docker compose run --rm check-config && docker compose up -d
 ```
 
 The agent CLIs are baked into the image; your config, credentials and skills are

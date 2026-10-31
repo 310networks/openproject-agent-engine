@@ -26,5 +26,7 @@ services:
     build: *build
   cleanup:
     build: *build
+  provision:
+    build: *build
   check-config:
     build: *build

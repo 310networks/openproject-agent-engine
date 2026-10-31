@@ -302,10 +302,24 @@ def test_image_defaults_the_container_paths(tmp_path: Path) -> None:
 def test_compose_runs_the_expected_commands() -> None:
     assert _service("engine")["command"] == ["run"]
     assert _service("dashboard")["command"] == ["dashboard"]
-    assert _service("cleanup")["command"] == ["cleanup"]
-    # One-shot tasks must not be restarted or started by `up`.
-    assert _service("cleanup")["profiles"] == ["tasks"]
-    assert _service("cleanup")["restart"] == "no"
+    # One-shot tasks: the installer's steps, available without the installer.
+    for task, command in (
+        ("provision", "provision"),
+        ("cleanup", "cleanup"),
+        ("check-config", "check-config"),
+    ):
+        assert _service(task)["command"] == [command]
+        assert _service(task)["profiles"] == ["tasks"]
+        assert _service(task)["restart"] == "no"
+
+
+def test_docs_explain_provisioning_instead_of_the_installer() -> None:
+    docs = (REPO_ROOT / "docs" / "DOCKER.md").read_text()
+
+    assert "docker compose run --rm provision --apply" in docs
+    assert "OP_PROVISION_TOKEN" in docs
+    # A changed env file needs a recreate, not a restart.
+    assert "docker compose up -d" in docs
 
 
 def test_stop_grace_period_covers_the_engine_shutdown_budget(tmp_path: Path) -> None:

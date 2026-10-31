@@ -71,6 +71,15 @@ services:
     restart: "no"
     command: ["cleanup"]
 
+  # Creates the engine and agent users in OpenProject, then prints the
+  # generated password of every account it created (once):
+  #   docker compose run --rm provision --apply --json
+  provision:
+    <<: *engine
+    profiles: ["tasks"]
+    restart: "no"
+    command: ["provision"]
+
   # Validates config/workflow.yaml + config/engine.env without running a poll.
   check-config:
     <<: *engine

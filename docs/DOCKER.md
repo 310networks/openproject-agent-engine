@@ -26,8 +26,13 @@ are seeded (from the same examples a systemd install copies), with their
 paths rewritten to container paths and every token left as a placeholder.
 
 `/config` is authoritative: the entrypoint copies those files into the writable
-volumes on **every start**. Applying a configuration change is therefore
-`docker/config-sync.sh && docker compose restart`, not editing a live mount.
+volumes on **every start**, so applying a change is never editing a live mount:
+
+| Changed | Command |
+|---|---|
+| `config/workflow.yaml`, `config/pi/*`, `config/gitconfig` | `docker compose restart` |
+| `config/engine.env` (tokens, limits) | `docker compose up -d` — compose must recreate the container; `restart` keeps the old environment |
+| the image tag | `docker compose pull && docker compose up -d` |
 
 ## What you supply
 
@@ -89,6 +94,58 @@ Have the repository checked out anyway? `./docker/config-sync.sh` stages all of
 that for you -- it creates the tree, seeds the two files with container paths
 and copies `~/.pi/agent/{auth.json,settings.json,skills}` plus `~/.gitconfig`.
 
+## Creating the users and tokens
+
+There is no interactive installer in the container, but `provision` is the same
+code path `install.sh` calls, so the accounts and tokens are created the same
+way. Do the one-time instance setup first (statuses, `AGENT` custom field,
+Agent Worker role): [OPENPROJECT_SETUP.md](OPENPROJECT_SETUP.md).
+
+1. **Provisioning token.** In `config/engine.env` set `OP_BASE_URL` and
+   `OP_PROVISION_TOKEN` to an administrator's token. Nothing else is needed
+   yet — leave the `OP_TOKEN_*` values as placeholders.
+
+2. **Create the accounts.** This creates `agent-engine` plus one user per
+   agent in `workflow.yaml` and prints the generated password of each account
+   it created, once:
+
+   ```bash
+   docker compose run --rm provision --apply --json
+   ```
+
+   Accounts that already exist are reused, and their password is *not* shown —
+   reset it in **Administration → Users**, or paste a token you already have.
+   Passwords are never written to disk, so store them if you need to sign in
+   again.
+
+3. **Make `agent-engine` an administrator** (**Administration → Users →
+   agent-engine → Administrator**). The engine needs it to list users and to
+   edit work packages without a project role.
+
+4. **Mint one token per account.** OpenProject does not let an administrator
+   create tokens for other users, so sign in at `OP_BASE_URL` as each account
+   with the password from step 2 and create the token under **My account →
+   Access tokens**. Put it in `config/engine.env`:
+
+   | account | variable |
+   |---|---|
+   | `agent-engine` | `OP_ENGINE_TOKEN` |
+   | each agent's `op_login` | the matching `OP_TOKEN_*` referenced by `workflow.yaml` |
+
+5. **Verify.** Each token is checked against `/api/v3/users/me`, so this fails
+   loudly if a token belongs to the wrong user:
+
+   ```bash
+   docker compose run --rm check-config
+   ```
+
+6. **Start.** `docker compose up -d` — `up`, not `restart`, because the env
+   file changed.
+
+Provider credentials for the agent CLI are separate from all of this: either
+`config/pi/auth.json` (a copy of `~/.pi/agent/auth.json`) or provider keys in
+the runner's `env:` block.
+
 ## Building the image locally
 
 `docker-compose.yml` only pulls. To build from a checkout (engine changes,
@@ -122,11 +179,13 @@ mapping publishes.
 ## Maintenance
 
 ```bash
-docker compose run --rm check-config   # validate config without polling
-docker compose run --rm cleanup        # retention sweep (replaces the timer)
-docker compose restart                 # after editing ./config
-docker compose down                    # stop; volumes survive
-docker compose down -v                 # stop and delete all state (re-clones repos)
+docker compose run --rm provision --apply   # create/refresh OpenProject users
+docker compose run --rm check-config        # validate config without polling
+docker compose run --rm cleanup             # retention sweep (replaces the timer)
+docker compose restart                      # after editing workflow.yaml or pi/*
+docker compose up -d                        # after editing engine.env
+docker compose down                         # stop; volumes survive
+docker compose down -v                      # stop and delete all state (re-clones repos)
 ```
 
 Schedule cleanup on the host instead of the systemd timer:
