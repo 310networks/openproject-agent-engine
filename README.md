@@ -17,8 +17,7 @@ agent, verifies the outcome against GitHub and OpenProject, and performs
 
 - Docker
 - OpenProject 17 (API v3) with a project, plus one-time administrator access.
-- A GitHub repository, and a token that can push to it and merge pull
-  requests.
+- Github repository for each project and a token that can push to it and merge pull requests.
 
 ## Quick start
 
