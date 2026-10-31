@@ -37,7 +37,7 @@ is set **once per project**; there is nothing to select on each work package.
    attribute** (the API cannot create it).
 2. **Name**: `GIT_REPO`. **Format**: **Text**. Save.
 3. Make it available for **all projects**.
-4. In each monitored project's settings, set `GIT_REPO` to its repository
+4. In each monitored project's Overview page (openproject.example.com/projects/project-identifier), set `GIT_REPO` to its repository
    (`owner/name` or `https://github.com/owner/name`).
 
 The name is matched exactly. If your attribute is named differently — for
