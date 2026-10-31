@@ -27,9 +27,7 @@ and every engine comment starts with `ENGINE:`. Failed runs are retried up to
 - OpenProject 17 (API v3) with a project, plus one-time administrator access.
 - A GitHub repository the service user can clone, push to and merge into.
 
-## Quick start
-
-### Install Script - systemd
+## Install Script - systemd
 
 1. Clone the repo, copy the config files, and update OP_BASE_URL and OP_PROVISION_TOKEN
 ```bash
@@ -55,37 +53,16 @@ which is required for the engine to list users and edit work packages.
 
 The read-only dashboard is served at `http://127.0.0.1:8765` (see [docs/DASHBOARD.md](docs/DASHBOARD.md)).
 
-### Prefer containers?
-
-Everything Docker lives in [`docker/`](docker/), and that directory is the
-whole deployment — nothing is built locally, the image is pulled from Docker
-Hub.
-
-```bash
-mkdir -p ~/op-agent-engine/config && cd ~/op-agent-engine
-repo=https://raw.githubusercontent.com/310networks/openproject-agent-engine/main
-curl -fsSLO "$repo/docker/docker-compose.yml"
-curl -fsS -o provision-users.sh "$repo/docker/provision-users.sh" && chmod +x provision-users.sh
-
-# write config/{engine.env,workflow.yaml} and, optionally,
-# config/{gitconfig,pi/{auth,settings}.json,pi/skills/,opencode/}
-docker compose pull
-./provision-users.sh                    # create users + mint tokens, then:
-docker compose up -d
-```
-
-The agent CLIs are baked into the image; your configuration, credentials and
-skills live in `config/`, mounted read-only and never committed.
-`docker/config.example/` shows the shape of each optional file, and
-`docker/config-sync.sh` (from a checkout) stages your own `~` into it
-(see [docs/DOCKER.md](docs/DOCKER.md)).
-
 ## Uninstall
 
 ```bash
 ./uninstall.sh            # asks for confirmation
 ./uninstall.sh --dry-run  # print the plan only
 ```
+
+## Prefer Containers?
+
+Check out the docker [README here](docker/README.md)
 
 ## Documentation
 
