@@ -110,12 +110,11 @@ RUN if [ "${INSTALL_OPENCODE}" = "true" ]; then \
 
 COPY --from=opcli /out/op /usr/local/bin/op
 
-# The engine package. `pip install .` also embeds the workflow/env examples and
-# the systemd unit templates (see pyproject.toml force-include).
+# The engine package. `pip install .` also embeds the workflow/env examples
+# (see pyproject.toml force-include).
 WORKDIR /app
 COPY pyproject.toml README.md workflow.example.yaml engine.env.example /app/
 COPY src /app/src
-COPY deploy /app/deploy
 RUN pip install --no-cache-dir . \
  && rm -rf /app
 

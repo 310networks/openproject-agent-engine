@@ -6,14 +6,17 @@ Commands that need API access assume `engine.env` is sourced:
 ## Status and heartbeat
 
 ```bash
-op-agent-engine status            # or --json
-op-agent-engine dashboard         # read-only web UI on 127.0.0.1:8765
-op-agent-engine dashboard --port 9000   # or DASHBOARD_PORT in engine.env
+docker compose run --rm engine status          # or --json
+docker compose logs -f engine                  # follow the engine
+docker compose ps                              # what is up
 ```
 
+The dashboard (read-only, <http://127.0.0.1:8765>) is part of the stack unless
+the `dashboard` service is stopped; see [DASHBOARD.md](DASHBOARD.md).
+
 The heartbeat (`DATA_DIR/heartbeat`) is written after every poll; a stale one
-means the service is stopped or stuck — check
-`journalctl -u op-agent-engine --since '10 min ago'`.
+means the container is stopped or stuck — check
+`docker compose logs --since 10m engine`.
 
 ## Pause and resume
 
@@ -29,11 +32,11 @@ Every run has `DATA_DIR/runs/<runId>/` with `prompt.txt`, `stdout.log`,
 **redacted** environment).
 
 ```bash
-op-agent-engine status --json     # find the run id
+docker compose run --rm engine status --json   # find the run id
 RID=42
-less ~/.local/share/op-agent-engine/runs/$RID/meta.json
-tail -n 80 ~/.local/share/op-agent-engine/runs/$RID/stdout.log
-journalctl -u op-agent-engine --since today | grep "\"run_id\": $RID"
+docker compose exec engine cat runs/$RID/meta.json
+docker compose exec engine tail -n 80 runs/$RID/stdout.log
+docker compose logs --since 24h engine | grep "\"run_id\": $RID"
 ```
 
 Run history lives in `DATA_DIR/engine.db` (SQLite). The database is
@@ -66,17 +69,21 @@ process groups only when the recorded process start time still matches
 
 ## Retention
 
-`op-agent-engine cleanup` removes `DATA_DIR/runs/<id>` older than
-`RUN_RETENTION_DAYS` (`--dry-run`, `--days`, `--json`). The daily
-`op-agent-engine-cleanup.timer` runs it automatically. Without systemd, add a
-cron entry calling `cleanup`.
+`cleanup` removes `DATA_DIR/runs/<id>` older than `RUN_RETENTION_DAYS`
+(`--dry-run`, `--days`, `--json`). Nothing runs it on a schedule by itself, so
+add one cron entry on the host:
+
+```cron
+0 4 * * * cd /opt/op-agent-engine && docker compose run --rm cleanup
+```
 
 ## Security
 
 - Ticket and PR content is untrusted input; the engine never executes it.
-- Agents run with the service user's privileges; a dedicated Unix user is the
-  recommended hardening step (strict systemd sandboxing can break toolchains).
+- Agents run as the image's own unprivileged user (`uid 10001`), never as the
+  host user; the container mounts only `config/` (read-only) and named volumes.
 - If branch protection is enabled later, give the reviewer a dedicated
   `GH_TOKEN`; otherwise the reviewer's merge is blocked by its own review.
 - `OP_*`/`GH_TOKEN` values are redacted to `***` in logs and `meta.json`.
-  Keep `engine.env` at mode `0600`.
+  Keep `config/engine.env` at mode `0600`; every other file in `config/` must
+  be world-readable, because the container's own user reads it.

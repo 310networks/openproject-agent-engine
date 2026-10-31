@@ -21,9 +21,9 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from op_agent_engine import __version__, install
+from op_agent_engine import __version__
+from op_agent_engine.account_setup import AccountSetupError, run_provision_users
 from op_agent_engine.config import (
-    DEFAULT_DATA_DIR,
     DEFAULT_ENGINE_CONFIG,
     ConfigError,
     EngineSettings,
@@ -57,8 +57,6 @@ from op_agent_engine.provision import (
 )
 from op_agent_engine.retention import CleanupReport, cleanup_run_dirs
 from op_agent_engine.store import RUNS_DIR_NAME, Run, Store
-from op_agent_engine.uninstall import UninstallOptions, run_uninstall
-from op_agent_engine.wizard import run_setup
 
 CONFIG_ERROR_EXIT = 1
 OK_EXIT = 0
@@ -73,7 +71,7 @@ def _add_common_options(
 ) -> None:
     """Options accepted both before and after the subcommand.
 
-    The systemd unit uses ``run --config PATH``; users also type
+    The container command is ``run`` (``ENGINE_CONFIG`` names the file); users also type
     ``--config PATH check-config``. Defining the same destination on both
     parsers keeps both forms working. ``SUPPRESS`` on the subparser avoids
     overwriting a value parsed before the subcommand.
@@ -226,44 +224,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="print the cleanup report as JSON",
     )
 
-    setup = subparsers.add_parser(
-        "setup",
-        help="interactive end-to-end installer (init, provision, tokens, service)",
-    )
-    setup.add_argument(
-        "--source-dir",
-        type=Path,
-        default=None,
-        metavar="DIR",
-        help="checkout containing workflow.yaml and engine.env (default: cwd)",
-    )
-    setup.add_argument(
-        "--config-dir",
-        type=Path,
-        default=None,
-        metavar="DIR",
-        help="target directory (default: ~/.config/op-agent-engine)",
-    )
-    setup.add_argument(
-        "--skip-service",
-        action="store_true",
-        help="do not install the systemd units",
-    )
-    setup.add_argument(
-        "--yes",
-        "-y",
-        action="store_true",
-        help="answer yes to the systemd installation prompt",
-    )
-    setup.add_argument(
-        "--reprompt-tokens",
-        action="store_true",
-        help=(
-            "ask for every API token again instead of reusing the valid "
-            "tokens already stored in engine.env"
-        ),
-    )
-
     provision_users = subparsers.add_parser(
         "provision-users",
         help=(
@@ -288,97 +248,7 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
-    uninstall = subparsers.add_parser(
-        "uninstall",
-        help="remove local files and OpenProject users (dry-run by default)",
-    )
-    uninstall.add_argument(
-        "--source-dir",
-        type=Path,
-        default=None,
-        metavar="DIR",
-        help="checkout containing workflow.yaml and engine.env (default: cwd)",
-    )
-    uninstall.add_argument(
-        "--config-dir",
-        type=Path,
-        default=None,
-        metavar="DIR",
-        help="config directory (default: ~/.config/op-agent-engine)",
-    )
-    uninstall.add_argument(
-        "--data-dir",
-        type=Path,
-        default=None,
-        metavar="DIR",
-        help="data directory (default: ~/.local/share/op-agent-engine)",
-    )
-    uninstall.add_argument(
-        "--apply",
-        action="store_true",
-        help="perform the removal (default: dry-run)",
-    )
-    uninstall.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="print the plan and change nothing (default unless --apply)",
-    )
-    uninstall.add_argument(
-        "--yes",
-        "-y",
-        action="store_true",
-        help="do not ask for confirmation",
-    )
-    uninstall.add_argument(
-        "--keep-config",
-        action="store_true",
-        help="keep ~/.config/op-agent-engine and the checkout config files",
-    )
-    uninstall.add_argument(
-        "--keep-data",
-        action="store_true",
-        help="keep ~/.local/share/op-agent-engine (runs, database, staged units)",
-    )
-    uninstall.add_argument(
-        "--keep-users",
-        action="store_true",
-        help="do not remove or lock OpenProject users",
-    )
-    uninstall.add_argument(
-        "--purge-agent-repos",
-        action="store_true",
-        help="also delete WORKSPACE_ROOT/*/repositories clones",
-    )
 
-    init = subparsers.add_parser(
-        "init",
-        help="scaffold the config directory from the bundled examples",
-    )
-    init.add_argument(
-        "--config-dir",
-        type=Path,
-        default=None,
-        metavar="DIR",
-        help="target directory (default: ~/.config/op-agent-engine)",
-    )
-
-    install_service = subparsers.add_parser(
-        "install-service",
-        help="render the systemd units; --apply installs and enables them",
-    )
-    install_service.add_argument(
-        "--apply",
-        action="store_true",
-        help="install the units with sudo and enable the service and timer",
-    )
-    install_service.add_argument(
-        "--stage-dir",
-        type=Path,
-        default=None,
-        metavar="DIR",
-        help="where to stage the rendered units (default: "
-        "~/.local/share/op-agent-engine/systemd)",
-    )
     return parser
 
 
@@ -757,67 +627,6 @@ def _provision(path: Path, *, apply: bool, as_json: bool) -> int:
     return OK_EXIT if report.ok else CONFIG_ERROR_EXIT
 
 
-def _init(config_dir: Path) -> int:
-    """Scaffold config files (idempotent) and print the next steps."""
-    report = install.init_config(config_dir)
-    for path in report.created:
-        print(f"created: {path}")
-    for path in report.kept:
-        print(f"kept existing: {path}")
-    for error in report.errors:
-        print(f"op-agent-engine: error: {error}", file=sys.stderr)
-    if not report.ok:
-        return CONFIG_ERROR_EXIT
-    env_file = config_dir / "engine.env"
-    print(
-        "Next steps:\n"
-        f"  1. Edit {config_dir / 'workflow.yaml'} (project, repo, status names);\n"
-        f"     in {env_file} set OP_BASE_URL and OP_PROVISION_TOKEN (an admin\n"
-        "     token) — the agent tokens come after provisioning.\n"
-        "  2. One-time OpenProject setup: docs/OPENPROJECT_SETUP.md\n"
-        "     (statuses, AGENT field, roles, workflows).\n"
-        f"  3. set -a; . {env_file}; set +a\n"
-        "     op-agent-engine provision --apply   # creates the five users\n"
-        "  4. Mint one API token per user (Administration → Users → user →\n"
-        "     API tokens) and put the values in engine.env.\n"
-        "  5. op-agent-engine check-config\n"
-        "     op-agent-engine install-service --apply\n"
-        "     op-agent-engine dry-run"
-    )
-    return OK_EXIT
-
-
-def _install_service(*, apply: bool, stage_dir: Path) -> int:
-    exe = install.find_executable()
-    if exe is None:
-        print(
-            "op-agent-engine: error: 'op-agent-engine' not found on PATH.\n"
-            "Install it first (uv tool install .) or symlink the venv binary\n"
-            "into ~/.local/bin.",
-            file=sys.stderr,
-        )
-        return CONFIG_ERROR_EXIT
-    report = install.install_service(apply=apply, exe=exe, stage_dir=stage_dir)
-    for path in report.staged:
-        print(f"staged: {path}")
-    for path in report.installed:
-        print(f"installed: {path}")
-    for unit in report.enabled:
-        print(f"enabled: {unit}")
-    for error in report.errors:
-        print(f"op-agent-engine: error: {error}", file=sys.stderr)
-    if not report.ok:
-        return CONFIG_ERROR_EXIT
-    if apply:
-        print("Service is running and enabled at boot: journalctl -u op-agent-engine -f")
-    else:
-        print("To install, run: op-agent-engine install-service --apply")
-        print("or manually:")
-        for command in report.commands:
-            print(f"  {command}")
-    return OK_EXIT
-
-
 def _cleanup(*, days: int | None, as_json: bool, dry_run: bool) -> int:
     """Log retention job: remove old ``DATA_DIR/runs/<runId>`` directories."""
     try:
@@ -846,70 +655,20 @@ def _cleanup(*, days: int | None, as_json: bool, dry_run: bool) -> int:
     return OK_EXIT if not report.errors else CONFIG_ERROR_EXIT
 
 
-def _setup(
-    *,
-    source_dir: Path,
-    config_dir: Path,
-    skip_service: bool,
-    assume_yes: bool,
-    reprompt_tokens: bool = False,
-) -> int:
-    return run_setup(
-        source_dir=source_dir,
-        config_dir=config_dir,
-        skip_service=skip_service,
-        assume_yes=assume_yes,
-        reprompt_tokens=reprompt_tokens,
-    )
-
-
 def _provision_users(args: argparse.Namespace) -> int:
-    from op_agent_engine import wizard
-
     config_dir = (
         Path(args.config_dir).expanduser()
         if args.config_dir is not None
         else default_config_path().expanduser().parent
     )
     try:
-        return wizard.run_provision_users(
+        return run_provision_users(
             config_dir=config_dir,
             reprompt_tokens=bool(args.reprompt_tokens),
         )
-    except install.SetupError as error:
+    except AccountSetupError as error:
         print(f"op-agent-engine: error: {error}", file=sys.stderr)
         return CONFIG_ERROR_EXIT
-
-
-def _uninstall(args: argparse.Namespace) -> int:
-    source_dir = (
-        Path(args.source_dir).expanduser()
-        if args.source_dir is not None
-        else Path.cwd()
-    )
-    config_dir = (
-        Path(args.config_dir).expanduser()
-        if args.config_dir is not None
-        else install.default_config_dir()
-    )
-    data_dir = (
-        Path(args.data_dir).expanduser()
-        if args.data_dir is not None
-        else Path(DEFAULT_DATA_DIR).expanduser()
-    )
-    return run_uninstall(
-        UninstallOptions(
-            source_dir=source_dir,
-            config_dir=config_dir,
-            data_dir=data_dir,
-            keep_config=bool(args.keep_config),
-            keep_data=bool(args.keep_data),
-            keep_users=bool(args.keep_users),
-            purge_agent_repos=bool(args.purge_agent_repos),
-            apply=bool(args.apply and not args.dry_run),
-            assume_yes=bool(args.yes),
-        )
-    )
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -917,54 +676,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     # Every subcommand configures logging from ``LOG_LEVEL``. Propagate the
-    # ``--log-level`` flag so it is not silently ignored (the installer relies
-    # on ``--log-level CRITICAL`` to keep ``provision --json`` output clean).
+    # ``--log-level`` flag so it is not silently ignored (scripts rely on
+    # ``--log-level CRITICAL`` to keep ``--json`` output clean).
     log_level = getattr(args, "log_level", None)
     if log_level:
         os.environ["LOG_LEVEL"] = str(log_level)
-
-    if args.command == "uninstall":
-        return _uninstall(args)
-
-    if args.command == "setup":
-        source_dir = (
-            Path(args.source_dir).expanduser()
-            if args.source_dir is not None
-            else Path.cwd()
-        )
-        config_dir = (
-            Path(args.config_dir).expanduser()
-            if args.config_dir is not None
-            else install.default_config_dir()
-        )
-        return _setup(
-            source_dir=source_dir,
-            config_dir=config_dir,
-            skip_service=bool(args.skip_service),
-            assume_yes=bool(args.yes),
-            reprompt_tokens=bool(getattr(args, "reprompt_tokens", False)),
-        )
 
     if args.command == "provision-users":
         return _provision_users(args)
 
     config_path = (getattr(args, "config", None) or default_config_path()).expanduser()
-    if args.command == "init":
-        config_dir = (
-            Path(args.config_dir).expanduser()
-            if args.config_dir is not None
-            else install.default_config_dir()
-        )
-        return _init(config_dir)
-
-    if args.command == "install-service":
-        stage_dir = (
-            Path(args.stage_dir).expanduser()
-            if args.stage_dir is not None
-            else install.default_stage_dir()
-        )
-        return _install_service(apply=args.apply, stage_dir=stage_dir)
-
     if args.command == "dashboard":
         return _dashboard(
             config_path,

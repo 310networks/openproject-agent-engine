@@ -1,15 +1,12 @@
 # Configuration
 
-Two files drive everything: `~/.config/op-agent-engine/workflow.yaml`
-(created by `init`; the fully commented reference is
-[`workflow.example.yaml`](../workflow.example.yaml)) and
-`~/.config/op-agent-engine/engine.env` (secrets only). `workflow.yaml`
-references secrets as `${VAR}`, resolved from the environment before
-validation; a missing variable is a startup error.
-
-With the interactive installer, edit `workflow.yaml` and `engine.env` in the
-checkout root; `install.sh` copies them into `~/.config/op-agent-engine/`
-before provisioning.
+Two files drive everything: `config/workflow.yaml` (the fully commented
+reference is [`workflow.example.yaml`](../workflow.example.yaml)) and
+`config/engine.env` (secrets and limits). Both live in the deployment's
+`config/` directory, which the container mounts read-only at `/config`; see the
+[root README](../README.md) for the layout. `workflow.yaml` references secrets
+as `${VAR}`, resolved from the environment before validation; a missing
+variable is a startup error.
 
 ## `workflow.yaml` skeleton
 
@@ -128,20 +125,17 @@ Field notes:
 
 | Command | Purpose |
 |---|---|
-| `setup` | interactive installer: init, provision, token prompts, service, dry run |
-| `uninstall` | remove local files and OpenProject users (dry-run by default) |
-| `init` | scaffold config and env files (idempotent) |
-| `run` | long-running service loop |
+| `run` | long-running service loop (the `engine` service) |
 | `once` | one poll; claims and executes within the slot rules |
 | `dry-run` | one poll; logs the dispatch plan, writes nothing |
 | `check-config` | validate the file and resolve IDs (`--offline`, `--json`) |
 | `status` | heartbeat age, pause state, active and last 10 runs (`--json`) |
 | `dashboard` | read-only web UI on `127.0.0.1:8765` (`--host`, `--port`, `--limit`, `--refresh`) |
 | `provision` | reconcile users and scoped memberships (`--apply`) |
-| `install-service` | render/install the systemd units (`--apply`) |
+| `provision-users` | create the accounts and collect one API token per account (what `provision-users.sh` runs) |
 | `cleanup` | remove run dirs older than the retention period (`--days`, `--json`) |
 
 `--config` and `--log-level` work before or after the subcommand.
 `check-config` never prints token values. `provision --json` includes the
-generated passwords for users it created (so the installer can display them
-one at a time); treat that output as secret.
+generated passwords for users it created (so `provision-users` can display
+them one at a time); treat that output as secret.

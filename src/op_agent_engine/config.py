@@ -636,7 +636,7 @@ DEFAULT_DATA_DIR = "~/.local/share/op-agent-engine"
 
 
 class EngineSettings(BaseSettings):
-    """Runtime settings supplied through the systemd ``EnvironmentFile``."""
+    """Runtime settings supplied through the environment (``config/engine.env``)."""
 
     model_config = SettingsConfigDict(
         env_file=None,

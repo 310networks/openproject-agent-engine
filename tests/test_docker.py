@@ -3,8 +3,9 @@
 The container design relies on a few things lining up:
 
 * ``./config`` is the only host bind mount, and it is read-only;
-* the container paths ``docker/config-sync.sh`` writes into ``docker/config/engine.env``
-  are exactly the mount points declared in ``docker-compose.yml``;
+* the engine paths the image sets are exactly the mount points declared in
+  ``docker-compose.yml``, and ``config/engine.env`` never overrides them with a
+  host path;
 * the image never receives operator state or secrets (``.dockerignore``);
 * ``docker/config/`` ships as templates edited in place -- nothing that can
   hold a real secret or the operator's own content may be committed in it.
@@ -362,25 +363,36 @@ def test_opencode_state_is_persisted_like_pi_state() -> None:
         assert volume in _compose()["volumes"], f"{volume} is not declared"
 
 
-def test_generated_env_container_paths_match_the_compose_mounts(tmp_path: Path) -> None:
-    env = _generated_env(tmp_path)
+def test_image_paths_match_the_compose_mounts() -> None:
+    """The engine paths are set by the image, so they must match the mounts."""
+    dockerfile = DOCKERFILE.read_text()
     # Each volume is "source:target[:mode]"; the engine only cares about target.
     targets = {str(v).split(":")[1] for v in _service("engine")["volumes"]}
 
-    assert env["WORKSPACE_ROOT"] in targets
-    assert env["DATA_DIR"] in targets
-    assert env["ENGINE_CONFIG"] == "/config/workflow.yaml"
-    # The engine path must live inside the read-only config mount.
-    assert env["ENGINE_CONFIG"].startswith("/config/")
+    for name, value in (
+        ("WORKSPACE_ROOT", "/home/agent/agents"),
+        ("DATA_DIR", "/home/agent/.local/share/op-agent-engine"),
+        ("ENGINE_CONFIG", "/config/workflow.yaml"),
+        ("PROMPTS_DIR", "/opt/op-agent-engine/prompts"),
+    ):
+        assert f"{name}={value}" in dockerfile, name
+        if name in ("WORKSPACE_ROOT", "DATA_DIR"):
+            assert value in targets, f"{name} points outside the mounted volumes"
+    # The workflow is read from the read-only config mount.
+    assert "/config" in targets
 
 
-def test_generated_env_uses_container_paths_only(tmp_path: Path) -> None:
+def test_generated_env_keeps_host_paths_out(tmp_path: Path) -> None:
     config_dir, _ = _sync(tmp_path)
+    text = (config_dir / "engine.env").read_text()
     env = _env_file(config_dir / "engine.env")
 
+    assert "<home>" not in text
+    # Only the container paths may appear, and only as comments: the image owns
+    # them, so a stale copy here could silently point at the wrong directory.
     for name in ("WORKSPACE_ROOT", "DATA_DIR", "ENGINE_CONFIG"):
-        assert env[name].startswith("/"), f"{name} must be absolute in the container"
-    assert "<home>" not in (config_dir / "engine.env").read_text()
+        assert name not in env, f"{name} must come from the image"
+        assert f"# {name}=/" in text
     # Inside a container the dashboard has to bind every interface; the host
     # port is published on loopback by docker-compose.yml.
     assert env["DASHBOARD_HOST"] == "0.0.0.0"
@@ -397,17 +409,17 @@ def test_compose_pulls_and_never_builds() -> None:
     assert not BUILD_OVERLAY.exists(), "users pull the image; do not ship a build path"
 
 
-def test_docker_readme_documents_every_environment_variable() -> None:
-    """The deployment README is the env-var reference; keep it complete."""
+def test_root_readme_documents_every_environment_variable() -> None:
+    """Docker is the install method, so the root README is the env-var reference."""
     from op_agent_engine.config import EngineSettings
 
-    readme = (DOCKER_DIR / "README.md").read_text()
+    readme = (REPO_ROOT / "README.md").read_text()
     missing = [
         name.upper()
         for name in EngineSettings.model_fields
         if name.upper() not in readme
     ]
-    assert not missing, f"undocumented in docker/README.md: {missing}"
+    assert not missing, f"undocumented in README.md: {missing}"
 
     # Compose-level variables are not engine settings, so they are easy to
     # forget when one of them is added to the compose file.
@@ -422,7 +434,7 @@ def test_docker_readme_documents_every_environment_variable() -> None:
         ("DATA_DIR", "/home/agent/.local/share/op-agent-engine"),
     ):
         assert f"{name}={value}" in dockerfile, name
-        assert value in readme, f"{name} default is stale in docker/README.md"
+        assert value in readme, f"{name} default is stale in README.md"
 
 
 def test_every_docker_artifact_lives_under_docker() -> None:
@@ -496,12 +508,15 @@ def test_provision_users_script_never_hands_out_the_host_uid() -> None:
 
 
 def test_docs_explain_provisioning_instead_of_the_installer() -> None:
+    readme = (REPO_ROOT / "README.md").read_text()
     docs = (REPO_ROOT / "docs" / "DOCKER.md").read_text()
 
-    assert "docker/provision-users.sh" in docs
-    assert "OP_PROVISION_TOKEN" in docs
+    assert "config/workflow.yaml" in docs
+    assert "./provision-users.sh" in readme
+    assert "OP_PROVISION_TOKEN" in readme
     # A changed env file needs a recreate, not a restart.
-    assert "docker compose up -d" in docs
+    assert "docker compose up -d" in readme
+    assert "keeps the old environment" in docs
 
 
 def test_stop_grace_period_covers_the_engine_shutdown_budget(tmp_path: Path) -> None:

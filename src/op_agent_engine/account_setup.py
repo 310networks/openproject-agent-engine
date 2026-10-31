@@ -1,10 +1,15 @@
-"""Interactive end-to-end installer.
+"""Set up the OpenProject accounts the engine runs agents as.
 
-``op-agent-engine setup`` is the engine behind ``install.sh``. It scaffolds the
-configuration directory, copies the files the operator edited in the checkout,
-provisions the OpenProject users, interviews the operator for one API token per
-account, verifies every token through ``/api/v3/users/me``, and then runs the
-configuration check, the systemd installation and a dry run.
+``op-agent-engine provision-users`` is what ``docker/provision-users.sh`` runs
+*before* the container starts: it provisions the runtime and agent accounts,
+shows each generated password once at that account's token prompt, interviews
+the operator for one API token per account, verifies every token through
+``/api/v3/users/me``, writes the tokens back into ``engine.env`` and finishes
+with ``check-config``.
+
+Doing this outside the container means the operator has as long as they need
+to sign in and mint each token, and the engine's first start already has every
+credential it needs.
 
 Terminal I/O is isolated in small wrappers (``_prompt``, ``_secret_prompt``,
 ``_run_capture`` and ``_verify_token``) so the orchestration is testable
@@ -27,8 +32,7 @@ from typing import Any, TextIO
 
 import yaml
 
-from op_agent_engine import install
-from op_agent_engine.install import SetupError
+from op_agent_engine.envfile import EnvFileError, load_env_file, update_env_file
 from op_agent_engine.openproject.client import (
     OpenProjectAuthError,
     OpenProjectClient,
@@ -36,9 +40,7 @@ from op_agent_engine.openproject.client import (
 )
 from op_agent_engine.provision import TOKEN_ENV_PREFIX
 
-SETUP_ERROR_EXIT = 1
 OK_EXIT = 0
-ABORT_EXIT = 130
 
 ENGINE_TOKEN_VAR = "OP_ENGINE_TOKEN"
 _TOKEN_REFERENCE = re.compile(
@@ -52,6 +54,10 @@ _PLACEHOLDER_PREFIXES = (
     "placeholder",
 )
 MAX_TOKEN_ATTEMPTS = 3
+
+
+class AccountSetupError(EnvFileError):
+    """The accounts cannot be provisioned from this config directory."""
 
 
 @dataclass(frozen=True)
@@ -134,7 +140,7 @@ def _run_capture(
             text=True,
         )
     except OSError as error:
-        raise SetupError(
+        raise AccountSetupError(
             f"cannot run {' '.join(command)}: {error}"
         ) from error
     return completed.returncode, completed.stdout or "", completed.stderr or ""
@@ -202,13 +208,13 @@ def load_workflow_raw(path: Path) -> dict[str, Any]:
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as error:
-        raise SetupError(f"cannot read {path}: {error}") from error
+        raise AccountSetupError(f"cannot read {path}: {error}") from error
     try:
         raw = yaml.safe_load(text)
     except yaml.YAMLError as error:
-        raise SetupError(f"{path}: invalid YAML: {error}") from error
+        raise AccountSetupError(f"{path}: invalid YAML: {error}") from error
     if not isinstance(raw, dict):
-        raise SetupError(f"{path}: the top level must be a mapping")
+        raise AccountSetupError(f"{path}: the top level must be a mapping")
     return raw
 
 
@@ -221,7 +227,7 @@ def token_requests(workflow: Mapping[str, Any]) -> list[TokenRequest]:
 
     agents = workflow.get("agents")
     if not isinstance(agents, dict):
-        raise SetupError("workflow.yaml: 'agents' must be a mapping")
+        raise AccountSetupError("workflow.yaml: 'agents' must be a mapping")
 
     requests = [
         TokenRequest(
@@ -235,11 +241,11 @@ def token_requests(workflow: Mapping[str, Any]) -> list[TokenRequest]:
 
     for key, agent in agents.items():
         if not isinstance(agent, dict):
-            raise SetupError(f"workflow.yaml: agent {key!r} must be a mapping")
+            raise AccountSetupError(f"workflow.yaml: agent {key!r} must be a mapping")
         login = agent.get("op_login") or key
         env = agent.get("env") or {}
         if not isinstance(env, dict):
-            raise SetupError(
+            raise AccountSetupError(
                 f"workflow.yaml: agent {key!r} env must be a mapping"
             )
         names = sorted(
@@ -256,7 +262,7 @@ def token_requests(workflow: Mapping[str, Any]) -> list[TokenRequest]:
         for env_var in names:
             owner = owners.get(env_var)
             if owner is not None and owner != str(key):
-                raise SetupError(
+                raise AccountSetupError(
                     f"workflow.yaml: token variable {env_var} is used by both "
                     f"{owner} and {key}; each agent needs its own token"
                 )
@@ -276,14 +282,14 @@ def token_requests(workflow: Mapping[str, Any]) -> list[TokenRequest]:
 def _require_provisioning_values(env: Mapping[str, str]) -> str:
     base_url = (env.get("OP_BASE_URL") or "").strip()
     if not base_url.startswith(("http://", "https://")) or "example.com" in base_url:
-        raise SetupError(
+        raise AccountSetupError(
             "engine.env: set OP_BASE_URL to your OpenProject URL "
             "(the example value is not usable)"
         )
     if not _usable(env.get("OP_PROVISION_TOKEN")) and not _usable(
         env.get("OP_ENGINE_TOKEN")
     ):
-        raise SetupError(
+        raise AccountSetupError(
             "engine.env: set OP_PROVISION_TOKEN to an OpenProject "
             "administrator API token before running the installer"
         )
@@ -301,7 +307,7 @@ def _build_env(
         env.pop("OP_PROVISION_TOKEN", None)
     env["ENGINE_CONFIG"] = str(config_dir / "workflow.yaml")
     env.setdefault("LOG_LEVEL", "INFO")
-    # ``install-service`` resolves the console script through PATH. Make sure
+    # The command is resolved through PATH. Make sure
     # the interpreter's bin directory and the uv shim directory are present
     # even when the caller used an absolute path.
     bin_dirs = [str(Path(sys.executable).parent), str(Path.home() / ".local" / "bin")]
@@ -335,15 +341,6 @@ def _provision_env(
 # ---------------------------------------------------------------------------
 
 
-def _ask_yes_no(text: str, *, default: bool, assume_yes: bool) -> bool:
-    if assume_yes:
-        return True
-    answer = _prompt(text).strip().lower()
-    if not answer:
-        return default
-    return answer in {"y", "yes"}
-
-
 def _reuse_token(
     request: TokenRequest,
     existing: str,
@@ -352,7 +349,7 @@ def _reuse_token(
 ) -> bool:
     """Keep an already stored token without prompting.
 
-    Re-running ``install.sh`` after a failed install must resume, not repeat the
+    Re-running ``provision-users`` after a failure must resume, not repeat the
     token interview. A stored token is reused when it still authenticates as the
     expected login; when it cannot be checked (network down, unroutable
     OpenProject) it is kept with a warning so the operator can still get to
@@ -402,7 +399,7 @@ def _prompt_token(
             break
         hint = ""
 
-    raise SetupError(
+    raise AccountSetupError(
         f"could not verify a token for {request.label} after "
         f"{MAX_TOKEN_ATTEMPTS} attempts"
     )
@@ -453,7 +450,7 @@ def _run_captured(
     command = [*_engine_command(), *args]
     code, stdout, stderr = _run_capture(command, env=env, cwd=cwd)
     if code != 0:
-        raise SetupError(
+        raise AccountSetupError(
             f"{purpose} failed with exit code {code}"
             + _failure_detail(stdout, stderr)
         )
@@ -479,16 +476,16 @@ def _provision_users(
     ]
     code, stdout, stderr = _run_capture(command, env=env, cwd=cwd)
     if code != 0:
-        raise SetupError(
+        raise AccountSetupError(
             "op-agent-engine provision --apply failed with exit code "
             f"{code}{_provision_failure_detail(stdout, stderr)}"
         )
     try:
         payload = json.loads(stdout)
     except json.JSONDecodeError as error:
-        raise SetupError(f"provision returned invalid JSON: {error}") from error
+        raise AccountSetupError(f"provision returned invalid JSON: {error}") from error
     if not isinstance(payload, dict):
-        raise SetupError("provision returned an unexpected JSON payload")
+        raise AccountSetupError("provision returned an unexpected JSON payload")
     writes = payload.get("writes")
     if isinstance(writes, int):
         ui.ok(f"provisioned {writes} change(s)")
@@ -509,22 +506,21 @@ def run_provision_users(
 ) -> int:
     """Provision the OpenProject accounts and collect one token each.
 
-    This is the container path of ``install.sh``: there is no ``init`` step and
-    no systemd service, because the compose file owns both. Everything that
-    matters is the same code -- the same account creation, the same one-time
-    passwords and the same per-account token interview -- so it runs *before*
-    the engine container is started and the operator has as long as they need
-    to sign in and mint each token.
+    There is no ``init`` step: the compose file owns the config directory and
+    the container, so this runs *before* the engine starts. Account creation,
+    the one-time passwords and the per-account token interview are the whole
+    job, which means the operator has as long as they need to sign in and mint
+    each token, and the engine's first start already has every credential.
     """
     env_path = config_dir / "engine.env"
     workflow_path = config_dir / "workflow.yaml"
     if not workflow_path.is_file():
-        raise SetupError(f"missing {workflow_path}")
+        raise AccountSetupError(f"missing {workflow_path}")
     if not env_path.is_file():
-        raise SetupError(f"missing {env_path}")
+        raise AccountSetupError(f"missing {env_path}")
 
     ui = UI()
-    file_env = install.load_env_file(env_path)
+    file_env = load_env_file(env_path)
     base_url = _require_provisioning_values(file_env)
     requests = token_requests(load_workflow_raw(workflow_path))
 
@@ -587,7 +583,7 @@ def run_provision_users(
             f"reused {reused} existing token(s); pass --reprompt-tokens to "
             "enter them again"
         )
-    install.update_env_file(env_path, updates)
+    update_env_file(env_path, updates)
     file_env.update(updates)
     ui.ok(f"tokens saved to {env_path} (mode 0600)")
 
@@ -605,244 +601,3 @@ def run_provision_users(
     ui.info("start the engine: docker compose up -d")
     ui.info("follow it with:    docker compose logs -f engine")
     return 0
-
-
-def run_setup(
-    *,
-    source_dir: Path,
-    config_dir: Path,
-    skip_service: bool = False,
-    assume_yes: bool = False,
-    reprompt_tokens: bool = False,
-    ui: UI | None = None,
-) -> int:
-    """Run the interactive installer; return a process exit code."""
-    ui = ui or UI()
-    try:
-        _run_setup(
-            source_dir=source_dir.expanduser(),
-            config_dir=config_dir.expanduser(),
-            skip_service=skip_service,
-            assume_yes=assume_yes,
-            reprompt_tokens=reprompt_tokens,
-            ui=ui,
-        )
-        return OK_EXIT
-    except KeyboardInterrupt:
-        ui.warn("installation aborted")
-        return ABORT_EXIT
-    except SetupError as error:
-        ui.error(str(error))
-        return SETUP_ERROR_EXIT
-
-
-def _run_setup(
-    *,
-    source_dir: Path,
-    config_dir: Path,
-    skip_service: bool,
-    assume_yes: bool,
-    ui: UI,
-    reprompt_tokens: bool = False,
-) -> None:
-    source_workflow = source_dir / "workflow.yaml"
-    source_env = source_dir / "engine.env"
-    if not source_workflow.is_file():
-        raise SetupError(
-            f"missing {source_workflow}; copy workflow.example.yaml "
-            "to workflow.yaml in the checkout root and edit it"
-        )
-    if not source_env.is_file():
-        raise SetupError(
-            f"missing {source_env}; copy engine.env.example to "
-            "engine.env in the checkout root and edit it"
-        )
-    try:
-        os.chmod(source_env, 0o600)
-    except OSError as error:
-        raise SetupError(f"cannot secure {source_env}: {error}") from error
-
-    workflow = load_workflow_raw(source_workflow)
-    requests = token_requests(workflow)
-    file_env = install.load_env_file(source_env)
-    base_url = _require_provisioning_values(file_env)
-
-    ui.title("OpenProject Agent Engine")
-    ui.info(f"config: {config_dir}")
-
-    # 1. Install the operator-edited files and scaffold the config directory.
-    # Copy first so ``init`` sees existing files and keeps them; this avoids
-    # pointless backups of the freshly generated examples.
-    ui.step(1, "Installing configuration and scaffolding")
-    # Snapshot the tokens of the previous run before the checkout's engine.env
-    # (often still the example, with placeholders) replaces it. Without this a
-    # re-run after a failed install would throw away tokens that were already
-    # entered, which is exactly what resuming is supposed to avoid.
-    config_env_path = config_dir / "engine.env"
-    previous_tokens: dict[str, str] = {}
-    if config_env_path.is_file():
-        previous = install.load_env_file(config_env_path)
-        wanted = {request.env_var for request in requests}
-        previous_tokens = {
-            name: value
-            for name, value in previous.items()
-            if name in wanted and _usable(value) and value is not None
-        }
-
-    report = install.install_source_config(source_dir, config_dir)
-    for path in report.copied:
-        ui.ok(f"installed {path}")
-    for path in report.backups:
-        ui.warn(f"backed up the previous file to {path}")
-    for path in report.kept:
-        ui.info(f"unchanged {path}")
-    if not report.ok:
-        raise SetupError("; ".join(report.errors))
-
-    init_env = _build_env(file_env, config_dir)
-    _run_captured(
-        ["init", "--config-dir", str(config_dir)],
-        env=init_env,
-        cwd=source_dir,
-        ui=ui,
-        purpose="op-agent-engine init",
-    )
-
-    config_env_path = config_dir / "engine.env"
-    file_env = install.load_env_file(config_env_path)
-
-    restored = {
-        name: value
-        for name, value in previous_tokens.items()
-        if not _usable(file_env.get(name))
-    }
-    if restored:
-        install.update_env_file(config_env_path, restored)
-        if source_env.resolve() != config_env_path.resolve():
-            install.update_env_file(source_env, restored)
-        file_env.update(restored)
-        for name in sorted(restored):
-            ui.info(
-                f"{name}: restored from the previous install "
-                "(the checkout's engine.env has a placeholder)"
-            )
-
-    # 2. Provision users and memberships.
-    ui.step(2, "Provisioning OpenProject users and memberships")
-    provision_env = _provision_env(file_env, config_dir, requests)
-    passwords = _provision_users(
-        env=provision_env,
-        cwd=source_dir,
-        config_path=config_dir / "workflow.yaml",
-        ui=ui,
-    )
-
-    # 3. Collect one API token per account.
-    ui.step(3, "Create one API token per account")
-    ui.info(
-        "OpenProject administrators cannot mint API tokens for other users."
-    )
-    ui.info("Log in as each account below and create a token under:")
-    ui.info("  My account -> Access tokens")
-    ui.info(
-        "The agent-engine runtime user must be an administrator in "
-        "OpenProject."
-    )
-    if passwords:
-        ui.info(
-            f"Generated passwords are shown once, at that account's token "
-            f"prompt (sign in at {base_url})."
-        )
-
-    updates: dict[str, str] = {}
-    warned_logins: set[str] = set()
-    reused = 0
-    for request in requests:
-        existing = file_env.get(request.env_var)
-        password = passwords.get(request.login)
-
-        # Resuming a previous run: keep tokens that are already stored and
-        # still valid instead of interviewing the operator again.
-        if not reprompt_tokens and _usable(existing) and existing is not None:
-            if _reuse_token(request, existing, base_url, ui):
-                reused += 1
-                continue
-            existing = None
-
-        if password:
-            ui.credential(request.label, request.login, password)
-        elif not _usable(existing) and request.login not in warned_logins:
-            warned_logins.add(request.login)
-            ui.warn(
-                f"{request.login} already exists, so this installer cannot "
-                "show its password. Reset it in OpenProject "
-                f"(Administration -> Users -> {request.login}) or paste a "
-                "token you already created for it."
-            )
-        if request.kind == "engine":
-            ui.warn(
-                f"make {request.login} an administrator before creating this "
-                "token: Administration -> Users -> "
-                f"{request.login} -> Administrator"
-            )
-        updates[request.env_var] = _prompt_token(
-            request, existing, base_url, ui
-        )
-
-    if reused:
-        ui.info(
-            f"reused {reused} existing token(s); pass --reprompt-tokens to "
-            "enter them again"
-        )
-    install.update_env_file(config_env_path, updates)
-    if source_env.resolve() != config_env_path.resolve():
-        install.update_env_file(source_env, updates)
-    file_env.update(updates)
-    ui.ok(f"tokens saved to {config_env_path} (mode 0600)")
-
-    # 4. Validate the complete configuration against the live instance.
-    ui.step(4, "Validating the configuration")
-    verify_env = _build_env(file_env, config_dir)
-    _run_captured(
-        ["check-config", "--config", str(config_dir / "workflow.yaml")],
-        env=verify_env,
-        cwd=source_dir,
-        ui=ui,
-        purpose="op-agent-engine check-config",
-    )
-    ui.ok("configuration verified")
-
-    # 5. Install the systemd service.
-    ui.step(5, "Installing the systemd service")
-    if skip_service:
-        ui.info("skipped (--skip-service); run: op-agent-engine install-service --apply")
-    elif _ask_yes_no(
-        "    Install and start the systemd service now (needs sudo)? [Y/n] ",
-        default=True,
-        assume_yes=assume_yes,
-    ):
-        _run_captured(
-            ["install-service", "--apply"],
-            env=verify_env,
-            cwd=source_dir,
-            ui=ui,
-            purpose="op-agent-engine install-service --apply",
-        )
-        ui.ok("service installed and enabled")
-    else:
-        ui.info("skipped; run: op-agent-engine install-service --apply")
-
-    # 6. One poll, without writing anything.
-    ui.step(6, "Running a dry poll")
-    _run_captured(
-        ["dry-run", "--config", str(config_dir / "workflow.yaml")],
-        env=verify_env,
-        cwd=source_dir,
-        ui=ui,
-        purpose="op-agent-engine dry-run",
-    )
-    ui.ok("dry run completed")
-
-    ui.title("Installation complete")
-    ui.info("Follow the service with: journalctl -u op-agent-engine -f")
-    ui.info(f"Configuration: {config_dir}")

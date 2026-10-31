@@ -34,12 +34,9 @@ tests
 docs
 *.md
 !README.md
-install.sh
-uninstall.sh
 docker-compose*.yml
 
 # Keep the pieces the image actually copies.
-!deploy
 !prompts
 !agents
 !workflow.example.yaml

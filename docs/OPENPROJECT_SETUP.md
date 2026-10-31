@@ -47,8 +47,8 @@ single-select **List** field whose option titles match the `agents` keys in
    <project>-<type>`. `REVIEWER` is never used for routing but must exist as
    an option: startup resolves one option per agent key.
 5. Verify with `op-agent-engine check-config`; it should resolve the field to
-   a `customField<N>` id and list one option id per agent. The installer runs
-   this check as step 4.
+   a `customField<N>` id and list one option id per agent. `provision-users.sh`
+   runs this check as its last step.
 
 ## 4. Roles
 
@@ -76,8 +76,8 @@ status.
 ## 6. Users and tokens
 
 Only an admin token is needed before this step: set `OP_BASE_URL` and
-`OP_PROVISION_TOKEN` in `engine.env`. `op-agent-engine provision --apply`
-(run by the installer, or manually) creates the five users
+`OP_PROVISION_TOKEN` in `config/engine.env`. `op-agent-engine provision --apply`
+(run by `provision-users.sh`, or manually) creates the five users
 (`frontendEngineer`, `backendEngineer`, `leadDesigner`, `codeReviewer`,
 `agent-engine`) and one membership per agent per scoped project. The engine
 user is created as a regular user; **make it an administrator** as described
@@ -89,15 +89,13 @@ The users' passwords are randomly generated. Administrators cannot mint API
 tokens for other users, so log in as each user and create the token under
 **My account → Access tokens**.
 
-The interactive installer (`./install.sh`, or `op-agent-engine setup`) shows
-each newly created account's generated password at that user's token prompt,
-asks for the token one at a time — the
-`agent-engine` runtime token plus one per agent — verifies it against
-`/api/v3/users/me`, and writes it to `engine.env` (mode `600`). If you install
-manually, use `op-agent-engine provision --json` to obtain the generated
-passwords, then put the token values in `engine.env` yourself. The passwords
-are shown once and not saved, so record them if you may need to sign in
-again; a later installer run cannot recover them for an existing account.
+`./provision-users.sh` (in the deployment directory) shows each newly created
+account's generated password at that user's token prompt, asks for the token one
+at a time — the `agent-engine` runtime token plus one per agent — verifies it
+against `/api/v3/users/me`, and writes it to `config/engine.env` (mode `600`).
+The passwords are shown once and not saved, so record them if you may need to
+sign in again; a later run cannot recover them for an existing account, so a
+forgotten password has to be reset in **Administration → Users**.
 
 | Variable | Owner |
 |---|---|

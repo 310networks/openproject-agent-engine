@@ -16,62 +16,64 @@ glance:
 
 ## Run it
 
+The `dashboard` compose service runs it, so `docker compose up -d` serves the
+dashboard at <http://127.0.0.1:8765> with no extra step. It reads the same
+`config/` and the same volumes as the engine:
+
 ```bash
-# installed config and data dir from engine.env
-op-agent-engine dashboard
+docker compose up -d dashboard
+docker compose logs -f dashboard
+```
+
+To run it once in the foreground instead:
+
+```bash
+docker compose run --rm --service-ports dashboard
 # -> op-agent-engine dashboard: http://127.0.0.1:8765
 ```
 
-`install-service --apply` also installs and starts
-`op-agent-engine-dashboard.service`, so a normal install serves it
-automatically. Use `--host`, `--port`, `--limit` (recent sessions in the
-snapshot, max 500) or `--refresh` (browser refresh in seconds) for one-off
-overrides; the same defaults can be set with `DASHBOARD_HOST` and
-`DASHBOARD_PORT` in `engine.env`.
+Use `--host`, `--port`, `--limit` (recent sessions in the snapshot, max 500) or
+`--refresh` (browser refresh in seconds) for one-off overrides; the same
+defaults can be set with `DASHBOARD_HOST` and `DASHBOARD_PORT` in
+`config/engine.env`.
 
 ## Changing the port
 
 The port is a plain setting — no rebuild or code change is needed. Pick one
 of these:
 
-**Persistent (recommended):** edit `~/.config/op-agent-engine/engine.env`
+**Persistent (recommended):** edit `config/engine.env`
 
 ```ini
 DASHBOARD_PORT=9000
 ```
 
-then restart the dashboard service so systemd re-reads the environment file:
+and publish that port instead of the default in `docker-compose.yml`, then
+recreate the container (a changed env file needs more than `restart`):
 
 ```bash
-sudo systemctl restart op-agent-engine-dashboard
+docker compose up -d dashboard
 # it is now at http://127.0.0.1:9000
 ```
 
 **One-off / manual run:**
 
 ```bash
-op-agent-engine dashboard --port 9000
+docker compose run --rm dashboard --port 9000
 # or bind another interface as well
-op-agent-engine dashboard --host 0.0.0.0 --port 9000
+docker compose run --rm dashboard --host 0.0.0.0 --port 9000
 ```
 
-The interactive installer and `op-agent-engine init` both write
-`DASHBOARD_PORT=8765` into `engine.env`, so the value is visible where the
-rest of the service settings live. `DASHBOARD_HOST` works the same way.
+`DASHBOARD_HOST` works the same way. Keep it on loopback unless a reverse proxy
+needs it: the dashboard has no authentication.
 
-**Systemd drop-in alternative** (keeps `engine.env` untouched):
-
-```bash
-sudo systemctl edit op-agent-engine-dashboard
-# add:
-# [Service]
-# Environment=DASHBOARD_PORT=9000
-sudo systemctl restart op-agent-engine-dashboard
-```
+**Publish a different host port instead** (keeps `engine.env` untouched): set
+`DASHBOARD_BIND`/the left-hand side of the port mapping in
+`docker-compose.yml`, e.g. `127.0.0.1:9000:8765`, and recreate the service.
 
 If the port is already in use the dashboard exits with a clear bind error;
-check `journalctl -u op-agent-engine-dashboard -n 20`. Remember to update the
-reverse-proxy upstream as well if the dashboard is published through it.
+check `docker compose logs dashboard`. Remember to update the reverse-proxy
+upstream as well if the dashboard is published through it.
 
 The dashboard reads `DATA_DIR/engine.db`, `DATA_DIR/heartbeat` and the
 `meta.json` of each run. It never writes to the store, OpenProject or a

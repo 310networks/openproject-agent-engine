@@ -1,22 +1,15 @@
-# Docker
+# Docker image internals
 
-Runs the engine in a container with the agent CLIs baked into the image.
+The engine runs as a container and Docker is the supported installation method:
+the setup, `config/` layout and every environment variable are documented in the
+[root README](../README.md). This page covers how the image is built and what
+happens inside it.
 
 Every Docker artifact lives in `docker/`, and that directory is the whole
 deployment: copy it to `/opt/op-agent-engine` (or anywhere else) and run
 `docker compose up -d` in it. Nothing is built on the host — the image is
 pulled from Docker Hub. Paths in this document are relative to the deployment
 directory, which is `docker/` when you are looking at the repository.
-
-The host is only used to *supply configuration*: `config/` is mounted
-read-only at `/config`. Nothing else from the host is mounted, so no UID/GID
-matching and no home-directory layout is involved — the container runs as its
-own user (`uid 10001`) and the deployment directory can be copied to another
-machine as-is.
-
-A short reference for every file and environment variable in this directory is
-[`docker/README.md`](../docker/README.md); the sections below explain the design
-and the operational details.
 
 ## What is baked in versus mounted
 
@@ -33,142 +26,39 @@ volumes on **every start**, so applying a change is never editing a live mount:
 | Changed | Command |
 |---|---|
 | `config/workflow.yaml`, `pi/*`, `gitconfig`, `opencode/*` | `docker compose restart` |
-| `config/engine.env` (tokens, limits, AGENT) | `docker compose up -d` — compose must recreate the container; `restart` keeps the old environment |
+| `config/engine.env` (tokens, limits, `AGENT`) | `docker compose up -d` — compose must recreate the container; `restart` keeps the old environment |
 | the image tag | `docker compose pull && docker compose up -d` |
 
-## What you supply
+## The entrypoint
 
-```
-docker/                        <- the whole deployment
-├── docker-compose.yml         services: engine, dashboard, one-shot tasks
-├── provision-users.sh         create the OpenProject accounts and tokens
-├── config-sync.sh             stage your ~ into config/ (checkout only)
-├── config/                    yours: edit in place
-│   ├── engine.env             required  OP_BASE_URL + tokens (mode 0600, git-ignored)
-│   ├── workflow.yaml          required  project, repository, agents (git-ignored)
-│   ├── gitconfig              identity for agent commits (template)
-│   ├── pi/
-│   │   ├── auth.json          provider credentials (template, placeholder key)
-│   │   ├── settings.json      default provider/model (template)
-│   │   └── skills/            skills available to every run (git-ignored)
-│   └── opencode/
-│       ├── opencode.json      only with INSTALL_OPENCODE=true (template)
-│       └── auth.json          opencode credentials (git-ignored)
-├── Dockerfile                 image definition (CI builds it, you do not)
-├── version.json               the published tag, see "Images and releases"
-└── entrypoint.sh              seeds /config into the volumes, then execs
-```
+`docker/entrypoint.sh` runs as `uid 10001` (`agent`) and, before `exec
+op-agent-engine "$@"`:
 
-`config/` ships as templates so nothing has to be copied around: edit
-`gitconfig`, `pi/settings.json`, `pi/auth.json` and `opencode/opencode.json` in
-place. Those four are committed (with placeholder values, enforced by
-`tests/test_docker.py`), while everything that can hold a real secret or your
-own content — `engine.env`, `workflow.yaml`, `pi/skills/`,
-`opencode/auth.json`, anything else you add — is git-ignored. Your edits to the
-templates will show up in `git status`, so do not commit them once they hold a
-real key.
+1. refuses to start without `AGENT` (`pi` or `opencode`) or `WORKSPACE_ROOT`,
+   so a deployment that forgot one fails immediately rather than inside a run;
+2. copies `config/workflow.yaml`, `gitconfig`, `pi/{settings,auth}.json`,
+   `pi/skills/` and `opencode/{opencode,auth}.json` into the volumes, skipping
+   what is absent; `auth.json` files become `0600`;
+3. warns — and continues — when `config/pi/auth.json` still holds
+   `replace-with…` placeholders, so a fresh deployment says "put a real provider
+   key here" instead of failing 30 minutes into a run.
 
-`config-sync.sh` does that filling for you when you have the repository
-checked out: it creates the tree, seeds `workflow.yaml` and `engine.env` from
-the same examples a systemd install uses (with the paths rewritten to container
-paths and every token left as a placeholder), stages
-`~/.pi/agent/{auth.json,settings.json,skills}`, `~/.gitconfig` and
-`~/.config/opencode/*`, and makes everything world-readable — except
-`engine.env`, which stays `0600` because compose reads it on the host.
+Anything the entrypoint seeds is a copy: editing the file in a volume does not
+survive the next start, editing `config/` does.
 
-## Quick start
+## Volumes
 
-```bash
-mkdir -p ~/op-agent-engine/config/pi && cd ~/op-agent-engine
-repo=https://raw.githubusercontent.com/310networks/openproject-agent-engine/main
-curl -fsSLO "$repo/docker/docker-compose.yml"
-curl -fsS --create-dirs -o provision-users.sh "$repo/docker/provision-users.sh"
-chmod +x provision-users.sh
+| Volume | Mount point | Holds |
+|---|---|---|
+| `agent-workspace` | `/home/agent/agents` | the seeded `agents/` tree and one clone per agent workspace |
+| `engine-data` | `/home/agent/.local/share/op-agent-engine` | SQLite store, `runs/<id>/`, heartbeat, pause flag, lock |
+| `pi-agent` | `/home/agent/.pi/agent` | pi sessions, logs, model cache, installed tools |
+| `opencode-data` | `/home/agent/.local/share/opencode` | opencode credentials and sessions |
 
-# engine.env: only the OpenProject URL and the tokens are required. The paths
-# (ENGINE_CONFIG, WORKSPACE_ROOT, DATA_DIR, DASHBOARD_*) already default to the
-# container mounts inside the image.
-cat > config/engine.env <<'EOF'
-OP_BASE_URL=https://openproject.example.com
-OP_PROVISION_TOKEN=replace-with-an-administrator-api-token
-OP_ENGINE_TOKEN=replace-with-agent-engine-api-token
-OP_TOKEN_FRONTEND=replace-with-frontend-api-token
-OP_TOKEN_BACKEND=replace-with-backend-api-token
-OP_TOKEN_DESIGNER=replace-with-designer-api-token
-OP_TOKEN_REVIEWER=replace-with-reviewer-api-token
-EOF
-chmod 600 config/engine.env
-
-# workflow.yaml: the same document a systemd install uses (see CONFIG.md).
-curl -fsS -o config/workflow.yaml "$repo/workflow.example.yaml"
-
-# Agent configuration: the templates in config/ are yours to edit in place.
-$EDITOR config/pi/auth.json       # provider key for pi
-# ... or config/opencode/opencode.json when AGENT=opencode (same key, one file)
-$EDITOR config/gitconfig          # identity for agent commits
-
-./provision-users.sh                              # create users, mint tokens
-docker compose run --rm --no-deps check-config     # validate before starting
-docker compose pull
-docker compose up -d
-docker compose logs -f engine
-```
-
-`docker/docker-compose.yml` only pulls, so a checkout changes nothing about
-deployment. From a checkout, `cd docker && ./config-sync.sh` fills in the whole
-`config/` — including `engine.env` and `workflow.yaml` — from your own `~`.
-
-## Creating the users and tokens
-
-Users and tokens are created by a script that runs **before** the engine
-container, so you can take as long as you need to sign in and mint each token.
-Do the one-time instance setup first (statuses, `AGENT` custom field, Agent
-Worker role): [OPENPROJECT_SETUP.md](OPENPROJECT_SETUP.md).
-
-It needs only `OP_BASE_URL` and `OP_PROVISION_TOKEN` (an administrator's token)
-in `config/engine.env`; leave the `OP_TOKEN_*` values as placeholders.
-
-```bash
-./provision-users.sh
-```
-
-It does, in order:
-
-1. creates `agent-engine` plus one user per agent in `workflow.yaml`;
-2. shows each **generated password once**, at that account's token prompt —
-   store it if you may need to sign in again (passwords are never written to
-   disk; accounts that already exist keep theirs, so reset them under
-   **Administration → Users** instead);
-3. warns you to make `agent-engine` an administrator (**Administration → Users
-   → agent-engine → Administrator**) — the engine needs that to list users and
-   edit work packages;
-4. interviews you for one token per account (mint it at
-   `<OP_BASE_URL>/my/access_tokens`) and verifies each against
-   `/api/v3/users/me` — OpenProject does not let an administrator create tokens
-   for other users, so each one has to be minted while signed in as that user;
-5. writes the tokens into `config/engine.env` (mode `0600`) and runs
-   `check-config`.
-
-Then start the stack:
-
-```bash
-docker compose up -d
-```
-
-`up -d`, not `restart`: a changed env file is only picked up when the container
-is recreated. Re-running the script is safe — valid stored tokens are reused
-(`--reprompt-tokens` asks again) — which makes it the way to fix a token that
-turned out to belong to the wrong account.
-
-The script runs the same code as `install.sh` does on a systemd host
-(`op-agent-engine provision-users` inside the image), so the accounts, the
-one-time passwords and the verification are identical. For a non-interactive
-run, `docker compose run --rm provision --apply` provisions without the
-interview.
-
-Provider credentials for the agent CLI are separate from all of this: either a
-real key in the `config/pi/auth.json` template, or provider keys in the runner's
-`env:` block in `config/workflow.yaml`.
+Every mount point exists in the image. That matters: Docker creates a fresh
+named volume with the *image's* ownership for that path, so a mount point
+missing from the image (or owned by root) makes the container unusable with
+`Permission denied`.
 
 ## The dashboard
 
@@ -178,32 +68,6 @@ on loopback or put it behind the reverse proxy. Override the bind address with
 `DASHBOARD_BIND=0.0.0.0` only if a proxy on another host needs it. Keep
 `DASHBOARD_PORT=8765` in `engine.env`, because that is the port the compose
 mapping publishes.
-
-## Maintenance
-
-```bash
-docker compose run --rm provision --apply   # create/refresh OpenProject users
-docker compose run --rm check-config        # validate config without polling
-docker compose run --rm cleanup             # retention sweep (replaces the timer)
-docker compose restart                      # after editing workflow.yaml or pi/*
-docker compose up -d                        # after editing engine.env
-docker compose down                         # stop; volumes survive
-docker compose down -v                      # stop and delete all state (re-clones repos)
-```
-
-Schedule cleanup on the host instead of the systemd timer:
-
-```cron
-0 4 * * * cd /opt/op-agent-engine && docker compose run --rm cleanup
-```
-
-To upgrade the engine, pull a newer release: `docker compose pull && docker
-compose up -d`, optionally pinning `OP_AGENT_ENGINE_TAG=0.1.0` in the shell or a
-`.env` file next to `docker-compose.yml`. To upgrade the *agent* tooling itself
-(`PI_VERSION`, `GH_VERSION`, `OP_CLI_REF`, `INSTALL_OPENCODE`), push the new
-value as a repository variable so the published image carries it: the image is
-only built by CI. `op` is built from `OP_CLI_REF`, defaulting to the commit
-whose `op work-package` interface the agent instructions rely on.
 
 ## Images and releases
 
@@ -251,11 +115,9 @@ without a new tag.
   shared directory, `config-sync.sh` copies the contents; a link that points
   outside the tree would be dangling inside the container.
 - **Secrets.** `config/pi/auth.json` is a `0644` copy so the container user can
-  read it; the host's own `auth.json` stays `0600`. Prefer
-  `config-sync.sh --no-auth` plus the provider key in the runner `env` block
-  (the engine only forwards `PATH`, `HOME`, `USER`, `LOGNAME`, `TZ`, `LANG` and
-  `LC_ALL` to the agent, so add the key to the runner's `env:` block in
-  `config/workflow.yaml`) if you do not want a key on disk. `config/engine.env`
+  read it; the host's own `auth.json` stays `0600`. If you do not want a key on
+  disk, use `config-sync.sh --no-auth` and pass the provider key through the
+  runner's `env:` block in `config/workflow.yaml` instead. `config/engine.env`
   is `0600` and never mounted.
 - **`config/engine.env` is read on the host**, so it may stay `0600`; every
   other file in `config/` must be world-readable because the container's own

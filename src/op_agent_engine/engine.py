@@ -47,7 +47,6 @@ from op_agent_engine.provision import (
 from op_agent_engine.recovery import recover_interrupted_runs
 from op_agent_engine.scheduler import ClaimedRun, Scheduler
 from op_agent_engine.store import EngineLock, Store
-from op_agent_engine.systemd import notify
 
 logger = get_logger(__name__)
 
@@ -188,8 +187,6 @@ class Engine:
                 logger.error("agent token verification failed: %s", error)
                 return 1
 
-        notify("READY=1")
-
         poller = Poller(
             client,
             self._config,
@@ -243,7 +240,6 @@ class Engine:
 
             if not dry_run:
                 self._write_heartbeat()
-                notify("WATCHDOG=1")
 
             # A stop signal that arrived during the poll must not dispatch.
             if stop.is_set():
@@ -304,7 +300,6 @@ class Engine:
             # them instead of treating them as live.
             store.mark_all_running_interrupted()
 
-        notify("STOPPING=1")
         logger.info("engine stopped", extra={"polls": poll_number})
         return 0
 

@@ -1,6 +1,6 @@
 # env
 .env
-# operator files created from the examples before running install.sh
+# operator files created from the examples by config-sync.sh
 /workflow.yaml
 /engine.env
 /*.bak.*
