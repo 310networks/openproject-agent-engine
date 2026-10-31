@@ -48,9 +48,10 @@ starts with `ENGINE:`.
    ```
 
    It asks for the OpenProject URL and project identifier(s), asks for an
-   administrator token (used once, never stored), creates the engine user and
-   one account per agent, prints each generated password at that account's
-   token prompt, verifies every token and writes `docker/.env` (mode `0600`).
+   administrator token (used once, never stored).
+   It creates the engine user and one account per agent, 
+   prints each generated password at that account's
+   token prompt, verifies every token and writes to `docker/.env`.
    It finishes with `check-config`. Re-running is safe; `--reprompt-tokens`
    asks for all tokens again.
 
@@ -60,8 +61,7 @@ starts with `ENGINE:`.
    ANTHROPIC_API_KEY=sk-ant-...
    ```
 
-   The agent CLI reads it from the environment; there is no `auth.json` or
-   `settings.json` to mount. The full list of accepted provider variables is in
+   The full list of accepted provider variables is in
    [docs/CONFIG.md](docs/CONFIG.md#provider-credentials).
 
 4. Start the stack:
@@ -71,15 +71,13 @@ starts with `ENGINE:`.
    docker compose logs -f engine
    ```
 
-   This pulls [`kookster310/op-agent-engine:latest`](https://hub.docker.com/r/kookster310/op-agent-engine)
-   by default. Pin a release by setting `OP_AGENT_ENGINE_TAG=<version>` in
-   `docker/.env` — see the
-   [published tags](https://hub.docker.com/r/kookster310/op-agent-engine/tags).
+5. Notes
 
    After adding a project or changing its `GIT_REPO` / `AGENT` setup in
    OpenProject, run `docker compose restart engine`. After changing
    `docker/.env`, run `docker compose up -d engine` so compose recreates the
    container with the new environment.
+
 
 The dashboard is served at `http://127.0.0.1:8765`
 (see [docs/DASHBOARD.md](docs/DASHBOARD.md)).
