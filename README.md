@@ -32,7 +32,7 @@ agent, verifies the outcome against GitHub and OpenProject, and performs
    ./provision-users.sh
    ```
 
-   It asks for the OpenProject URL and project identifier(s), asks for an
+   It asks for the OpenProject URL and project identifier(s), as well as an
    administrator token (used once, never stored).
 
    It creates the engine user and one account per agent, 
