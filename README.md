@@ -11,9 +11,7 @@ agent, verifies the outcome against GitHub and OpenProject, and performs
 
 ## Demo
 
-[![Watch the OpenProject Agent Engine demo](docs/op-agent-engine-demo-poster.jpg)](docs/op-agent-engine-demo.mp4)
-
-Click the preview to watch the demo (84 seconds, MP4).
+![](docs/op-agent-engine-demo.gif)
 
 ## How a ticket flows
 
