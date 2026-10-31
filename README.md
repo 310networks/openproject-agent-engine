@@ -216,38 +216,6 @@ there: `config/pi/auth.json` (`AGENT=pi`) or the `apiKey` in
 `config/opencode/opencode.json` (`AGENT=opencode`). Nothing is baked into the
 image.
 
-## Day-to-day commands
-
-```bash
-docker compose logs -f engine                # follow the engine
-docker compose run --rm check-config         # validate the environment without polling
-docker compose run --rm provision             # create/refresh OpenProject users
-docker compose run --rm cleanup              # retention sweep
-docker compose restart                       # after editing config/pi/*
-docker compose up -d                         # after editing .env, or to upgrade
-docker compose pull && docker compose up -d  # upgrade to the published image
-docker compose down                          # stop; volumes survive
-docker compose down -v                       # stop and delete all state (re-clones repos)
-```
-
-`up -d`, not `restart`, after editing `docker/.env`: a changed environment is
-only picked up when the container is recreated.
-
-Schedule the retention sweep on the host:
-
-```cron
-0 4 * * * cd /opt/op-agent-engine && docker compose run --rm cleanup
-```
-
-## Uninstall
-
-```bash
-docker compose down -v    # stops the stack and deletes workspaces, runs and state
-```
-
-Then delete the deployment directory. The OpenProject accounts and their tokens
-remain; remove or lock them in **Administration → Users**.
-
 ## Documentation
 
 | Doc | Contents |
