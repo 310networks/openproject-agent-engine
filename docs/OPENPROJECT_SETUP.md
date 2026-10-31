@@ -26,59 +26,37 @@ default sentence case (`In progress`) also matches the title case below:
 Enable `Task`, `Bug`, and `Feature` in the project. The engine's eligible types
 are fixed to those three.
 
-## 3. The `GIT_REPO` project custom field
+## 3. Custom fields (`GIT_REPO`, `AGENT`)
 
-The engine reads each project's GitHub repository from a **project** custom
-field named `GIT_REPO` (configurable as `OP_GIT_REPO_FIELD`). The API cannot
-create custom fields, so create this one in the UI once:
+Both are created once and assigned to **all projects** in the UI — no
+per-project enablement, and the API cannot create them.
 
-1. **Administration → Custom fields → Projects → New custom field**.
-2. **Name**: `GIT_REPO`. **Format**: **Text** (a plain text field; a full
-github.com URL also works).
-3. Choose **For all projects** so the single field is assigned to every
-   project. There is no per-project enablement — one field covers them all.
-4. In each project's settings, set `GIT_REPO` to its repository
-   (`owner/name` or `https://github.com/owner/name`). The field exists
-everywhere, but a project without a value is skipped.
+**`GIT_REPO`** — the project's GitHub repository (project custom field,
+`OP_GIT_REPO_FIELD`): **Administration → Custom fields → Projects → New custom
+field**, format **Text**, choose **For all projects**, then set the repository
+in each project's settings (`owner/name` or a github.com URL).
 
-With `OP_PROJECT=*`, the engine lists the active projects and monitors every
-one that has a non-empty `GIT_REPO`. Projects without it are skipped. If you
-name the project identifiers explicitly, each one must have `GIT_REPO` set.
+**`AGENT`** — the routing agent (work-package custom field, `OP_AGENT_FIELD`):
+**Administration → Custom fields → Work packages → New custom field**, format
+**List** (single value), options `FRONTEND`, `BACKEND`, `LEAD_DESIGNER`,
+`REVIEWER` (case-sensitive), choose **For all projects** and all types. It must
+be available for `Task`, `Bug`, `Feature`, otherwise startup fails with
+`custom field 'AGENT' not found in schema <project>-<type>`. `REVIEWER` is
+never used for routing but must exist as an option.
 
-After adding a project or changing its `GIT_REPO` / `AGENT` setup, restart the
-engine so it resolves the project list again:
+With `OP_PROJECT=*` the engine monitors every active project with a non-empty
+`GIT_REPO`; explicitly named projects must have one set. After adding a project
+or changing either field, restart the engine so it resolves them again:
 
 ```bash
 docker compose restart engine
 ```
 
 If you changed `docker/.env` instead, recreate the container:
-`docker compose up -d engine`.
+`docker compose up -d engine`. `provision-users.sh` finishes with
+`check-config`, which verifies both fields and one option id per agent.
 
-## 4. The `AGENT` custom field
-
-The engine reads each work package's agent from a work-package custom field
-named `AGENT` (configurable as `OP_AGENT_FIELD`). It must be a single-select
-**List** field whose option titles match the fixed agent keys.
-
-1. **Administration → Custom fields → Work packages → New custom field**.
-2. **Name**: `AGENT`. **Format**: **List** (single value, not multi-select).
-3. Add one option per agent key — `FRONTEND`, `BACKEND`, `LEAD_DESIGNER`,
-   `REVIEWER`. The titles are case-sensitive and must match exactly. Save.
-4. In the field's **Settings** tab, choose **For all projects** and make it
-   available for all types. This is a single field assigned to every project —
-   the same one-time step as `GIT_REPO`, with no per-project enablement.
-
-   `AGENT` must be available for the eligible types (`Task`, `Bug`, `Feature`
-   by default) in every monitored project, otherwise startup fails with
-   `custom field 'AGENT' not found in schema <project>-<type>`. `REVIEWER` is
-   never used for routing but must exist as an option: startup resolves one
-   option per agent key.
-5. Verify with `op-agent-engine check-config`; it should resolve the field to
-   a `customField<N>` id and list one option id per agent. `provision-users.sh`
-   runs this check as its last step.
-
-## 5. Roles
+## 4. Roles
 
 Create one project role — **Administration → Users and permissions → Roles
 and permissions** (the API is read-only for roles):
@@ -93,7 +71,7 @@ has every project permission and can list users, so it needs no project role
 and no project membership. `provision` creates only the agents'
 memberships.
 
-## 6. Workflow transitions
+## 5. Workflow transitions
 
 Nothing to configure for the engine user: it is an administrator and is not
 restricted by project-role workflows. The engine enforces its own status
@@ -101,7 +79,7 @@ transitions client-side, and `On Hold` is terminal for it. For the **Agent
 Worker** role leave every transition unchecked so agents cannot change
 status.
 
-## 7. Users and tokens
+## 6. Users and tokens
 
 Only an admin token is needed before this step: `./provision-users.sh` asks for
 it at run time (it is never stored). `op-agent-engine provision --apply` (run
@@ -109,7 +87,7 @@ by the script, or manually with `OP_PROVISION_TOKEN` set) creates the five users
 (`frontendEngineer`, `backendEngineer`, `leadDesigner`, `codeReviewer`,
 `agent-engine`) and one membership per agent in the configured project. The
 engine user is created as a regular user; **make it an administrator** as
-described in [section 5](#5-roles) before using its token. Provisioning never
+described in [section 4](#4-roles) before using its token. Provisioning never
 deletes, deactivates or renames logins.
 
 The users' passwords are randomly generated. Administrators cannot mint API

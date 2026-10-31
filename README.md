@@ -130,7 +130,7 @@ starts with `ENGINE:`.
 | Doc | Contents |
 |---|---|
 | [docs/DOCKER.md](docs/DOCKER.md) | image internals, volumes, releases, troubleshooting |
-| [docs/OPENPROJECT_SETUP.md](docs/OPENPROJECT_SETUP.md) | statuses, `AGENT` field, Agent Worker role, admin engine user, tokens |
+| [docs/OPENPROJECT_SETUP.md](docs/OPENPROJECT_SETUP.md) | statuses, `GIT_REPO`/`AGENT` custom fields, Agent Worker role, admin engine user, tokens |
 | [docs/CONFIG.md](docs/CONFIG.md) | every environment variable, provider keys, agent team, CLI reference |
 | [docs/DASHBOARD.md](docs/DASHBOARD.md) | read-only web UI |
 | [docs/RUNBOOK.md](docs/RUNBOOK.md) | status, pause, run inspection, `On Hold` handling, recovery |
