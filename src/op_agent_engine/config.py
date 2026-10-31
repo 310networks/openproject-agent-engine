@@ -647,6 +647,8 @@ class EngineSettings(BaseSettings):
     op_base_url: str | None = None
     op_engine_token: SecretStr | None = None
     op_provision_token: SecretStr | None = None
+    # Which agent CLI to run: workflow.yaml selects it as ``runner: ${AGENT}``.
+    agent: Literal["pi", "opencode"] | None = None
     poll_interval_seconds: int = Field(default=60, gt=0)
     max_concurrent_runs: int = Field(default=1, gt=0)
     max_rejections: int = Field(default=3, ge=0)
@@ -683,6 +685,8 @@ class EngineSettings(BaseSettings):
     def missing_runtime_values(self) -> list[str]:
         """Names of required variables that are absent or empty."""
         missing = self.missing_api_values()
+        if not self.agent:
+            missing.append("AGENT")
         if self.workspace_root is None or not str(self.workspace_root):
             missing.append("WORKSPACE_ROOT")
         return missing

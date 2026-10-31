@@ -27,6 +27,7 @@ EXAMPLE = REPO_ROOT / "workflow.example.yaml"
 
 EXAMPLE_ENV = {
     "OP_BASE_URL": "https://openproject.example.com",
+    "AGENT": "pi",
     "OP_ENGINE_TOKEN": "engine-token",
     "OP_TOKEN_FRONTEND": "frontend-token",
     "OP_TOKEN_BACKEND": "backend-token",

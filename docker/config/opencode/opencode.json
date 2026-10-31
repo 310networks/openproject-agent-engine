@@ -1,4 +1,11 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "model": "openrouter/anthropic/claude-sonnet-4-5"
+  "model": "openrouter/anthropic/claude-sonnet-4-5",
+  "provider": {
+    "openrouter": {
+      "options": {
+        "apiKey": "sk-or-v1-replace-with-your-openrouter-key"
+      }
+    }
+  }
 }

@@ -51,7 +51,7 @@ agents:
     op_login: "frontendEngineer"
     workspace: "frontendEngineer"          # under WORKSPACE_ROOT
     projects: ["*"]                        # M8 scope; ["*"] = every enabled project
-    runner: pi
+    runner: "${AGENT}"                 # AGENT=pi or opencode (config/engine.env)
     model: null                            # optional; overrides the runner's model
     timeout_seconds: 3600
     env:
@@ -65,7 +65,7 @@ agents:
     op_login: "backendEngineer"
     workspace: "backendEngineer"
     projects: ["*"]
-    runner: pi
+    runner: "${AGENT}"                 # AGENT=pi or opencode (config/engine.env)
     env:
       OP_CLI_HOST: "${OP_BASE_URL}"
       OP_CLI_TOKEN: "${OP_TOKEN_BACKEND}"
@@ -75,7 +75,7 @@ agents:
     op_login: "leadDesigner"
     workspace: "leadDesigner"
     projects: ["*"]
-    runner: pi
+    runner: "${AGENT}"                 # AGENT=pi or opencode (config/engine.env)
     env:
       OP_CLI_HOST: "${OP_BASE_URL}"
       OP_CLI_TOKEN: "${OP_TOKEN_DESIGNER}"
@@ -85,7 +85,7 @@ agents:
     op_login: "codeReviewer"
     workspace: "codeReviewer"
     projects: ["*"]
-    runner: pi
+    runner: "${AGENT}"                 # AGENT=pi or opencode (config/engine.env)
     env:
       OP_CLI_HOST: "${OP_BASE_URL}"
       OP_CLI_TOKEN: "${OP_TOKEN_REVIEWER}"

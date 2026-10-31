@@ -6,9 +6,9 @@ Docker Hub (`kookster310/op-agent-engine`).
 
 ```bash
 git clone https://310networks/openproject-agent-engine && cd openproject-agent-engine/docker
-vim config/engine.env            # OP_BASE_URL + OP_PROVISION_TOKEN (see below)
+vim config/engine.env            # OP_BASE_URL + OP_PROVISION_TOKEN + AGENT (see below)
 vim config/workflow.yaml         # projects, repositories, agents
-vim config/pi/auth.json          # provider key (or use the runner env instead)
+vim config/pi/auth.json          # provider key: pi (or config/opencode/opencode.json for opencode)
 ./provision-users.sh             # create the accounts, mint one token each
 docker compose up -d
 ```
@@ -44,6 +44,7 @@ variables, so it may stay mode `0600` and is never mounted.
 | `OP_ENGINE_TOKEN` | API token of the runtime user (must be an administrator) |
 | `OP_PROVISION_TOKEN` | API token of an administrator, used **only** by `./provision-users.sh` and `docker compose run --rm provision`; can be removed afterwards |
 | `OP_TOKEN_*` | one token per agent account, referenced from `workflow.yaml` as `${OP_TOKEN_*}` (e.g. `OP_TOKEN_FRONTEND`) |
+| `AGENT` | which agent CLI the agents run: `pi` or `opencode`; `workflow.yaml` uses it as `runner: "${AGENT}"`, so switching is one line here |
 
 ### Paths
 

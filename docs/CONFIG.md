@@ -107,6 +107,7 @@ Field notes:
 | `OP_BASE_URL` | required | OpenProject base URL |
 | `OP_ENGINE_TOKEN` | required | `agent-engine` API token; runtime |
 | `OP_PROVISION_TOKEN` | optional | admin token for `provision`/`check-config` |
+| `AGENT` | required | agent CLI to run: `pi` or `opencode`; the example workflow uses `runner: "${AGENT}"` |
 | `POLL_INTERVAL_SECONDS` | `60` | poll interval |
 | `MAX_CONCURRENT_RUNS` | `1` | global run cap |
 | `MAX_REJECTIONS` | `3` | rejections before `On Hold` |

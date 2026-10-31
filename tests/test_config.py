@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from op_agent_engine.config import ConfigError, EngineSettings, WorkflowConfig
 
@@ -11,6 +12,7 @@ EXAMPLE = REPO_ROOT / "workflow.example.yaml"
 
 EXAMPLE_ENV = {
     "OP_BASE_URL": "https://openproject.example.com",
+    "AGENT": "pi",
     "OP_TOKEN_FRONTEND": "frontend-token",
     "OP_TOKEN_BACKEND": "backend-token",
     "OP_TOKEN_DESIGNER": "designer-token",
@@ -191,6 +193,7 @@ def test_empty_file_has_clear_error(tmp_path: Path) -> None:
 def test_engine_settings_reads_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OP_BASE_URL", "https://openproject.example.com")
     monkeypatch.setenv("OP_ENGINE_TOKEN", "engine-token")
+    monkeypatch.setenv("AGENT", "opencode")
     monkeypatch.setenv("WORKSPACE_ROOT", "/srv/agents")
     monkeypatch.setenv("MAX_CONCURRENT_RUNS", "2")
     monkeypatch.setenv("ENGINE_PAUSED", "true")
@@ -201,12 +204,27 @@ def test_engine_settings_reads_environment(monkeypatch: pytest.MonkeyPatch) -> N
     assert settings.max_concurrent_runs == 2
     assert settings.engine_paused is True
     assert settings.missing_runtime_values() == []
+    assert settings.agent == "opencode"
     assert settings.op_engine_token is not None
     assert settings.op_engine_token.get_secret_value() == "engine-token"
 
 
+def test_engine_settings_rejects_an_unknown_agent(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AGENT", "claude")
+
+    with pytest.raises(ValidationError, match="'pi' or 'opencode'"):
+        EngineSettings()
+
+
+def test_example_config_takes_the_runner_from_the_agent_variable() -> None:
+    # Switching agent CLIs is one environment variable, not four workflow edits.
+    for agent in ("pi", "opencode"):
+        config = WorkflowConfig.load(EXAMPLE, environ={**EXAMPLE_ENV, "AGENT": agent})
+        assert {item.runner for item in config.agents.values()} == {agent}
+
+
 def test_engine_settings_reports_missing_runtime_values(monkeypatch: pytest.MonkeyPatch) -> None:
-    for name in ("OP_BASE_URL", "OP_ENGINE_TOKEN", "WORKSPACE_ROOT"):
+    for name in ("OP_BASE_URL", "OP_ENGINE_TOKEN", "AGENT", "WORKSPACE_ROOT"):
         monkeypatch.delenv(name, raising=False)
 
     settings = EngineSettings()
@@ -214,6 +232,7 @@ def test_engine_settings_reports_missing_runtime_values(monkeypatch: pytest.Monk
     assert settings.missing_runtime_values() == [
         "OP_BASE_URL",
         "OP_ENGINE_TOKEN",
+        "AGENT",
         "WORKSPACE_ROOT",
     ]
     with pytest.raises(ConfigError, match="OP_BASE_URL"):

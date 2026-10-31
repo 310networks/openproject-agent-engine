@@ -199,7 +199,7 @@ def test_committed_config_templates_are_valid_and_free_of_operator_data() -> Non
         assert "310networks" not in text, f"{path} leaks an operator host"
         assert "@example.com" not in text or path.name == "gitconfig", path
         for line in text.splitlines():
-            if '"key"' in line:
+            if '"key"' in line or '"apiKey"' in line:
                 assert "replace-with" in line, f"{path} looks like a real key"
         if path.name == "gitconfig":
             assert "agent@example.com" in text, "gitconfig must not name a real person"
@@ -207,6 +207,20 @@ def test_committed_config_templates_are_valid_and_free_of_operator_data() -> Non
     # opencode json is only read when the image is built with it, but the
     # schema key must point at the real config URL.
     assert "opencode.ai/config.json" in (config / "opencode" / "opencode.json").read_text()
+
+
+def test_agent_env_var_selects_the_runner() -> None:
+    """`AGENT` is the single knob for pi versus opencode."""
+    example_workflow = (REPO_ROOT / "workflow.example.yaml").read_text()
+    example_env = (REPO_ROOT / "engine.env.example").read_text()
+    entrypoint = (DOCKER_DIR / "entrypoint.sh").read_text()
+
+    # Every agent in the example takes its runner from the environment, so
+    # switching agent CLIs does not mean editing four agents.
+    assert example_workflow.count('runner: "${AGENT}"') == 4
+    assert "\nAGENT=pi\n" in example_env
+    # The container refuses to start rather than failing inside a workflow load.
+    assert ': "${AGENT:?AGENT is not set' in entrypoint
 
 
 def test_entrypoint_seeds_every_documented_config_file() -> None:

@@ -23,6 +23,7 @@ die() { printf 'entrypoint: ERROR: %s\n' "$*" >&2; exit 1; }
 [ -f "${CONFIG_DIR}/workflow.yaml" ] || die \
   "missing ${CONFIG_DIR}/workflow.yaml -- add it to ./docker/config (see docs/DOCKER.md) and restart"
 
+: "${AGENT:?AGENT is not set -- use pi or opencode (see config/engine.env)}"
 : "${WORKSPACE_ROOT:?WORKSPACE_ROOT is not set (see config/engine.env)}"
 : "${DATA_DIR:?DATA_DIR is not set (see config/engine.env)}"
 

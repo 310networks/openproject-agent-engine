@@ -33,7 +33,7 @@ volumes on **every start**, so applying a change is never editing a live mount:
 | Changed | Command |
 |---|---|
 | `config/workflow.yaml`, `pi/*`, `gitconfig`, `opencode/*` | `docker compose restart` |
-| `config/engine.env` (tokens, limits) | `docker compose up -d` — compose must recreate the container; `restart` keeps the old environment |
+| `config/engine.env` (tokens, limits, AGENT) | `docker compose up -d` — compose must recreate the container; `restart` keeps the old environment |
 | the image tag | `docker compose pull && docker compose up -d` |
 
 ## What you supply
@@ -103,7 +103,8 @@ chmod 600 config/engine.env
 curl -fsS -o config/workflow.yaml "$repo/workflow.example.yaml"
 
 # Agent configuration: the templates in config/ are yours to edit in place.
-$EDITOR config/pi/auth.json       # provider key (or use the runner env instead)
+$EDITOR config/pi/auth.json       # provider key for pi
+# ... or config/opencode/opencode.json when AGENT=opencode (same key, one file)
 $EDITOR config/gitconfig          # identity for agent commits
 
 ./provision-users.sh                              # create users, mint tokens
@@ -263,6 +264,12 @@ without a new tag.
   deployment directory on a normal path such as `/opt/op-agent-engine` or
   `~/op-agent-engine`. `docker --env-file` fails with "permission denied"
   otherwise.
+- **Which agent CLI runs** is `AGENT` in `config/engine.env` (`pi` or
+  `opencode`), not something to set per agent: the workflow uses
+  `runner: "${AGENT}"`. Both runners are defined in `workflow.yaml`, so
+  switching is `AGENT=opencode` followed by `docker compose up -d` (a changed
+  env file needs a recreate), plus a rebuilt image when opencode was not
+  installed yet (`INSTALL_OPENCODE=true`).
 - **opencode** is opt-in (`INSTALL_OPENCODE=true`). Its `run` mode works in the
   container; a host wrapper that `attach`es to a remote opencode server does
   not, because the agent would then work on the *server's* filesystem instead
