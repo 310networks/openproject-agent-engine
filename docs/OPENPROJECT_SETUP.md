@@ -35,9 +35,11 @@ create custom fields, so create this one in the UI once:
 1. **Administration → Custom fields → Projects → New custom field**.
 2. **Name**: `GIT_REPO`. **Format**: **Text** (a plain text field; a full
 github.com URL also works).
-3. Save, then enable it for every project the engine should monitor.
+3. Choose **For all projects** so the single field is assigned to every
+   project. There is no per-project enablement — one field covers them all.
 4. In each project's settings, set `GIT_REPO` to its repository
-   (`owner/name` or `https://github.com/owner/name`).
+   (`owner/name` or `https://github.com/owner/name`). The field exists
+everywhere, but a project without a value is skipped.
 
 With `OP_PROJECT=*`, the engine lists the active projects and monitors every
 one that has a non-empty `GIT_REPO`. Projects without it are skipped. If you
@@ -63,14 +65,15 @@ named `AGENT` (configurable as `OP_AGENT_FIELD`). It must be a single-select
 2. **Name**: `AGENT`. **Format**: **List** (single value, not multi-select).
 3. Add one option per agent key — `FRONTEND`, `BACKEND`, `LEAD_DESIGNER`,
    `REVIEWER`. The titles are case-sensitive and must match exactly. Save.
-4. Open the field's **Settings** tab and enable it for:
-   - the eligible types (`Task`, `Bug`, `Feature` by default), and
-   - the monitored project(s) (or all projects).
+4. In the field's **Settings** tab, choose **For all projects** and make it
+   available for all types. This is a single field assigned to every project —
+   the same one-time step as `GIT_REPO`, with no per-project enablement.
 
-   `AGENT` must be enabled for every eligible type/project pair, otherwise
-   startup fails with `custom field 'AGENT' not found in schema
-   <project>-<type>`. `REVIEWER` is never used for routing but must exist as
-   an option: startup resolves one option per agent key.
+   `AGENT` must be available for the eligible types (`Task`, `Bug`, `Feature`
+   by default) in every monitored project, otherwise startup fails with
+   `custom field 'AGENT' not found in schema <project>-<type>`. `REVIEWER` is
+   never used for routing but must exist as an option: startup resolves one
+   option per agent key.
 5. Verify with `op-agent-engine check-config`; it should resolve the field to
    a `customField<N>` id and list one option id per agent. `provision-users.sh`
    runs this check as its last step.

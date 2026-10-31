@@ -3,7 +3,7 @@
 What the repository contains today. This replaces the old `PLAN.md` design
 document: it describes the implemented system, not a roadmap.
 
-- **Version:** `0.2.0` (`pyproject.toml`, `docker/version.json`).
+- **Version:** `0.2.1` (`pyproject.toml`, `docker/version.json`).
 - **Package:** `op_agent_engine` (Python 3.12), installed into a container image
   and published as `kookster310/op-agent-engine`.
 - **Deployment:** Docker Compose only. Nothing is built or installed on the
@@ -136,9 +136,10 @@ required ones to `docker/.env` and the documented template is
 object names, limits and compose-only settings, is [CONFIG.md](CONFIG.md).
 
 Required values: `OP_BASE_URL`, `OP_PROJECT`, `OP_ENGINE_TOKEN`, `AGENT`, the
-four `OP_TOKEN_*` agent tokens, and one model provider key. Each project must
-have the `GIT_REPO` project custom field set; the work-package `AGENT` field
-is required as before.
+four `OP_TOKEN_*` agent tokens, and one model provider key. The `GIT_REPO`
+project and `AGENT` work-package custom fields are each created once and
+assigned to all projects, so each monitored project only needs its own
+`GIT_REPO` value.
 `OP_PROVISION_TOKEN` is an administrator token used only for provisioning; the
 setup script asks for it and does not store it, and `verify-token` uses a
 transient `OP_VERIFY_TOKEN`.
@@ -246,8 +247,9 @@ All commands read the same environment; there is no `--config` option.
 ## Known limits
 
 - Multiple OpenProject projects per deployment, but one GitHub repository per
-  project. Every monitored project needs both the `GIT_REPO` project field and
-  the `AGENT` work-package field enabled.
+  project. The `GIT_REPO` and `AGENT` custom fields are created once and
+  assigned to all projects; a newly added project only needs its `GIT_REPO`
+  value set.
 - The team is fixed; adding a member is a code change, not configuration.
 - opencode is opt-in at image build time (`INSTALL_OPENCODE=true`).
 - The dashboard has no authentication and no write actions.

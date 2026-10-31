@@ -268,8 +268,8 @@ async def expand_projects(
         raise OpenProjectResolutionError(
             f"project custom field '{discovery.git_repo_field}' not found in "
             "/api/v3/projects/schema. Create it once in OpenProject "
-            "(Administration -> Custom fields -> Projects) and enable it for "
-            "every project the engine should work on."
+            "(Administration -> Custom fields -> Projects) and assign it to "
+            "all projects (For all projects)."
         )
 
     payloads: list[dict[str, Any]] = []

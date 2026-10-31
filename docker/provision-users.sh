@@ -241,8 +241,8 @@ git_repo_field=$(ask_text "Project custom field holding the repository" "$(get_e
 say ""
 info "Repositories are read from the '$git_repo_field' project custom field."
 info "Create it once under Administration -> Custom fields -> Projects"
-info "(text format) and enable it for every monitored project."
-info "The AGENT work-package custom field must be set up the same way."
+info "(text format) and assign it to all projects."
+info "The AGENT work-package custom field is set up the same way."
 
 agent=$(ask_text "Agent CLI (pi or opencode)" "$(get_env AGENT)")
 [ -n "$agent" ] || agent=pi

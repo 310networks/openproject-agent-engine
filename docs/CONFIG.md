@@ -63,9 +63,10 @@ URL; the engine stores the short form. The field is read at startup from
 monitors every active project that has it set.
 
 Create it once in OpenProject under **Administration → Custom fields →
-Projects**, choose a text format, and enable it for every monitored project
-(the API cannot create custom fields). This is the same manual step as the
-`AGENT` work-package field; see
+Projects**, choose a text format, and choose **For all projects** (the API
+cannot create custom fields). One field is assigned to every project, so there
+is no per-project enablement — the same manual step as the `AGENT`
+work-package field; see
 [OPENPROJECT_SETUP.md](OPENPROJECT_SETUP.md#3-the-git_repo-project-custom-field).
 
 `GITHUB_REPO_DIR` is a single-project clone-directory override. For multiple
@@ -165,7 +166,7 @@ Set these in `.env` or your shell; the engine never reads them.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `OP_AGENT_ENGINE_TAG` | `latest` | image tag to run, e.g. `0.2.0` to pin a release |
+| `OP_AGENT_ENGINE_TAG` | `latest` | image tag to run, e.g. `0.2.1` to pin a release |
 | `DASHBOARD_BIND` | `127.0.0.1` | host interface that publishes `DASHBOARD_PORT`; the dashboard has no authentication |
 
 ## Dispatching rules
