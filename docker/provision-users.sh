@@ -10,8 +10,8 @@
 #   docker/provision-users.sh                      guided run
 #   docker/provision-users.sh --reprompt-tokens    enter the tokens again
 #
-# Needs config/engine.env (OP_BASE_URL + OP_PROVISION_TOKEN) and
-# config/workflow.yaml, plus the image (pulled if it is missing).
+# Needs docker/config/engine.env (OP_BASE_URL + OP_PROVISION_TOKEN) and
+# docker/config/workflow.yaml, plus the image (pulled if it is missing).
 set -eu
 
 # Work from the deployment directory: either this repository, or a directory
@@ -27,7 +27,8 @@ else
 fi
 cd "$deploy_dir"
 
-for file in config/engine.env config/workflow.yaml; do
+config_dir="${deploy_dir}/docker/config"
+for file in "${config_dir}/engine.env" "${config_dir}/workflow.yaml"; do
   if [ ! -f "$file" ]; then
     echo "provision-users: missing $file" >&2
     exit 2
@@ -50,9 +51,9 @@ fi
 # own user cannot write to it (and handing the container your UID is exactly
 # what this design avoids). Work on a readable copy instead: it is mounted as
 # /config for this one command, and the result is copied back with mode 0600.
-work=$(mktemp -d "${deploy_dir}/provision-tmp.XXXXXX")
+work=$(mktemp -d "${config_dir}/../provision-tmp.XXXXXX")
 trap 'rm -rf "$work"' EXIT INT TERM
-cp config/engine.env config/workflow.yaml "$work/"
+cp "${config_dir}/engine.env" "${config_dir}/workflow.yaml" "$work/"
 chmod 0755 "$work"
 chmod 0644 "$work/engine.env" "$work/workflow.yaml"
 
@@ -63,8 +64,8 @@ docker compose run --rm --no-deps \
   engine provision-users "$@" || status=$?
 
 if [ -s "${work}/engine.env" ]; then
-  cp "${work}/engine.env" config/engine.env
-  chmod 0600 config/engine.env
+  cp "${work}/engine.env" "${config_dir}/engine.env"
+  chmod 0600 "${config_dir}/engine.env"
 fi
 
 exit "$status"

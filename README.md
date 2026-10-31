@@ -57,21 +57,28 @@ The read-only dashboard is served at `http://127.0.0.1:8765` (see [docs/DASHBOAR
 
 ### Prefer containers?
 
-The image is published on Docker Hub, so a `docker-compose.yml` and a `config/`
-directory are all you need:
+The image is published on Docker Hub, so nothing is built locally: a
+`docker-compose.yml` and a `docker/` directory holding your configuration are
+all you need.
 
 ```bash
-mkdir -p ~/op-agent-engine/config/pi && cd ~/op-agent-engine
+mkdir -p ~/op-agent-engine/docker/config && cd ~/op-agent-engine
 curl -fsSLO https://raw.githubusercontent.com/310networks/openproject-agent-engine/main/docker-compose.yml
-# then write config/engine.env, config/workflow.yaml and optionally
-# config/pi/{auth.json,settings.json}, config/pi/skills/ and config/gitconfig
+curl -fsS --create-dirs -o docker/provision-users.sh \
+  https://raw.githubusercontent.com/310networks/openproject-agent-engine/main/docker/provision-users.sh
+chmod +x docker/provision-users.sh
+
+# write docker/config/{engine.env,workflow.yaml} and, optionally,
+# docker/config/{gitconfig,pi/{auth,settings}.json,pi/skills/,opencode/}
 docker compose pull
 ./docker/provision-users.sh             # create users + mint tokens, then:
 docker compose up -d
 ```
 
-The agent CLIs are baked into the image; your config, credentials and skills are
-mounted from `./config`, never baked and never committed
+The agent CLIs are baked into the image; your configuration, credentials and
+skills live in `docker/config/`, mounted read-only and never committed.
+`docker/config.example/` shows the shape of each optional file, and
+`docker/config-sync.sh` (from a checkout) stages your own `~` into it
 (see [docs/DOCKER.md](docs/DOCKER.md)).
 
 ## Uninstall
@@ -86,7 +93,7 @@ mounted from `./config`, never baked and never committed
 | Doc | Contents |
 |---|---|
 | [docs/INSTALL.md](docs/INSTALL.md) | install options, systemd service, updates |
-| [docs/DOCKER.md](docs/DOCKER.md) | container image, `./config` staging, compose services |
+| [docs/DOCKER.md](docs/DOCKER.md) | container image, `docker/config` layout, compose services |
 | [docs/OPENPROJECT_SETUP.md](docs/OPENPROJECT_SETUP.md) | one-time instance setup: statuses, `AGENT` field, Agent Worker role, admin engine user, tokens |
 | [docs/CONFIG.md](docs/CONFIG.md) | `workflow.yaml`, environment variables, CLI reference |
 | [docs/DASHBOARD.md](docs/DASHBOARD.md) | read-only web UI: engine status, agents, sessions, totals |

@@ -2,12 +2,13 @@
 
 The container design relies on a few things lining up:
 
-* ``./config`` is the only host bind mount, and it is read-only;
-* the container paths ``docker/config-sync.sh`` writes into ``config/engine.env``
+* ``./docker/config`` is the only host bind mount, and it is read-only;
+* the container paths ``docker/config-sync.sh`` writes into ``docker/config/engine.env``
   are exactly the mount points declared in ``docker-compose.yml``;
 * the image never receives operator state or secrets (``.dockerignore``);
-* the repository ships no operator configuration -- ``config/`` is created by
-  the sync script from the operator's own files.
+* the repository ships no operator configuration -- ``docker/config/`` is
+  created by the sync script from the operator's own files, and
+  ``docker/config.example/`` holds only non-personal shapes.
 
 These tests fail when one of them drifts, which is otherwise only visible after
 a full image build.
@@ -101,26 +102,29 @@ def _generated_env(tmp_path: Path) -> dict[str, str]:
 
 
 def test_repository_ships_only_the_config_skeleton() -> None:
-    # config/ holds the operator's own credentials and settings, so only the
-    # empty skeleton may be committed -- no example files that could drift into
-    # looking like a real configuration.
-    assert not (REPO_ROOT / "config.example").exists()
-
-    for skeleton in ("config/.gitkeep", "config/pi/.gitkeep", "config/pi/skills/.gitkeep"):
+    # docker/config/ holds the operator's own credentials and settings, so only
+    # the empty skeleton may be committed there.
+    for skeleton in (
+        "docker/config/.gitkeep",
+        "docker/config/pi/.gitkeep",
+        "docker/config/pi/skills/.gitkeep",
+        "docker/config/opencode/.gitkeep",
+    ):
         assert (REPO_ROOT / skeleton).is_file(), f"{skeleton} missing"
 
     # Whatever git knows about (tracked or about to be added) is skeleton only.
     for args in (("ls-files",), ("ls-files", "--others", "--exclude-standard")):
-        paths = [path for path in _git(*args, "-z", "config").split("\0") if path]
+        paths = [path for path in _git(*args, "-z", "docker/config").split("\0") if path]
         assert all(path.endswith(".gitkeep") for path in paths), paths
 
     for operator_file in (
-        "config/engine.env",
-        "config/workflow.yaml",
-        "config/gitconfig",
-        "config/pi/auth.json",
-        "config/pi/settings.json",
-        "config/pi/skills/demo/SKILL.md",
+        "docker/config/engine.env",
+        "docker/config/workflow.yaml",
+        "docker/config/gitconfig",
+        "docker/config/pi/auth.json",
+        "docker/config/pi/settings.json",
+        "docker/config/pi/skills/demo/SKILL.md",
+        "docker/config/opencode/opencode.json",
     ):
         assert _is_ignored(operator_file), f"{operator_file} must be git-ignored"
 
@@ -147,8 +151,53 @@ def test_dockerignore_keeps_secrets_and_state_out_of_the_image() -> None:
         if line.strip() and not line.strip().startswith("#")
     }
 
-    for required in ("config", ".git", "workflow.yaml", "engine.env", ".venv"):
+    for required in (
+        "docker/config",
+        "docker/config.example",
+        ".git",
+        "workflow.yaml",
+        "engine.env",
+        ".venv",
+    ):
         assert required in patterns
+
+
+def test_config_examples_are_valid_and_free_of_operator_data() -> None:
+    examples = REPO_ROOT / "docker" / "config.example"
+
+    for name in ("pi/settings.json", "pi/auth.json", "opencode/opencode.json"):
+        payload = json.loads((examples / name).read_text())
+        assert isinstance(payload, dict), name
+
+    # Placeholders only: no real keys, no personal paths or identities.
+    for path in examples.rglob("*"):
+        if not path.is_file():
+            continue
+        text = path.read_text()
+        assert "/home/" not in text, f"{path} leaks a personal path"
+        assert "310networks" not in text, f"{path} leaks an operator host"
+        for line in text.splitlines():
+            if '"key"' in line:
+                assert "replace-with" in line, f"{path} looks like a real key"
+
+    # opencode json is only read when the image is built with it, but the
+    # schema key must point at the real config URL.
+    assert "opencode.ai/config.json" in (examples / "opencode" / "opencode.json").read_text()
+
+
+def test_entrypoint_seeds_every_documented_config_file() -> None:
+    entrypoint = (REPO_ROOT / "docker" / "entrypoint.sh").read_text()
+    examples = REPO_ROOT / "docker" / "config.example"
+
+    assert 'seed_file "${CONFIG_DIR}/pi/settings.json"' in entrypoint
+    # auth files hold keys and must not be world-readable in the volume.
+    assert 'seed_file "${CONFIG_DIR}/pi/auth.json" "${AGENT_DIR}/auth.json" 0600' in entrypoint
+    assert 'seed_file "${CONFIG_DIR}/gitconfig"' in entrypoint
+    # opencode splits config ($HOME/.config) from credentials ($HOME/.local/share).
+    assert 'for src in "${CONFIG_DIR}"/opencode/*.json' in entrypoint
+    assert 'auth.json) seed_file "${src}" "${OPENCODE_DATA_DIR}/auth.json" 0600 ;;' in entrypoint
+    assert '"${OPENCODE_CONFIG_DIR}/${src##*/}" 0644' in entrypoint
+    assert (examples / "gitconfig").is_file()
 
 
 def test_container_scripts_are_executable() -> None:
@@ -242,7 +291,37 @@ def test_config_is_the_only_bind_mount_and_it_is_read_only() -> None:
     binds = [v for v in _service("engine")["volumes"] if str(v).startswith(("./", "/"))]
     binds = [v for v in binds if not str(v).startswith("/home/agent/")]
 
-    assert binds == ["./config:/config:ro"]
+    assert binds == ["./docker/config:/config:ro"]
+
+
+def test_volume_mount_points_exist_in_the_image() -> None:
+    """Docker copies image ownership into a fresh named volume.
+
+    A volume whose mount point is missing from the image starts out owned by
+    root, and the container's own user then cannot write to it.
+    """
+    dockerfile = (REPO_ROOT / "Dockerfile").read_text()
+    mkdirs = " ".join(dockerfile.split("\n"))
+
+    # /config is the read-only bind mount; it is not a volume.
+    targets = {
+        str(volume).split(":")[1]
+        for volume in _service("engine")["volumes"]
+        if not str(volume).startswith("/config")
+    }
+    for target in targets:
+        assert target in mkdirs, f"{target} is mounted but never created in the image"
+    assert "chown -R agent:agent /home/agent" in mkdirs
+
+
+def test_opencode_state_is_persisted_like_pi_state() -> None:
+    """opencode keeps credentials and sessions outside the config mount."""
+    volumes = {str(v) for v in _service("engine")["volumes"]}
+
+    assert "opencode-data:/home/agent/.local/share/opencode" in volumes
+    assert "pi-agent:/home/agent/.pi/agent" in volumes
+    for volume in ("opencode-data", "pi-agent", "engine-data", "agent-workspace"):
+        assert volume in _compose()["volumes"], f"{volume} is not declared"
 
 
 def test_generated_env_container_paths_match_the_compose_mounts(tmp_path: Path) -> None:
@@ -317,13 +396,13 @@ def test_provision_users_script_never_hands_out_the_host_uid() -> None:
     """The wrapper stages a readable copy instead of mounting config writable."""
     script = (REPO_ROOT / "docker" / "provision-users.sh").read_text()
 
-    # config/ is 0600 and host-owned, so the container user can neither read
+    # engine.env is 0600 and host-owned, so the container user can neither read
     # nor write it. A staged copy is mounted as /config for this one command...
-    assert 'cp config/engine.env config/workflow.yaml "$work/"' in script
+    assert 'cp "${config_dir}/engine.env" "${config_dir}/workflow.yaml" "$work/"' in script
     assert '-v "${work}:/config"' in script
     # ...and only the staged result is copied back, still private.
-    assert 'cp "${work}/engine.env" config/engine.env' in script
-    assert "chmod 0600 config/engine.env" in script
+    assert 'cp "${work}/engine.env" "${config_dir}/engine.env"' in script
+    assert 'chmod 0600 "${config_dir}/engine.env"' in script
     # No UID/GID matching, and the real config directory stays read-only.
     assert "--user" not in script
     assert "config:/config:rw" not in script

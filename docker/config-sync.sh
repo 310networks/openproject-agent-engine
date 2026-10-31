@@ -1,20 +1,21 @@
 #!/bin/sh
-# Stage the host's agent configuration into ./config for the container.
+# Stage the host's agent configuration into ./docker/config for the container.
 #
 # The container never mounts the host's home directory: it reads copies from
-# ./config (mounted read-only at /config). This script produces those copies,
+# ./docker/config (mounted read-only at /config). This script produces those copies,
 # with the one invariant the container relies on -- everything in ./config
 # except engine.env is world-readable, so the image's own user can read it
 # without any UID/GID matching.
 #
-# ./config is never committed (it is git-ignored): it holds copies of the
-# operator's own credentials, settings, skills and git identity, so this
-# script is what creates it. Nothing here is shipped as an example.
+# ./docker/config is never committed (it is git-ignored): it holds copies of the
+# operator's own credentials, settings, skills and git identity, so this script
+# is what creates it. The non-personal shapes it expects are documented in
+# ./docker/config.example, which *is* committed.
 #
 # Usage:
 #   docker/config-sync.sh              copy config and report what changed
 #   docker/config-sync.sh --check      report drift only, exit 1 if different
-#   docker/config-sync.sh --no-auth    do not copy pi/auth.json
+#   docker/config-sync.sh --no-auth    do not copy pi/auth.json or opencode/auth.json
 #   docker/config-sync.sh --no-skills  do not copy pi/skills
 #
 # Re-running is safe and is the supported way to apply changes: config is
@@ -22,8 +23,9 @@
 set -eu
 
 REPO_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-CONFIG_DIR="${CONFIG_DIR:-${REPO_ROOT}/config}"
+CONFIG_DIR="${CONFIG_DIR:-${REPO_ROOT}/docker/config}"
 PI_HOME="${HOME}/.pi/agent"
+OPENCODE_HOME="${XDG_CONFIG_HOME:-${HOME}/.config}/opencode"
 # Container paths. They must match the volume mounts in docker-compose.yml;
 # tests/test_docker.py fails when they drift.
 WORKSPACE_ROOT_PATH=/home/agent/agents
@@ -150,8 +152,8 @@ rewrite_container_paths() {
 
 if [ "$CHECK" -eq 0 ]; then
   # Directory skeleton only: the operator fills these in.
-  mkdir -p "${CONFIG_DIR}/pi/skills"
-  say "skeleton:  ${CONFIG_DIR#"$REPO_ROOT"/}/pi/skills/"
+  mkdir -p "${CONFIG_DIR}/pi/skills" "${CONFIG_DIR}/opencode"
+  say "skeleton:  ${CONFIG_DIR#"$REPO_ROOT"/}/{pi/skills,opencode}/"
 fi
 
 say ""
@@ -180,7 +182,7 @@ else
 fi
 
 say ""
-say "== agent configuration from ${PI_HOME} =="
+say "== agent configuration from your home directory =="
 copy_file "${PI_HOME}/settings.json" "${CONFIG_DIR}/pi/settings.json"
 if [ ! -f "${HOME}/.gitconfig" ]; then
   say "warning:   no ~/.gitconfig -- agents cannot commit; set user.name/user.email"
@@ -197,20 +199,35 @@ else
   say "skipped:   pi/skills (--no-skills)"
 fi
 
+# opencode is optional (INSTALL_OPENCODE=true rebuilds the image with it), and
+# the host may not have it installed at all: missing files are only reported.
+# Absent files are not drift: these are optional, and opencode is often not
+# installed on the host at all.
+if [ -f "${OPENCODE_HOME}/opencode.json" ]; then
+  copy_file "${OPENCODE_HOME}/opencode.json" "${CONFIG_DIR}/opencode/opencode.json"
+else
+  say "skipped:   opencode/opencode.json (no ${OPENCODE_HOME}/opencode.json)"
+fi
+if [ "$COPY_AUTH" -ne 1 ]; then
+  say "skipped:   opencode/auth.json (--no-auth)"
+elif [ -f "${OPENCODE_HOME}/auth.json" ]; then
+  copy_file "${OPENCODE_HOME}/auth.json" "${CONFIG_DIR}/opencode/auth.json"
+fi
+
 if [ "$CHECK" -eq 1 ]; then
   if [ "$changed" -eq 1 ] || [ "$missing" -eq 1 ]; then
     say ""
-    say "config/ is out of date; run docker/config-sync.sh and restart"
+    say "docker/config/ is out of date; run docker/config-sync.sh and restart"
     exit 1
   fi
   say ""
-  say "config/ matches the host"
+  say "docker/config/ matches the host"
   exit 0
 fi
 
 say ""
-say "config/ is not committed: it holds your own credentials, settings,"
+say "docker/config is not committed: it holds your own credentials, settings,"
 say "skills and git identity. Nothing else is needed from the repository."
 say ""
 say "next: docker compose pull && docker compose up -d"
-say "      (after editing config/engine.env: docker compose up -d)"
+say "      (after editing docker/config/engine.env: docker compose up -d)"

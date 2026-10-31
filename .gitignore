@@ -6,16 +6,20 @@
 /*.bak.*
 # staged container configuration: only the empty skeleton is committed.
 # Everything else in here is a copy of the operator's credentials, settings,
-# skills and git identity, so it must never reach the repository.
-/config/*
-/provision-tmp.*
-!/config/.gitkeep
-!/config/pi
-/config/pi/*
-!/config/pi/.gitkeep
-!/config/pi/skills
-/config/pi/skills/*
-!/config/pi/skills/.gitkeep
+# skills and git identity, so it must never reach the repository. The
+# non-personal examples next to it (docker/config.example) are committed.
+/docker/config/*
+/docker/provision-tmp.*
+!/docker/config/.gitkeep
+!/docker/config/pi
+/docker/config/pi/*
+!/docker/config/pi/.gitkeep
+!/docker/config/pi/skills
+/docker/config/pi/skills/*
+!/docker/config/pi/skills/.gitkeep
+!/docker/config/opencode
+/docker/config/opencode/*
+!/docker/config/opencode/.gitkeep
 # agent working repos
 agents/*/repositories/
 

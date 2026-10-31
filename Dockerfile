@@ -5,10 +5,10 @@
 # tools they use (git, gh, rg, fd, op) are baked in, so a run inside the
 # container never depends on the host's installed agents.
 #
-# User configuration is *copied* into ./config by docker/config-sync.sh and
+# User configuration is *copied* into ./docker/config by config-sync.sh and
 # mounted read-only at /config. Nothing from the host is mounted directly,
 # which is what keeps UID/GID and $HOME out of the picture: every path in here
-# belongs to the image's own user, and the files in ./config are world-readable
+# belongs to the image's own user, and the files in ./docker/config are readable
 # copies. See docs/DOCKER.md.
 
 # --- OpenProject CLI (agents call `op` during a run) ------------------------
@@ -131,6 +131,8 @@ RUN chmod 0755 /usr/local/bin/docker-entrypoint.sh \
              /home/agent/.pi/agent/sessions \
              /home/agent/.pi/agent/logs \
              /home/agent/.local/share/op-agent-engine \
+             /home/agent/.local/share/opencode \
+             /home/agent/.config/opencode \
  && chown -R agent:agent /home/agent
 
 USER agent

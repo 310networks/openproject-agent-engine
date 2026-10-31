@@ -1,87 +1,106 @@
 # Docker
 
 Runs the engine in a container with the agent CLIs baked into the image. The
-host is only used to *supply configuration*: `docker/config-sync.sh` copies the
-pieces the agents need into `./config`, which is mounted read-only at
-`/config`. Nothing else from the host is mounted, so no UID/GID matching and no
+host is only used to *supply configuration*: everything lives in `docker/`,
+and `docker/config/` is mounted read-only at `/config`. Nothing else from the host is mounted, so no UID/GID matching and no
 home-directory layout is involved — the container runs as its own user (`uid
 10001`) and the whole compose directory can be copied to another machine as-is.
 
 ## What is baked in versus mounted
 
-| Baked into the image | Copied into `./config` (read-only) | Named volumes (read-write) |
+| Baked into the image | In `docker/config/` (read-only) | Named volumes (read-write) |
 |---|---|---|
 | Python 3.12, `git`, `gh`, `ripgrep`, `fd`, `op` | `workflow.yaml` (yours; a checkout can seed it from `workflow.example.yaml`) | `/home/agent/agents` (`WORKSPACE_ROOT`) |
 | Node 22 and pi (`PI_VERSION`) | `engine.env` (seeded from `engine.env.example`, read by compose, never mounted) | `/home/agent/.local/share/op-agent-engine` (`DATA_DIR`) |
 | `agents/*/AGENTS.md` (seeds the workspace volume) | `pi/auth.json`, `pi/settings.json`, `pi/skills/` — **your** files | `/home/agent/.pi/agent` (pi state, model cache, tools) |
-| `prompts/` (`PROMPTS_DIR`) | `gitconfig` — **your** identity | |
+| `prompts/` (`PROMPTS_DIR`) | `gitconfig`, `opencode/*.json` — **your** files | `/home/agent/.local/share/opencode` (opencode credentials and sessions) |
 
-Nothing in `./config` ships with the repository — only the empty skeleton
-(`config/`, `config/pi/`, `config/pi/skills/`, each with a `.gitkeep`) is
-committed. Everything else in there is a copy of your credentials, settings,
-skills and git identity, so `.gitignore` allow-lists the skeleton and ignores
-the rest. `config-sync.sh` fills it from your own `~/.pi/agent` and
-`~/.gitconfig`. Only `workflow.yaml` and `engine.env`
-are seeded (from the same examples a systemd install copies), with their
-paths rewritten to container paths and every token left as a placeholder.
+Your configuration is never part of the repository. Only the empty skeleton
+(`docker/config/{,pi/,pi/skills/,opencode/}`, each with a `.gitkeep`) is
+committed; `.gitignore` allow-lists the skeleton and ignores everything else,
+because the rest is a copy of your credentials, settings, skills and git
+identity. `docker/config.example/` is the committed, non-personal counterpart:
+it documents the shape of each optional file (`pi/settings.json`,
+`pi/auth.json`, `opencode/opencode.json`, `gitconfig`) so you can fill them in
+without guessing.
+
+`docker/config-sync.sh` does that filling for you when you have the repository
+checked out: it creates the tree, seeds `workflow.yaml` and `engine.env` from
+the same examples a systemd install uses (with the paths rewritten to container
+paths and every token left as a placeholder), stages
+`~/.pi/agent/{auth.json,settings.json,skills}`, `~/.gitconfig` and
+`~/.config/opencode/*`, and makes everything world-readable — except
+`engine.env`, which stays `0600` because compose reads it on the host.
 
 `/config` is authoritative: the entrypoint copies those files into the writable
 volumes on **every start**, so applying a change is never editing a live mount:
 
 | Changed | Command |
 |---|---|
-| `config/workflow.yaml`, `config/pi/*`, `config/gitconfig` | `docker compose restart` |
-| `config/engine.env` (tokens, limits) | `docker compose up -d` — compose must recreate the container; `restart` keeps the old environment |
+| `docker/config/workflow.yaml`, `pi/*`, `gitconfig`, `opencode/*` | `docker compose restart` |
+| `docker/config/engine.env` (tokens, limits) | `docker compose up -d` — compose must recreate the container; `restart` keeps the old environment |
 | the image tag | `docker compose pull && docker compose up -d` |
 
 ## What you supply
 
-The image is published on Docker Hub, so no checkout is needed. A directory
-holding `docker-compose.yml` and `config/` is the whole deployment:
+The image is published on Docker Hub, so the deployment never builds anything.
+A directory holding `docker-compose.yml` and `docker/` is the whole deployment:
 
 ```
 op-agent-engine/
 ├── docker-compose.yml
-└── config/
-    ├── engine.env        required  OP_BASE_URL + tokens (mode 0600)
-    ├── workflow.yaml     required  project, repository, agents
-    ├── gitconfig         recommended  identity for agent commits
-    └── pi/
-        ├── auth.json     provider credentials (or keys via env)
-        ├── settings.json optional  default provider/model
-        └── skills/       optional  skills available to every run
+├── docker-compose.build.yml   only for building the image yourself
+└── docker/
+    ├── provision-users.sh     create the OpenProject accounts and tokens
+    ├── config-sync.sh         stage your ~ into config/ (checkout only)
+    ├── config.example/        committed examples, copy what you need
+    │   ├── gitconfig
+    │   ├── pi/{settings,auth}.json
+    │   └── opencode/opencode.json
+    └── config/                yours, never committed
+        ├── engine.env         required  OP_BASE_URL + tokens (mode 0600)
+        ├── workflow.yaml      required  project, repository, agents
+        ├── gitconfig          recommended  identity for agent commits
+        ├── pi/
+        │   ├── auth.json      provider credentials (or keys via env)
+        │   ├── settings.json  optional  default provider/model
+        │   └── skills/        optional  skills available to every run
+        └── opencode/
+            └── opencode.json  optional  only with INSTALL_OPENCODE=true
 ```
 
-`engine.env`, `workflow.yaml` and `pi/*` are never part of the image and never
-committed anywhere — they are yours.
+`engine.env`, `workflow.yaml`, `pi/*` and `opencode/*` are never part of the
+image and never committed anywhere — they are yours.
 
 ## Quick start
 
 ```bash
-mkdir -p ~/op-agent-engine/config/pi && cd ~/op-agent-engine
-curl -fsSLO https://raw.githubusercontent.com/310networks/openproject-agent-engine/main/docker-compose.yml
+mkdir -p ~/op-agent-engine/docker/config/pi && cd ~/op-agent-engine
+base=https://raw.githubusercontent.com/310networks/openproject-agent-engine/main
+curl -fsSLO "$base/docker-compose.yml"
+curl -fsS --create-dirs -o docker/provision-users.sh "$base/docker/provision-users.sh"
+chmod +x docker/provision-users.sh
 
 # engine.env: only the OpenProject URL and the tokens are required. The paths
 # (ENGINE_CONFIG, WORKSPACE_ROOT, DATA_DIR, DASHBOARD_*) already default to the
 # container mounts inside the image.
-cat > config/engine.env <<'EOF'
+cat > docker/config/engine.env <<'EOF'
 OP_BASE_URL=https://openproject.example.com
+OP_PROVISION_TOKEN=replace-with-an-administrator-api-token
 OP_ENGINE_TOKEN=replace-with-agent-engine-api-token
 OP_TOKEN_FRONTEND=replace-with-frontend-api-token
 OP_TOKEN_BACKEND=replace-with-backend-api-token
 OP_TOKEN_DESIGNER=replace-with-designer-api-token
 OP_TOKEN_REVIEWER=replace-with-reviewer-api-token
 EOF
-chmod 600 config/engine.env
+chmod 600 docker/config/engine.env
 
 # workflow.yaml: the same document a systemd install uses (see CONFIG.md).
-curl -fsS -o config/workflow.yaml \
-  https://raw.githubusercontent.com/310networks/openproject-agent-engine/main/workflow.example.yaml
+curl -fsS -o docker/config/workflow.yaml "$base/workflow.example.yaml"
 
-# credentials for the agents (or leave auth.json out and pass provider keys)
-cp ~/.pi/agent/auth.json config/pi/auth.json
-cp ~/.gitconfig config/gitconfig                            # optional but recommended
-cp -r ~/.pi/agent/skills/. config/pi/skills/                # optional
+# Agent configuration: copy the examples and edit them, or take your own files.
+cp -r docker/config.example/pi docker/config.example/opencode docker/config/ 2>/dev/null || true
+cp ~/.gitconfig docker/config/gitconfig                     # optional but recommended
 
 docker compose run --rm --no-deps check-config   # validate before starting
 
@@ -90,9 +109,14 @@ docker compose up -d
 docker compose logs -f engine
 ```
 
-Have the repository checked out anyway? `./docker/config-sync.sh` stages all of
-that for you -- it creates the tree, seeds the two files with container paths
-and copies `~/.pi/agent/{auth.json,settings.json,skills}` plus `~/.gitconfig`.
+The example files under `docker/config.example/` are not in the image and are
+not fetched above: `pi/settings.json` and `pi/auth.json` are optional (provider
+keys can also come from `workflow.yaml`'s runner `env`), and the point of the
+examples is the shape, not the content. From a checkout,
+`./docker/config-sync.sh` stages all of it for you: it creates the tree, seeds
+the two required files with container paths and copies
+`~/.pi/agent/{auth.json,settings.json,skills}`, `~/.gitconfig` and
+`~/.config/opencode/*`.
 
 ## Creating the users and tokens
 
@@ -101,7 +125,7 @@ container, so you can take as long as you need to sign in and mint each token.
 Do the one-time instance setup first (statuses, `AGENT` custom field, Agent
 Worker role): [OPENPROJECT_SETUP.md](OPENPROJECT_SETUP.md).
 It needs only `OP_BASE_URL` and `OP_PROVISION_TOKEN` (an administrator's token)
-in `config/engine.env`; leave the `OP_TOKEN_*` values as placeholders.
+in `docker/config/engine.env`; leave the `OP_TOKEN_*` values as placeholders.
 
 ```bash
 ./docker/provision-users.sh
@@ -121,7 +145,7 @@ It does, in order:
    `<OP_BASE_URL>/my/access_tokens`) and verifies each against
    `/api/v3/users/me` — OpenProject does not let an administrator create tokens
    for other users, so each one has to be minted while signed in as that user;
-5. writes the tokens into `config/engine.env` (mode `0600`) and runs
+5. writes the tokens into `docker/config/engine.env` (mode `0600`) and runs
    `check-config`.
 
 Then start the stack:
@@ -142,8 +166,9 @@ run, `docker compose run --rm provision --apply` provisions without the
 interview.
 
 Provider credentials for the agent CLI are separate from all of this: either
-`config/pi/auth.json` (a copy of `~/.pi/agent/auth.json`) or provider keys in
-the runner's `env:` block.
+`docker/config/pi/auth.json` (see `docker/config.example/pi/auth.json` for the
+shape) or provider keys in the runner's `env:` block in
+`docker/config/workflow.yaml`.
 
 ## Building the image locally
 
@@ -157,11 +182,12 @@ docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
 One-time OpenProject setup (statuses, `AGENT` field, Agent Worker role, admin
 engine user) is the same as for any other install: see
 [OPENPROJECT_SETUP.md](OPENPROJECT_SETUP.md). `config-sync.sh` seeds
-`config/workflow.yaml` from `workflow.example.yaml` and `config/engine.env`
+`docker/config/workflow.yaml` from `workflow.example.yaml` and
+`docker/config/engine.env`
 from `engine.env.example` (with container paths); neither is ever overwritten
-afterwards. Everything else in `config/` comes from your own host and is only
-copied when present — a fresh `config/` is just `pi/skills/` plus those two
-files.
+afterwards. Everything else in `docker/config/` comes from your own host and is
+only copied when present — a fresh `docker/config/` is just the directories
+plus those two files.
 
 `config-sync.sh --check` reports drift without writing (exit code 1 when out of
 date), which is useful in a deploy script or CI.
@@ -241,12 +267,13 @@ without a new tag.
 - **Symlinked skills are dereferenced.** If `~/.pi/agent/skills` links into a
   shared directory, `config-sync.sh` copies the contents; a link that points
   outside the tree would be dangling inside the container.
-- **Secrets.** `config/pi/auth.json` is a `0644` copy so the container user can
+- **Secrets.** `docker/config/pi/auth.json` is a `0644` copy so the container user can
   read it; the host's own `auth.json` stays `0600`. Prefer
   `config-sync.sh --no-auth` plus the provider key in the runner `env` block
   (the engine only forwards `PATH`, `HOME`, `USER`, `LOGNAME`, `TZ`, `LANG` and
   `LC_ALL` to the agent, so add the key to the runner's `env:` block in
-  `config/workflow.yaml`) if you do not want a key on disk. `config/engine.env`
+  `docker/config/workflow.yaml`) if you do not want a key on disk.
+  `docker/config/engine.env`
   is `0600` and never mounted.
 - **Snap-installed Docker cannot read `/tmp` or dot-directories**, so keep the
   compose directory (and `./config`) on a normal path such as

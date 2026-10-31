@@ -1,7 +1,8 @@
 # Never ship operator state or secrets into the image.
 .git
 .gitignore
-config
+docker/config
+docker/config.example
 .env
 workflow.yaml
 engine.env

@@ -14,12 +14,14 @@ umask 022
 
 CONFIG_DIR=${CONFIG_DIR:-/config}
 AGENT_DIR=${PI_CODING_AGENT_DIR:-${HOME}/.pi/agent}
+OPENCODE_CONFIG_DIR=${OPENCODE_CONFIG_DIR:-${XDG_CONFIG_HOME:-${HOME}/.config}/opencode}
+OPENCODE_DATA_DIR=${OPENCODE_DATA_DIR:-${XDG_DATA_HOME:-${HOME}/.local/share}/opencode}
 
 log() { printf 'entrypoint: %s\n' "$*"; }
 die() { printf 'entrypoint: ERROR: %s\n' "$*" >&2; exit 1; }
 
 [ -f "${CONFIG_DIR}/workflow.yaml" ] || die \
-  "missing ${CONFIG_DIR}/workflow.yaml -- add it to ./config (see docs/DOCKER.md) and restart"
+  "missing ${CONFIG_DIR}/workflow.yaml -- add it to ./docker/config (see docs/DOCKER.md) and restart"
 
 : "${WORKSPACE_ROOT:?WORKSPACE_ROOT is not set (see config/engine.env)}"
 : "${DATA_DIR:?DATA_DIR is not set (see config/engine.env)}"
@@ -42,6 +44,22 @@ seed_file() {
 seed_file "${CONFIG_DIR}/pi/settings.json" "${AGENT_DIR}/settings.json" 0600
 seed_file "${CONFIG_DIR}/pi/auth.json" "${AGENT_DIR}/auth.json" 0600
 seed_file "${CONFIG_DIR}/gitconfig" "${HOME}/.gitconfig" 0644
+
+# opencode (when the image is built with INSTALL_OPENCODE=true) keeps its
+# config in $HOME/.config/opencode and its credentials plus session state in
+# $HOME/.local/share/opencode. Only the files the operator provides are seeded,
+# so opencode's own defaults are left alone rather than replaced by an empty
+# tree.
+if [ -d "${CONFIG_DIR}/opencode" ]; then
+  mkdir -p "${OPENCODE_CONFIG_DIR}" "${OPENCODE_DATA_DIR}"
+  for src in "${CONFIG_DIR}"/opencode/*.json "${CONFIG_DIR}"/opencode/*.jsonc; do
+    [ -f "${src}" ] || continue
+    case "${src##*/}" in
+      auth.json) seed_file "${src}" "${OPENCODE_DATA_DIR}/auth.json" 0600 ;;
+      *) seed_file "${src}" "${OPENCODE_CONFIG_DIR}/${src##*/}" 0644 ;;
+    esac
+  done
+fi
 
 # Skills are a directory: replace it wholesale so a skill deleted on the host
 # does not linger in the volume.
