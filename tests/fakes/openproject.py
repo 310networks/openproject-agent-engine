@@ -85,6 +85,7 @@ class FakeOpenProject:
         statuses: list[dict[str, JSON]] | None = None,
         users: list[dict[str, JSON]] | None = None,
         projects: list[dict[str, JSON]] | None = None,
+        project_schema: dict[str, JSON] | None = None,
         types: dict[str, list[dict[str, JSON]]] | None = None,
         schemas: dict[str, dict[str, JSON]] | None = None,
         allow_user_listing: bool = True,
@@ -106,6 +107,7 @@ class FakeOpenProject:
         self.statuses = statuses or []
         self.users = users or []
         self.projects = projects or []
+        self.project_schema = project_schema or {}
         self.types = types or {}
         self.schemas = schemas or {}
         self.allow_user_listing = allow_user_listing
@@ -263,6 +265,11 @@ class FakeOpenProject:
             return self._collection(
                 request, self._filter_users(request), "/api/v3/users"
             )
+
+        if path == "/api/v3/projects":
+            return self._collection(request, self.projects, "/api/v3/projects")
+        if path == "/api/v3/projects/schema":
+            return self._json(self.project_schema)
 
         types_match = _PROJECT_TYPES.match(path)
         if types_match:

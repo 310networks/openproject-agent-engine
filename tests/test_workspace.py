@@ -252,3 +252,15 @@ async def test_parallel_agents_use_separate_worktrees(
     # The shared clone and the checkout of a later run survive.
     assert first.base_repo_dir is not None
     assert (first.base_repo_dir / ".git").exists()
+
+
+async def test_default_branch_is_discovered_when_not_configured(
+    tmp_path: Path, git_repo: GitFixture
+) -> None:
+    workspace = await _prepare(
+        _workspace_root(tmp_path), git_repo, default_branch=None
+    )
+
+    assert workspace.default_branch == "main"
+    head = _git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=workspace.repo_dir).strip()
+    assert head == "op-4-100"

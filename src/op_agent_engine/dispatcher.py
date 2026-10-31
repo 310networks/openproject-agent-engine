@@ -1227,7 +1227,11 @@ class Dispatcher:
             "project": {"identifier": self._project_identifier(wp.project_id)},
             "repo": {
                 "github": self._repo_github(wp.project_id),
-                "default_branch": self._repo_default_branch(wp.project_id),
+                "default_branch": (
+                    workspace.default_branch
+                    or self._repo_default_branch(wp.project_id)
+                    or "unknown"
+                ),
             },
             "repo_dir": str(workspace.repo_dir),
             "branch": workspace.branch,
@@ -1330,13 +1334,24 @@ class Dispatcher:
         return f"<unknown:{project_id}>"
 
     def _repo_github(self, project_id: int) -> str:
-        return self._project_for(project_id).repo.github
+        repo = self._project_for(project_id).repo
+        if repo is None:
+            raise WorkspaceError(
+                f"project {project_id} has no repository; GIT_REPO was not resolved"
+            )
+        return repo.github
 
     def _repo_dir(self, project_id: int) -> str:
-        return self._project_for(project_id).repo.dir
+        repo = self._project_for(project_id).repo
+        if repo is None:
+            raise WorkspaceError(
+                f"project {project_id} has no repository; GIT_REPO was not resolved"
+            )
+        return repo.dir
 
-    def _repo_default_branch(self, project_id: int) -> str:
-        return self._project_for(project_id).repo.default_branch
+    def _repo_default_branch(self, project_id: int) -> str | None:
+        repo = self._project_for(project_id).repo
+        return repo.default_branch if repo is not None else None
 
     def _resolve_template_dir(self) -> Path:
         from op_agent_engine.prompts import resolve_template_dir

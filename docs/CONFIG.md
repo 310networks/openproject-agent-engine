@@ -4,7 +4,7 @@ There is no configuration file. Everything deployment-specific is an
 environment variable, read from `docker/.env` (which compose passes to the
 containers) or from your shell. The agent team, the runners and the
 OpenProject object names have defaults baked into the code, so a deployment
-only supplies its URL, project, repository and tokens.
+only supplies its URL, project(s) and tokens.
 
 `docker/provision-users.sh` writes the required variables for you; the
 commented reference is [`docker/.env.example`](../docker/.env.example). The
@@ -16,8 +16,7 @@ reference.
 | Variable | Meaning |
 |---|---|
 | `OP_BASE_URL` | OpenProject URL |
-| `OP_PROJECT` | project identifier the engine works on |
-| `GITHUB_REPO` | repository as `owner/name` |
+| `OP_PROJECT` | project identifier(s): one, a comma-separated list, or `*` for every active project with `GIT_REPO` set |
 | `OP_ENGINE_TOKEN` | API token of the administrator runtime user |
 | `AGENT` | `pi` or `opencode` |
 | `OP_TOKEN_FRONTEND` | token of `frontendEngineer` |
@@ -55,12 +54,52 @@ Status names come from `OP_STATUS_*` and are matched case- and
 whitespace-insensitively, so `In Progress` also matches OpenProject's default
 `In progress`.
 
-## Repository and object names
+## Repositories
+
+Each project supplies its GitHub repository through a **project** custom
+field (`GIT_REPO` by default). The value may be `owner/name` or a github.com
+URL; the engine stores the short form. The field is read at startup from
+`GET /api/v3/projects/schema` and each project resource, so `OP_PROJECT=*`
+monitors every active project that has it set.
+
+Create it once in OpenProject under **Administration → Custom fields →
+Projects**, choose a text format, and enable it for every monitored project
+(the API cannot create custom fields). This is the same manual step as the
+`AGENT` work-package field; see
+[OPENPROJECT_SETUP.md](OPENPROJECT_SETUP.md#3-the-git_repo-project-custom-field).
+
+`GITHUB_REPO_DIR` is a single-project clone-directory override. For multiple
+projects the directory is derived from the repository name and made unique.
+
+The default branch is discovered when the workspace is prepared (`git
+symbolic-ref` / `git ls-remote --symref`). Set `GITHUB_DEFAULT_BRANCH` only to
+override that discovery.
+
+### Applying project changes
+
+`GIT_REPO` and the project list are resolved when the engine starts. After
+adding a project or changing a project's `GIT_REPO` / `AGENT` settings in
+OpenProject, restart the engine process:
+
+```bash
+docker compose restart engine
+```
+
+If you changed `docker/.env` instead (for example `OP_PROJECT` or
+`OP_GIT_REPO_FIELD`), recreate the container so compose picks up the new
+environment:
+
+```bash
+docker compose up -d engine
+```
+
+## Object names
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `GITHUB_REPO_DIR` | the repository name | clone directory under `WORKSPACE_ROOT` |
-| `GITHUB_DEFAULT_BRANCH` | `main` | branch the work branches are based on |
+| `OP_GIT_REPO_FIELD` | `GIT_REPO` | project custom field holding the GitHub repository (a field name, or `customField<N>` to skip the schema lookup) |
+| `GITHUB_REPO_DIR` | the repository name | single-project clone directory under `WORKSPACE_ROOT` |
+| `GITHUB_DEFAULT_BRANCH` | auto-discovered | override the branch work branches are based on |
 | `OP_AGENT_FIELD` | `AGENT` | custom field that routes a work package to an agent |
 | `OP_ENGINE_USER` | `agent-engine` | OpenProject login of the runtime user |
 | `OP_AGENT_ROLE` | `Agent Worker` | role granted to the agent users |

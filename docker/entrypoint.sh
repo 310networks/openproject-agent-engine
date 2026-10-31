@@ -14,8 +14,7 @@ AGENT_DIR=${PI_CODING_AGENT_DIR:-${HOME}/.pi/agent}
 
 # Fail at startup, with the variable named, instead of inside a poll or a run.
 : "${OP_BASE_URL:?OP_BASE_URL is not set -- your OpenProject URL (see .env)}"
-: "${OP_PROJECT:?OP_PROJECT is not set -- the OpenProject project identifier}"
-: "${GITHUB_REPO:?GITHUB_REPO is not set -- the repository as owner/name}"
+: "${OP_PROJECT:?OP_PROJECT is not set -- one project identifier, a list, or *}"
 : "${AGENT:?AGENT is not set -- use pi or opencode}"
 : "${WORKSPACE_ROOT:?WORKSPACE_ROOT is not set (see the image defaults)}"
 : "${DATA_DIR:?DATA_DIR is not set (see the image defaults)}"

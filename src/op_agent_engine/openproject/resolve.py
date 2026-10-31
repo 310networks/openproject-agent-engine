@@ -29,7 +29,13 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote
 
-from op_agent_engine.config import StatusNames, WorkflowConfig
+from op_agent_engine.config import (
+    ProjectConfig,
+    RepoConfig,
+    StatusNames,
+    WorkflowConfig,
+)
+from op_agent_engine.logging import get_logger
 from op_agent_engine.openproject.client import (
     JSON,
     OpenProjectAuthError,
@@ -41,6 +47,21 @@ from op_agent_engine.openproject.client import (
 
 _CUSTOM_FIELD_KEY = re.compile(r"^customField(\d+)$")
 _OPTION_ID_FROM_HREF = re.compile(r"/(\d+)/?$")
+
+#: A project custom-field value that identifies a GitHub repository. Full
+#: GitHub URLs and ``git@github.com:`` remotes are accepted as well as the
+#: short ``owner/name`` form; the engine always stores the short form.
+_GITHUB_REPO = re.compile(
+    r"^(?:"
+    r"https?://(?:www\.)?github\.com/"
+    r"|ssh://git@github\.com/"
+    r"|git@github\.com:"
+    r")?"
+    r"(?P<owner>[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)/"
+    r"(?P<name>[A-Za-z0-9._-]+?)(?:\.git)?/?$"
+)
+
+logger = get_logger(__name__)
 
 
 class OpenProjectResolutionError(OpenProjectError):
@@ -176,6 +197,7 @@ async def resolve_workflow(
 
     Raises :class:`OpenProjectResolutionError` listing every missing item.
     """
+    await expand_projects(client, config)
     statuses = await _resolve_statuses(client, config.openproject.statuses)
     users = await _resolve_users(
         client,
@@ -214,6 +236,216 @@ async def resolve_workflow(
         agent_field=agent_field,
         warnings=tuple(warnings),
     )
+
+
+# ---------------------------------------------------------------------------
+# Repository discovery (env deployments)
+# ---------------------------------------------------------------------------
+
+
+async def expand_projects(
+    client: OpenProjectClient,
+    config: WorkflowConfig,
+) -> None:
+    """Fill in project repositories from each project's GIT_REPO field.
+
+    ``OP_PROJECT=*`` (or a comma-separated list) builds placeholder projects
+    without a repository. This resolves them from the project custom field. It
+    is a no-op for configurations that already declare a repository for every
+    project (for example ``WorkflowConfig.from_mapping``).
+    """
+    if all(project.repo is not None for project in config.projects) and not any(
+        project.identifier == "*" for project in config.projects
+    ):
+        return
+
+    discovery = config.repo_discovery
+    wildcard = any(project.identifier == "*" for project in config.projects)
+    explicit = [project for project in config.projects if project.identifier != "*"]
+
+    field_id = await _resolve_project_custom_field(client, discovery.git_repo_field)
+    if field_id is None:
+        raise OpenProjectResolutionError(
+            f"project custom field '{discovery.git_repo_field}' not found in "
+            "/api/v3/projects/schema. Create it once in OpenProject "
+            "(Administration -> Custom fields -> Projects) and enable it for "
+            "every project the engine should work on."
+        )
+
+    payloads: list[dict[str, Any]] = []
+    if wildcard:
+        async for element in client.iter_collection("/api/v3/projects"):
+            if (
+                isinstance(element, dict)
+                and element.get("active", True) is not False
+            ):
+                payloads.append(element)
+        payloads.sort(key=lambda item: str(item.get("identifier", "")))
+    else:
+        for project in explicit:
+            payloads.append(
+                await _fetch_project_payload(client, project.identifier)
+            )
+
+    enabled_by_identifier = {
+        project.identifier: project.enabled for project in explicit
+    }
+    used_dirs: set[str] = set()
+    expanded: list[ProjectConfig] = []
+    for payload in payloads:
+        identifier = payload.get("identifier")
+        if not isinstance(identifier, str) or not identifier:
+            raise OpenProjectResolutionError(
+                "OpenProject returned a project without an identifier"
+            )
+
+        raw_repo = (
+            _custom_field_value(payload, field_id) if field_id is not None else None
+        )
+        github = _github_repo(raw_repo) if raw_repo else None
+        if raw_repo and github is None:
+            raise OpenProjectResolutionError(
+                f"project '{identifier}': {discovery.git_repo_field} value "
+                f"{raw_repo!r} is not a GitHub repository "
+                "(expected owner/name or a github.com URL)"
+            )
+        if github is None:
+            if wildcard:
+                logger.info(
+                    "skipping project %s: %s is not set",
+                    identifier,
+                    discovery.git_repo_field,
+                )
+                continue
+            raise OpenProjectResolutionError(
+                f"project '{identifier}' has no {discovery.git_repo_field} value "
+                "in OpenProject; set it in the project settings"
+            )
+
+        repo_name = github.rsplit("/", 1)[-1]
+        dir_override = (
+            discovery.dir_override
+            if len(explicit) == 1 and not wildcard
+            else None
+        )
+        expanded.append(
+            ProjectConfig(
+                identifier=identifier,
+                enabled=enabled_by_identifier.get(identifier, True),
+                repo=RepoConfig(
+                    github=github,
+                    dir=_unique_repo_dir(
+                        dir_override or repo_name, identifier, used_dirs
+                    ),
+                    default_branch=discovery.default_branch,
+                ),
+            )
+        )
+
+    if not expanded:
+        raise OpenProjectResolutionError(
+            f"no OpenProject project has a {discovery.git_repo_field} value; "
+            "set the field on at least one project (or set OP_PROJECT to an "
+            "explicit identifier)"
+        )
+
+    identifiers = [project.identifier for project in expanded]
+    if len(set(identifiers)) != len(identifiers):
+        raise OpenProjectResolutionError(
+            "OpenProject project discovery returned duplicate identifiers: "
+            + ", ".join(sorted(identifiers))
+        )
+
+    config.projects = expanded
+    _validate_agent_project_scopes(config)
+
+
+async def _resolve_project_custom_field(
+    client: OpenProjectClient, field_name: str
+) -> str | None:
+    """Return the ``customField<N>`` key for a project custom field name.
+
+    An explicit ``customField<N>`` value is accepted as-is, so a deployment
+    can bypass the schema lookup if its OpenProject version does not expose
+    project custom fields there.
+    """
+    if _CUSTOM_FIELD_KEY.fullmatch(field_name):
+        return field_name
+    try:
+        payload = await client.get_json("/api/v3/projects/schema")
+    except OpenProjectNotFoundError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    matches = [
+        key
+        for key, value in payload.items()
+        if isinstance(value, dict) and value.get("name") == field_name
+    ]
+    if len(matches) > 1:
+        raise OpenProjectResolutionError(
+            f"project custom field '{field_name}' appears more than once in "
+            "/api/v3/projects/schema"
+        )
+    return matches[0] if matches else None
+
+
+def _custom_field_value(payload: dict[str, Any], field_id: str) -> str | None:
+    """Extract a project custom-field value from a HAL project resource."""
+    value = _raw_custom_field_value(payload.get(field_id))
+    if value is not None:
+        return value
+    links = payload.get("_links")
+    if isinstance(links, dict):
+        return _raw_custom_field_value(links.get(field_id))
+    return None
+
+
+def _raw_custom_field_value(raw: Any) -> str | None:
+    if isinstance(raw, str):
+        return raw.strip() or None
+    if isinstance(raw, dict):
+        for key in ("raw", "value", "href", "title"):
+            value = raw.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return None
+
+
+def _github_repo(value: str) -> str | None:
+    """Normalize a GitHub repository value to ``owner/name``."""
+    match = _GITHUB_REPO.fullmatch(value.strip())
+    if match is None:
+        return None
+    return f"{match.group('owner')}/{match.group('name')}"
+
+
+def _unique_repo_dir(base: str, identifier: str, used: set[str]) -> str:
+    """Return a clone-directory name that is unique across projects."""
+    candidate = base
+    suffix = 2
+    while candidate in used:
+        candidate = (
+            f"{base}-{identifier}"
+            if suffix == 2
+            else f"{base}-{identifier}-{suffix}"
+        )
+        suffix += 1
+    used.add(candidate)
+    return candidate
+
+
+def _validate_agent_project_scopes(config: WorkflowConfig) -> None:
+    declared = {project.identifier for project in config.projects}
+    for key, agent in config.agents.items():
+        if "*" in agent.projects:
+            continue
+        unknown = sorted(set(agent.projects) - declared)
+        if unknown:
+            raise OpenProjectResolutionError(
+                f"agent '{key}' projects reference identifier(s) not found in "
+                f"OpenProject: {', '.join(unknown)}"
+            )
 
 
 def _status_key(name: str) -> str:
@@ -313,9 +545,9 @@ async def _resolve_users(
     return resolved
 
 
-async def _resolve_project(
+async def _fetch_project_payload(
     client: OpenProjectClient, identifier: str
-) -> ResolvedProject:
+) -> dict[str, Any]:
     path = f"/api/v3/projects/{quote(identifier, safe='')}"
     try:
         payload = await client.get_json(path)
@@ -328,6 +560,13 @@ async def _resolve_project(
         raise OpenProjectResolutionError(
             f"OpenProject project '{identifier}' returned a non-object response"
         )
+    return payload
+
+
+async def _resolve_project(
+    client: OpenProjectClient, identifier: str
+) -> ResolvedProject:
+    payload = await _fetch_project_payload(client, identifier)
     project_id = _require_int(payload.get("id"), "project.id", f"project {identifier!r}")
     name = _require_str(
         payload.get("name"), "project.name", f"project {identifier!r}"

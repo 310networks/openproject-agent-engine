@@ -10,9 +10,10 @@ document: it describes the implemented system, not a roadmap.
   host, and nothing is mounted from the host.
 - **Configuration:** environment variables only (`docker/.env`). There is no
   workflow YAML and no agent config/auth file to mount.
-- **Instance model:** one engine process against one OpenProject project and
-  one GitHub repository. A file lock (`DATA_DIR/engine.lock`) keeps it
-  single-instance.
+- **Instance model:** one engine process against one or more OpenProject
+  projects. Each project's GitHub repository comes from its `GIT_REPO` project
+  custom field; `OP_PROJECT=*` monitors every active project that has it set.
+  A file lock (`DATA_DIR/engine.lock`) keeps it single-instance.
 
 ## Runtime topology
 
@@ -46,7 +47,8 @@ variables; no credential file is seeded.
 One loop iteration:
 
 1. **Resolve** the workflow against OpenProject (statuses, `AGENT` field,
-   users, types, projects). Resolution is cached for the process.
+   users, types, projects, and each project's `GIT_REPO`). Resolution is cached
+   for the process.
 2. **Poll** (`poller.py`): list candidate work packages by dispatch priority,
    then apply the eligibility rules. Cheap rules run first; blockers and
    children are fetched only when they can change the decision.
@@ -133,8 +135,10 @@ required ones to `docker/.env` and the documented template is
 `docker/.env.example`. The full reference, including provider variables,
 object names, limits and compose-only settings, is [CONFIG.md](CONFIG.md).
 
-Required values: `OP_BASE_URL`, `OP_PROJECT`, `GITHUB_REPO`, `OP_ENGINE_TOKEN`,
-`AGENT`, the four `OP_TOKEN_*` agent tokens, and one model provider key.
+Required values: `OP_BASE_URL`, `OP_PROJECT`, `OP_ENGINE_TOKEN`, `AGENT`, the
+four `OP_TOKEN_*` agent tokens, and one model provider key. Each project must
+have the `GIT_REPO` project custom field set; the work-package `AGENT` field
+is required as before.
 `OP_PROVISION_TOKEN` is an administrator token used only for provisioning; the
 setup script asks for it and does not store it, and `verify-token` uses a
 transient `OP_VERIFY_TOKEN`.
@@ -241,7 +245,9 @@ All commands read the same environment; there is no `--config` option.
 
 ## Known limits
 
-- One OpenProject project and one GitHub repository per deployment.
+- Multiple OpenProject projects per deployment, but one GitHub repository per
+  project. Every monitored project needs both the `GIT_REPO` project field and
+  the `AGENT` work-package field enabled.
 - The team is fixed; adding a member is a code change, not configuration.
 - opencode is opt-in at image build time (`INSTALL_OPENCODE=true`).
 - The dashboard has no authentication and no write actions.

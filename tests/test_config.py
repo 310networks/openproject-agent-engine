@@ -13,7 +13,6 @@ from op_agent_engine.config import (
 DEPLOYMENT_ENV = {
     "OP_BASE_URL": "https://openproject.example.com",
     "OP_PROJECT": "demo",
-    "GITHUB_REPO": "owner/demo",
     "AGENT": "pi",
     "OP_TOKEN_FRONTEND": "frontend-token",
     "OP_TOKEN_BACKEND": "backend-token",
@@ -55,7 +54,6 @@ def deployment_settings(**overrides: object) -> EngineSettings:
     values: dict[str, object] = {
         "op_base_url": "https://openproject.example.com",
         "op_project": "demo",
-        "github_repo": "owner/demo",
         "agent": "pi",
     }
     values.update(overrides)
@@ -68,9 +66,10 @@ def test_env_builds_the_whole_workflow() -> None:
     )
 
     assert [project.identifier for project in config.projects] == ["demo"]
-    assert config.projects[0].repo.github == "owner/demo"
-    # The clone directory defaults to the repository name.
-    assert config.projects[0].repo.dir == "demo"
+    # The repository is resolved from the GIT_REPO project custom field at
+    # startup.
+    assert config.projects[0].repo is None
+    assert config.repo_discovery.git_repo_field == "GIT_REPO"
     assert set(config.agents) == {"FRONTEND", "BACKEND", "LEAD_DESIGNER", "REVIEWER"}
     assert config.reviewer.name == "codeReviewer"
     assert {agent.kind for agent in config.agents.values()} == {"implementer", "reviewer"}
@@ -86,7 +85,8 @@ def test_env_summary_mentions_entities() -> None:
     summary = "\n".join(config.summary())
 
     assert "statuses: new=New" in summary
-    assert "demo: owner/demo -> demo [enabled]" in summary
+    assert "demo: <GIT_REPO> [enabled]" in summary
+    assert "repo field: GIT_REPO" in summary
     assert "REVIEWER: codeReviewer (reviewer)" in summary
 
 
@@ -105,8 +105,8 @@ def test_repo_dir_and_branch_can_be_overridden() -> None:
         environ=dict(DEPLOYMENT_ENV),
     )
 
-    assert config.projects[0].repo.dir == "clone"
-    assert config.projects[0].repo.default_branch == "trunk"
+    assert config.repo_discovery.dir_override == "clone"
+    assert config.repo_discovery.default_branch == "trunk"
 
 
 def test_status_names_and_object_names_can_be_overridden() -> None:
@@ -143,14 +143,13 @@ def test_model_is_applied_to_every_runner() -> None:
 def test_missing_required_values_are_reported() -> None:
     with pytest.raises(ConfigError) as excinfo:
         WorkflowConfig.from_settings(
-            deployment_settings(op_project=None, github_repo=None),
+            deployment_settings(op_project=None),
             environ=dict(DEPLOYMENT_ENV),
         )
 
     message = str(excinfo.value)
     assert "missing required environment variables" in message
     assert "OP_PROJECT" in message
-    assert "GITHUB_REPO" in message
 
 
 def test_missing_token_is_empty_not_a_startup_error() -> None:
@@ -274,7 +273,6 @@ def test_engine_settings_reads_environment(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setenv("OP_BASE_URL", "https://openproject.example.com")
     monkeypatch.setenv("OP_ENGINE_TOKEN", "engine-token")
     monkeypatch.setenv("OP_PROJECT", "demo")
-    monkeypatch.setenv("GITHUB_REPO", "owner/demo")
     monkeypatch.setenv("AGENT", "opencode")
     monkeypatch.setenv("WORKSPACE_ROOT", "/srv/agents")
     monkeypatch.setenv("MAX_CONCURRENT_RUNS", "2")
@@ -289,7 +287,6 @@ def test_engine_settings_reads_environment(monkeypatch: pytest.MonkeyPatch) -> N
     assert settings.engine_paused is True
     assert settings.agent == "opencode"
     assert settings.op_project == "demo"
-    assert settings.github_repo == "owner/demo"
     assert settings.op_engine_token is not None
     assert settings.op_engine_token.get_secret_value() == "engine-token"
 
@@ -308,7 +305,6 @@ def test_engine_settings_reports_missing_runtime_values(
         "OP_BASE_URL",
         "OP_ENGINE_TOKEN",
         "OP_PROJECT",
-        "GITHUB_REPO",
         "AGENT",
         "WORKSPACE_ROOT",
         *AGENT_TOKEN_VARS,
@@ -321,7 +317,6 @@ def test_engine_settings_reports_missing_runtime_values(
         "OP_BASE_URL",
         "OP_ENGINE_TOKEN",
         "OP_PROJECT",
-        "GITHUB_REPO",
         "AGENT",
         "WORKSPACE_ROOT",
         *AGENT_TOKEN_VARS,
@@ -337,3 +332,34 @@ def test_missing_agent_tokens_are_listed(monkeypatch: pytest.MonkeyPatch) -> Non
     assert settings.missing_agent_tokens(
         {name: "x" for name in AGENT_TOKEN_VARS}
     ) == []
+
+
+def test_env_project_list_and_wildcard() -> None:
+    listed = WorkflowConfig.from_settings(
+        deployment_settings(op_project="demo, other"),
+        environ=dict(DEPLOYMENT_ENV),
+    )
+    assert [project.identifier for project in listed.projects] == ["demo", "other"]
+    assert all(project.repo is None for project in listed.projects)
+
+    wildcard = WorkflowConfig.from_settings(
+        deployment_settings(op_project="*"),
+        environ=dict(DEPLOYMENT_ENV),
+    )
+    assert [project.identifier for project in wildcard.projects] == ["*"]
+
+
+def test_env_rejects_a_wildcard_mixed_with_identifiers() -> None:
+    with pytest.raises(ConfigError, match="cannot be combined"):
+        WorkflowConfig.from_settings(
+            deployment_settings(op_project="*, demo"),
+            environ=dict(DEPLOYMENT_ENV),
+        )
+
+
+def test_env_repo_dir_is_single_project_only() -> None:
+    with pytest.raises(ConfigError, match="GITHUB_REPO_DIR is only supported"):
+        WorkflowConfig.from_settings(
+            deployment_settings(op_project="demo, other", github_repo_dir="clone"),
+            environ=dict(DEPLOYMENT_ENV),
+        )

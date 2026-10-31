@@ -7,6 +7,14 @@
 # once, then interviews you for one API token per account (sign in at your
 # OpenProject URL -> My account -> Access tokens).
 #
+# Before running it, create two custom fields in OpenProject (the API cannot
+# create them):
+#   * the work-package list field AGENT (or OP_AGENT_FIELD)
+#   * the project text field GIT_REPO (or OP_GIT_REPO_FIELD)
+# The engine reads each project's GitHub repository from GIT_REPO, so any
+# project with that field set (and the AGENT field enabled) can be monitored
+# simply by setting OP_PROJECT=*.
+#
 # Tokens are written to .env next to docker-compose.yml (mode 0600), so nothing
 # has to be hand-edited and compose picks them up on the next start.
 #
@@ -24,7 +32,7 @@ reprompt=0
 for arg in "$@"; do
   case "$arg" in
     --reprompt-tokens) reprompt=1 ;;
-    -h|--help) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "provision-users: unknown option: $arg" >&2; exit 2 ;;
   esac
 done
@@ -206,18 +214,35 @@ case "$op_base_url" in
 esac
 op_base_url=${op_base_url%/}
 
-project=$(ask_text "OpenProject project identifier" "$(get_env OP_PROJECT)")
+project=$(ask_text "Project identifier(s), comma-separated or * for all projects with GIT_REPO" "$(get_env OP_PROJECT)")
 [ -n "$project" ] || die "OP_PROJECT is required"
-
-repo=$(ask_text "GitHub repository (owner/name)" "$(get_env GITHUB_REPO)")
-[ -n "$repo" ] || die "GITHUB_REPO is required"
-case "$repo" in
-  */*) ;;
-  *) die "GITHUB_REPO must be in owner/name form" ;;
+project=$(printf '%s' "$project" | tr -d ' ')
+case "$project" in
+  "*") ;;
+  *"*"*) die "'*' must be used alone, not in a project list" ;;
+esac
+case ",$project," in
+  *,,*) die "OP_PROJECT contains an empty project identifier" ;;
 esac
 
-branch=$(ask_text "Default branch" "$(get_env GITHUB_DEFAULT_BRANCH)")
-[ -n "$branch" ] || branch=main
+# GITHUB_REPO_DIR is a single-project override and must not leak into a
+# multi-project run.
+GITHUB_REPO_DIR=$(get_env GITHUB_REPO_DIR)
+case "$project" in
+  *,*|"*")
+    GITHUB_REPO_DIR=
+    ;;
+esac
+export GITHUB_REPO_DIR
+
+git_repo_field=$(ask_text "Project custom field holding the repository" "$(get_env OP_GIT_REPO_FIELD)")
+[ -n "$git_repo_field" ] || git_repo_field=GIT_REPO
+
+say ""
+info "Repositories are read from the '$git_repo_field' project custom field."
+info "Create it once under Administration -> Custom fields -> Projects"
+info "(text format) and enable it for every monitored project."
+info "The AGENT work-package custom field must be set up the same way."
 
 agent=$(ask_text "Agent CLI (pi or opencode)" "$(get_env AGENT)")
 [ -n "$agent" ] || agent=pi
@@ -235,13 +260,11 @@ admin_token=$(ask_secret "  Administrator API token")
 
 export OP_BASE_URL="$op_base_url" \
        OP_PROJECT="$project" \
-       GITHUB_REPO="$repo" \
-       GITHUB_DEFAULT_BRANCH="$branch" \
+       OP_GIT_REPO_FIELD="$git_repo_field" \
        AGENT="$agent" \
        OP_PROVISION_TOKEN="$admin_token"
-GITHUB_REPO_DIR=$(get_env GITHUB_REPO_DIR)
 AGENT_MODEL="$model"
-export GITHUB_REPO_DIR AGENT_MODEL LOG_LEVEL=CRITICAL
+export AGENT_MODEL LOG_LEVEL=CRITICAL
 
 passwords_file=$(mktemp "${TMPDIR:-/tmp}/op-agent-engine-passwords.XXXXXX")
 provision_err=$(mktemp "${TMPDIR:-/tmp}/op-agent-engine-provision.XXXXXX")
@@ -250,9 +273,9 @@ trap cleanup EXIT INT TERM
 
 step 3 "Creating OpenProject users and memberships"
 if ! compose_run \
-    -e OP_BASE_URL -e OP_PROJECT -e GITHUB_REPO -e GITHUB_REPO_DIR \
-    -e GITHUB_DEFAULT_BRANCH -e AGENT -e AGENT_MODEL -e OP_PROVISION_TOKEN \
-    -e LOG_LEVEL \
+    -e OP_BASE_URL -e OP_PROJECT -e OP_GIT_REPO_FIELD \
+    -e GITHUB_REPO_DIR \
+    -e AGENT -e AGENT_MODEL -e OP_PROVISION_TOKEN -e LOG_LEVEL \
     engine provision --apply --json --passwords >"$passwords_file" 2>"$provision_err"; then
   sed 's/^/    /' "$provision_err" >&2
   die "provisioning failed (see the message above)"
@@ -290,13 +313,19 @@ reviewer_token=$TOKEN_VALUE
 step 5 "Saving .env"
 set_env OP_BASE_URL "$op_base_url"
 set_env OP_PROJECT "$project"
-set_env GITHUB_REPO "$repo"
-if [ -n "$GITHUB_REPO_DIR" ]; then
-  set_env GITHUB_REPO_DIR "$GITHUB_REPO_DIR"
-else
-  unset_env GITHUB_REPO_DIR
+set_env OP_GIT_REPO_FIELD "$git_repo_field"
+if [ -n "$(get_env GITHUB_REPO)" ]; then
+  warn "removing the obsolete GITHUB_REPO value; repositories come from GIT_REPO"
+  unset_env GITHUB_REPO
 fi
-set_env GITHUB_DEFAULT_BRANCH "$branch"
+case "$project" in
+  *,*|"*")
+    if [ -n "$(get_env GITHUB_REPO_DIR)" ]; then
+      warn "removing the single-project GITHUB_REPO_DIR value"
+    fi
+    unset_env GITHUB_REPO_DIR
+    ;;
+esac
 set_env AGENT "$agent"
 if [ -n "$AGENT_MODEL" ]; then
   set_env AGENT_MODEL "$AGENT_MODEL"

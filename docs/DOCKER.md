@@ -24,7 +24,7 @@ Nothing is mounted from the host. Change `.env`, then recreate the stack:
 
 | Changed | Command |
 |---|---|
-| `.env` (tokens, limits, `AGENT`, project, repository, provider key) | `docker compose up -d` — compose must recreate the container; `restart` keeps the old environment |
+| `.env` (tokens, limits, `AGENT`, project(s), provider key) | `docker compose up -d` — compose must recreate the container; `restart` keeps the old environment |
 | the image tag | `docker compose pull && docker compose up -d` |
 
 ## The entrypoint
@@ -32,8 +32,8 @@ Nothing is mounted from the host. Change `.env`, then recreate the stack:
 `docker/entrypoint.sh` runs as `uid 10001` (`agent`) and, before `exec
 op-agent-engine "$@"`:
 
-1. refuses to start without `OP_BASE_URL`, `OP_PROJECT`, `GITHUB_REPO`,
-   `AGENT`, `WORKSPACE_ROOT` or `DATA_DIR`, so a deployment that forgot one
+1. refuses to start without `OP_BASE_URL`, `OP_PROJECT`, `AGENT`,
+   `WORKSPACE_ROOT` or `DATA_DIR`, so a deployment that forgot one
    fails immediately with the variable named rather than inside a run;
 2. creates the writable state directories in the volumes;
 3. writes the agents' git identity from `GIT_AUTHOR_NAME`/`GIT_AUTHOR_EMAIL`

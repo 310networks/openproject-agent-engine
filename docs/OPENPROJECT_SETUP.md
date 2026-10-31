@@ -26,7 +26,34 @@ default sentence case (`In progress`) also matches the title case below:
 Enable `Task`, `Bug`, and `Feature` in the project. The engine's eligible types
 are fixed to those three.
 
-## 3. The `AGENT` custom field
+## 3. The `GIT_REPO` project custom field
+
+The engine reads each project's GitHub repository from a **project** custom
+field named `GIT_REPO` (configurable as `OP_GIT_REPO_FIELD`). The API cannot
+create custom fields, so create this one in the UI once:
+
+1. **Administration → Custom fields → Projects → New custom field**.
+2. **Name**: `GIT_REPO`. **Format**: **Text** (a plain text field; a full
+github.com URL also works).
+3. Save, then enable it for every project the engine should monitor.
+4. In each project's settings, set `GIT_REPO` to its repository
+   (`owner/name` or `https://github.com/owner/name`).
+
+With `OP_PROJECT=*`, the engine lists the active projects and monitors every
+one that has a non-empty `GIT_REPO`. Projects without it are skipped. If you
+name the project identifiers explicitly, each one must have `GIT_REPO` set.
+
+After adding a project or changing its `GIT_REPO` / `AGENT` setup, restart the
+engine so it resolves the project list again:
+
+```bash
+docker compose restart engine
+```
+
+If you changed `docker/.env` instead, recreate the container:
+`docker compose up -d engine`.
+
+## 4. The `AGENT` custom field
 
 The engine reads each work package's agent from a work-package custom field
 named `AGENT` (configurable as `OP_AGENT_FIELD`). It must be a single-select
@@ -48,7 +75,7 @@ named `AGENT` (configurable as `OP_AGENT_FIELD`). It must be a single-select
    a `customField<N>` id and list one option id per agent. `provision-users.sh`
    runs this check as its last step.
 
-## 4. Roles
+## 5. Roles
 
 Create one project role — **Administration → Users and permissions → Roles
 and permissions** (the API is read-only for roles):
@@ -63,7 +90,7 @@ has every project permission and can list users, so it needs no project role
 and no project membership. `provision` creates only the agents'
 memberships.
 
-## 5. Workflow transitions
+## 6. Workflow transitions
 
 Nothing to configure for the engine user: it is an administrator and is not
 restricted by project-role workflows. The engine enforces its own status
@@ -71,7 +98,7 @@ transitions client-side, and `On Hold` is terminal for it. For the **Agent
 Worker** role leave every transition unchecked so agents cannot change
 status.
 
-## 6. Users and tokens
+## 7. Users and tokens
 
 Only an admin token is needed before this step: `./provision-users.sh` asks for
 it at run time (it is never stored). `op-agent-engine provision --apply` (run
@@ -79,7 +106,7 @@ by the script, or manually with `OP_PROVISION_TOKEN` set) creates the five users
 (`frontendEngineer`, `backendEngineer`, `leadDesigner`, `codeReviewer`,
 `agent-engine`) and one membership per agent in the configured project. The
 engine user is created as a regular user; **make it an administrator** as
-described in [section 4](#4-roles) before using its token. Provisioning never
+described in [section 5](#5-roles) before using its token. Provisioning never
 deletes, deactivates or renames logins.
 
 The users' passwords are randomly generated. Administrators cannot mint API

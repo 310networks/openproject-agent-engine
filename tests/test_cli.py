@@ -25,7 +25,6 @@ from tests.fakes import non_write_requests
 EXAMPLE_ENV = {
     "OP_BASE_URL": "https://openproject.example.com",
     "OP_PROJECT": "example-project",
-    "GITHUB_REPO": "310networks/example-project",
     "AGENT": "pi",
     "OP_ENGINE_TOKEN": "engine-token",
     "OP_TOKEN_FRONTEND": "frontend-token",
@@ -116,7 +115,9 @@ def test_check_config_json(capsys: pytest.CaptureFixture[str]) -> None:
     assert payload["source"] == "environment"
     assert payload["statuses"]["in_testing"] == "In Testing"
     assert payload["agents"]["REVIEWER"]["kind"] == "reviewer"
-    assert payload["projects"][0]["github"] == "310networks/example-project"
+    # The repository is resolved from GIT_REPO at startup, not built offline.
+    assert payload["projects"][0]["github"] is None
+    assert payload["repo_field"] == "GIT_REPO"
     assert payload["resolved"] is None
 
 
@@ -135,12 +136,12 @@ def test_check_config_reports_missing_environment_variable(
 def test_check_config_reports_validation_errors(
     capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("GITHUB_REPO", "not-a-repo")
+    monkeypatch.setenv("OP_PROJECT", "*, demo")
 
     assert main(["check-config", "--offline"]) == CONFIG_ERROR_EXIT
 
     error = capsys.readouterr().err
-    assert "must be a GitHub repository in 'owner/name' form" in error
+    assert "cannot be combined with explicit project identifiers" in error
 
 
 def test_check_config_requires_api_environment(

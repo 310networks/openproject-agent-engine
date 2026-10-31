@@ -456,3 +456,142 @@ async def test_link_field_without_allowed_values_is_reported() -> None:
     message = str(excinfo.value)
     assert "is not a list field with allowed values" in message
     assert "returned no allowedValues" in message
+
+
+# -- repository discovery (GIT_REPO project custom field) -------------------
+
+
+def project_with_repo(
+    identifier: str,
+    *,
+    project_id: int = 4,
+    repo: str | None = "acme/demo",
+    active: bool = True,
+) -> dict[str, Any]:
+    entry: dict[str, Any] = {
+        "id": project_id,
+        "identifier": identifier,
+        "name": identifier.title(),
+        "active": active,
+    }
+    if repo is not None:
+        entry["customField5"] = repo
+    return entry
+
+
+REPO_FIELD = {"customField5": {"type": "String", "name": "GIT_REPO"}}
+
+
+async def test_git_repo_field_sets_the_repository() -> None:
+    fake = make_fake(
+        projects=[project_with_repo("demo")],
+        project_schema=REPO_FIELD,
+    )
+    config = make_config(projects=[{"identifier": "demo"}])
+
+    await resolve(fake, config)
+
+    assert config.projects[0].repo is not None
+    assert config.projects[0].repo.github == "acme/demo"
+    assert config.projects[0].repo.dir == "demo"
+    assert config.projects[0].repo.default_branch is None
+
+
+async def test_git_repo_accepts_a_github_url() -> None:
+    fake = make_fake(
+        projects=[
+            project_with_repo(
+                "demo", repo="https://github.com/acme/demo.git"
+            )
+        ],
+        project_schema=REPO_FIELD,
+    )
+    config = make_config(projects=[{"identifier": "demo"}])
+
+    await resolve(fake, config)
+
+    assert config.projects[0].repo is not None
+    assert config.projects[0].repo.github == "acme/demo"
+
+
+async def test_wildcard_discovers_active_projects_with_a_repo() -> None:
+    fake = make_fake(
+        projects=[
+            project_with_repo("demo", project_id=4),
+            project_with_repo("other", project_id=5, repo=None),
+            project_with_repo("archived", project_id=6, repo="acme/old", active=False),
+        ],
+        project_schema=REPO_FIELD,
+        types={"demo": TYPES["demo"]},
+    )
+    config = make_config(projects=[{"identifier": "*"}])
+
+    await resolve(fake, config)
+
+    assert [project.identifier for project in config.projects] == ["demo"]
+    assert config.projects[0].repo is not None
+    assert config.projects[0].repo.github == "acme/demo"
+
+
+async def test_missing_git_repo_field_names_the_manual_setup() -> None:
+    fake = make_fake(
+        projects=[project_with_repo("demo")],
+        project_schema={},
+    )
+    config = make_config(projects=[{"identifier": "demo"}])
+
+    with pytest.raises(OpenProjectResolutionError) as excinfo:
+        await resolve(fake, config)
+
+    message = str(excinfo.value)
+    assert "GIT_REPO" in message
+    assert "Administration -> Custom fields -> Projects" in message
+
+
+async def test_git_repo_must_be_a_github_repository() -> None:
+    fake = make_fake(
+        projects=[
+            project_with_repo("demo", repo="https://gitlab.com/acme/demo")
+        ],
+        project_schema=REPO_FIELD,
+    )
+    config = make_config(projects=[{"identifier": "demo"}])
+
+    with pytest.raises(OpenProjectResolutionError, match="not a GitHub repository"):
+        await resolve(fake, config)
+
+
+async def test_repo_directories_are_unique_across_projects() -> None:
+    fake = make_fake(
+        projects=[
+            project_with_repo("demo", project_id=4, repo="acme/demo"),
+            project_with_repo("other", project_id=5, repo="other/demo"),
+        ],
+        project_schema=REPO_FIELD,
+        types={"demo": TYPES["demo"], "other": TYPES["demo"]},
+        schemas={**schemas(), "5-1": schema(), "5-4": schema(), "5-7": schema()},
+    )
+    config = make_config(projects=[{"identifier": "*"}])
+
+    await resolve(fake, config)
+
+    assert [project.repo.dir for project in config.projects if project.repo] == [
+        "demo",
+        "demo-other",
+    ]
+
+
+async def test_git_repo_field_can_be_an_explicit_custom_field_id() -> None:
+    fake = make_fake(
+        projects=[project_with_repo("demo")],
+        project_schema={},
+    )
+    config = make_config(
+        projects=[{"identifier": "demo"}],
+        repo_discovery={"git_repo_field": "customField5"},
+    )
+
+    await resolve(fake, config)
+
+    assert config.projects[0].repo is not None
+    assert config.projects[0].repo.github == "acme/demo"

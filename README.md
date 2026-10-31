@@ -29,9 +29,9 @@ starts with `ENGINE:`.
 
 ## Quick start
 
-1. Complete the one-time instance setup — statuses, the `AGENT` custom field
-   and the Agent Worker role — in
-   [docs/OPENPROJECT_SETUP.md](docs/OPENPROJECT_SETUP.md).
+1. Complete the one-time instance setup — statuses, the `GIT_REPO` project
+   custom field, the `AGENT` work-package custom field and the Agent Worker
+   role — in [docs/OPENPROJECT_SETUP.md](docs/OPENPROJECT_SETUP.md).
 
 2. In `docker/`, run the interactive setup:
 
@@ -40,7 +40,7 @@ starts with `ENGINE:`.
    ./provision-users.sh
    ```
 
-   It asks for the OpenProject URL, project and repository, asks for an
+   It asks for the OpenProject URL and project identifier(s), asks for an
    administrator token (used once, never stored), creates the engine user and
    one account per agent, prints each generated password at that account's
    token prompt, verifies every token and writes `docker/.env` (mode `0600`).
@@ -64,18 +64,22 @@ starts with `ENGINE:`.
    docker compose logs -f engine
    ```
 
+   After adding a project or changing its `GIT_REPO` / `AGENT` setup in
+   OpenProject, run `docker compose restart engine`. After changing
+   `docker/.env`, run `docker compose up -d engine` so compose recreates the
+   container with the new environment.
+
 The dashboard is served at `http://127.0.0.1:8765`
 (see [docs/DASHBOARD.md](docs/DASHBOARD.md)).
 
 ## Required environment variables
 
-`provision-users.sh` writes the first nine; you add the provider key.
+`provision-users.sh` writes the first eight; you add the provider key.
 
 | Variable | Meaning |
 |---|---|
 | `OP_BASE_URL` | your OpenProject URL |
-| `OP_PROJECT` | identifier of the project the engine works on |
-| `GITHUB_REPO` | repository as `owner/name` |
+| `OP_PROJECT` | project identifier(s): one, a comma list, or `*` for every project with `GIT_REPO` |
 | `OP_ENGINE_TOKEN` | API token of the runtime user (administrator) |
 | `AGENT` | agent CLI to run: `pi` or `opencode` |
 | `OP_TOKEN_FRONTEND` | token of `frontendEngineer` |
@@ -83,6 +87,12 @@ The dashboard is served at `http://127.0.0.1:8765`
 | `OP_TOKEN_DESIGNER` | token of `leadDesigner` |
 | `OP_TOKEN_REVIEWER` | token of `codeReviewer` |
 | `ANTHROPIC_API_KEY` etc. | one model provider key for the agent CLI |
+
+Each monitored project must have a **project** custom field named `GIT_REPO`
+(configurable with `OP_GIT_REPO_FIELD`) containing its GitHub repository
+(`owner/name` or a github.com URL). Create the field once in
+**Administration → Custom fields → Projects** and enable it for every project.
+`docker/provision-users.sh` explains this during setup.
 
 The team is fixed in the image, one OpenProject account and one token each:
 

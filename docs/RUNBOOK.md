@@ -19,6 +19,22 @@ The heartbeat (`DATA_DIR/heartbeat`) is written after every poll; a stale one
 means the container is stopped or stuck — check
 `docker compose logs --since 10m engine`.
 
+## Configuration changes
+
+- **Added or updated an OpenProject project** (`GIT_REPO`, `AGENT`, eligible
+  types): restart the engine process so it resolves the project list again.
+
+  ```bash
+  docker compose restart engine
+  ```
+
+- **Changed `docker/.env`** (for example `OP_PROJECT`, `OP_GIT_REPO_FIELD`,
+  tokens): recreate the container; `restart` does **not** re-read `.env`.
+
+  ```bash
+  docker compose up -d engine
+  ```
+
 ## Pause and resume
 
 - Touch `DATA_DIR/PAUSE`: the next poll stops claiming; running runs finish.

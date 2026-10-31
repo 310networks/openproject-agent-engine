@@ -252,15 +252,19 @@ def _config_summary(config: WorkflowConfig) -> dict[str, object]:
         "source": "environment",
         "statuses": config.openproject.statuses.by_key(),
         "agent_field": config.openproject.agent_field,
+        "repo_field": config.repo_discovery.git_repo_field,
+        "default_branch": config.repo_discovery.default_branch,
         "engine_user": config.openproject.engine_user,
         "dispatch_priority": config.openproject.dispatch_priority,
         "eligible_types": config.openproject.eligible_types,
         "projects": [
             {
                 "identifier": project.identifier,
-                "github": project.repo.github,
-                "dir": project.repo.dir,
-                "default_branch": project.repo.default_branch,
+                "github": project.repo.github if project.repo else None,
+                "dir": project.repo.dir if project.repo else None,
+                "default_branch": (
+                    project.repo.default_branch if project.repo else None
+                ),
                 "enabled": project.enabled,
             }
             for project in config.projects

@@ -243,7 +243,9 @@ class RepoConfig(BaseModel):
 
     github: str
     dir: str
-    default_branch: str = "main"
+    # ``None`` means the engine asks git for the remote default branch when it
+    # prepares the workspace. Set it only to override that discovery.
+    default_branch: str | None = None
 
     @field_validator("github")
     @classmethod
@@ -263,17 +265,62 @@ class RepoConfig(BaseModel):
 
     @field_validator("default_branch")
     @classmethod
-    def _default_branch(cls, value: str) -> str:
+    def _default_branch(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        return stripped or None
+
+
+class RepoDiscoveryConfig(BaseModel):
+    """How env-based deployments find each project's repository.
+
+    The repository is read from a project custom field (``GIT_REPO`` by
+    default). ``dir_override`` exists for a single explicit project that wants
+    a clone directory other than the repository name.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    git_repo_field: str = "GIT_REPO"
+    dir_override: str | None = None
+    default_branch: str | None = None
+
+    @field_validator("git_repo_field")
+    @classmethod
+    def _field_name(cls, value: str) -> str:
         if not value.strip():
-            raise ValueError("default branch must not be empty")
-        return value
+            raise ValueError("git_repo_field must not be empty")
+        return value.strip()
+
+    @field_validator("dir_override")
+    @classmethod
+    def _dir_override(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        if not stripped:
+            return None
+        if "/" in stripped or "\\" in stripped or stripped in {".", ".."}:
+            raise ValueError("dir_override must be a plain directory name")
+        return stripped
+
+    @field_validator("default_branch")
+    @classmethod
+    def _discovery_branch(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        return stripped or None
 
 
 class ProjectConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     identifier: str
-    repo: RepoConfig
+    # ``None`` means the repository is resolved from the project custom field
+    # at startup (or the project is a ``*`` discovery placeholder).
+    repo: RepoConfig | None = None
     enabled: bool = True
 
     @field_validator("identifier")
@@ -415,12 +462,32 @@ def _check_placeholders(value: str, location: str) -> None:
             )
 
 
+def _project_identifiers(value: str) -> list[str]:
+    """Parse ``OP_PROJECT`` into a validated identifier list.
+
+    Values may be one identifier, a comma-separated list, or ``*`` on its own.
+    """
+    stripped = value.strip()
+    if stripped == "*":
+        return ["*"]
+    parts = [part.strip() for part in stripped.split(",")]
+    if any(not part for part in parts):
+        raise ConfigError("OP_PROJECT contains an empty project identifier")
+    if "*" in parts:
+        raise ConfigError("'*' cannot be combined with explicit project identifiers")
+    if len(set(parts)) != len(parts):
+        raise ConfigError("OP_PROJECT contains duplicate project identifiers")
+    return parts
+
+
 class WorkflowConfig(BaseModel):
     """The parsed, validated contents of the configuration."""
+
 
     model_config = ConfigDict(extra="forbid")
 
     openproject: OpenProjectConfig = Field(default_factory=OpenProjectConfig)
+    repo_discovery: RepoDiscoveryConfig = Field(default_factory=RepoDiscoveryConfig)
     projects: list[ProjectConfig]
     agents: dict[str, AgentConfig]
     runners: dict[str, RunnerConfig]
@@ -446,7 +513,9 @@ class WorkflowConfig(BaseModel):
         if len(set(identifiers)) != len(identifiers):
             raise ValueError("project identifiers must be unique")
 
-        repo_dirs = [project.repo.dir for project in self.projects]
+        repo_dirs = [
+            project.repo.dir for project in self.projects if project.repo is not None
+        ]
         if len(set(repo_dirs)) != len(repo_dirs):
             raise ValueError("repo.dir values must be unique across projects")
 
@@ -475,16 +544,19 @@ class WorkflowConfig(BaseModel):
                 + (f" ({', '.join(reviewers)})" if reviewers else "")
             )
 
+        # A ``*`` project placeholder discovers identifiers at startup, so its
+        # agent scopes can only be validated after expansion.
         declared = set(identifiers)
-        for key, agent in self.agents.items():
-            if "*" in agent.projects:
-                continue
-            unknown = sorted(set(agent.projects) - declared)
-            if unknown:
-                raise ValueError(
-                    f"agent '{key}' projects reference identifier(s) not declared in "
-                    f"projects: {', '.join(unknown)}"
-                )
+        if "*" not in declared:
+            for key, agent in self.agents.items():
+                if "*" in agent.projects:
+                    continue
+                unknown = sorted(set(agent.projects) - declared)
+                if unknown:
+                    raise ValueError(
+                        f"agent '{key}' projects reference identifier(s) not declared in "
+                        f"projects: {', '.join(unknown)}"
+                    )
         return self
 
     # -- helpers ---------------------------------------------------------
@@ -541,10 +613,16 @@ class WorkflowConfig(BaseModel):
         ]
         for project in self.projects:
             state = "enabled" if project.enabled else "disabled"
-            lines.append(
-                f"  - {project.identifier}: {project.repo.github} "
-                f"-> {project.repo.dir} [{state}]"
+            repo = (
+                f"{project.repo.github} -> {project.repo.dir}"
+                if project.repo is not None
+                else f"<{self.repo_discovery.git_repo_field}>"
             )
+            lines.append(f"  - {project.identifier}: {repo} [{state}]")
+        lines.append(
+            f"repo field: {self.repo_discovery.git_repo_field} "
+            f"(default branch: {self.repo_discovery.default_branch or 'auto'})"
+        )
         lines.append(f"agents: {len(self.agents)}")
         for key, agent in self.agents.items():
             model = agent.model or self.runners[agent.runner].model
@@ -611,8 +689,9 @@ class WorkflowConfig(BaseModel):
         """Build the workflow from environment variables.
 
         The team, the runners and the status defaults are baked in; the
-        deployment supplies its OpenProject URL, project, repository, agent CLI
-        and one token per agent.
+        deployment supplies its OpenProject URL, project(s), agent CLI and one
+        token per agent. Each project's repository is read from its ``GIT_REPO``
+        project custom field at startup (see :func:`expand_projects`).
         """
         env = os.environ if environ is None else environ
         missing = [
@@ -620,7 +699,6 @@ class WorkflowConfig(BaseModel):
             for name, value in (
                 ("OP_BASE_URL", settings.op_base_url),
                 ("OP_PROJECT", settings.op_project),
-                ("GITHUB_REPO", settings.github_repo),
                 ("AGENT", settings.agent),
             )
             if not value
@@ -632,10 +710,16 @@ class WorkflowConfig(BaseModel):
 
         assert settings.op_base_url is not None
         assert settings.op_project is not None
-        assert settings.github_repo is not None
         assert settings.agent is not None
 
-        repo_dir = settings.github_repo_dir or settings.github_repo.rsplit("/", 1)[-1]
+        identifiers = _project_identifiers(settings.op_project)
+        single = len(identifiers) == 1 and identifiers[0] != "*"
+        if not single and settings.github_repo_dir:
+            raise ConfigError(
+                "GITHUB_REPO_DIR is only supported for a single OP_PROJECT; "
+                "clone directories are derived from GIT_REPO for multiple projects"
+            )
+
         statuses = {
             "new": settings.op_status_new,
             "in_progress": settings.op_status_in_progress,
@@ -671,16 +755,14 @@ class WorkflowConfig(BaseModel):
                     "email_domain": settings.op_email_domain,
                 },
             },
+            "repo_discovery": {
+                "git_repo_field": settings.op_git_repo_field,
+                "dir_override": settings.github_repo_dir if single else None,
+                "default_branch": settings.github_default_branch or None,
+            },
             "projects": [
-                {
-                    "identifier": settings.op_project,
-                    "repo": {
-                        "github": settings.github_repo,
-                        "dir": repo_dir,
-                        "default_branch": settings.github_default_branch,
-                    },
-                    "enabled": True,
-                }
+                {"identifier": identifier, "enabled": True}
+                for identifier in identifiers
             ],
             "agents": agents,
             "runners": _runner_mapping(settings.agent_model or None),
@@ -768,13 +850,14 @@ class EngineSettings(BaseSettings):
     agent_model: str | None = None
     agent_timeout_seconds: int = Field(default=3600, gt=0)
 
-    # The repository each work package is implemented in.
-    github_repo: str | None = None
+    # Single-project clone-directory override; repositories normally come
+    # from each project's GIT_REPO custom field.
     github_repo_dir: str | None = None
-    github_default_branch: str = "main"
+    github_default_branch: str | None = None
 
     # OpenProject object names (defaults match a stock OpenProject instance).
     op_agent_field: str = "AGENT"
+    op_git_repo_field: str = "GIT_REPO"
     op_engine_user: str = "agent-engine"
     op_agent_role: str = "Agent Worker"
     op_email_domain: str = "agent-engine.local"
@@ -824,8 +907,6 @@ class EngineSettings(BaseSettings):
         missing = self.missing_api_values()
         if not self.op_project:
             missing.append("OP_PROJECT")
-        if not self.github_repo:
-            missing.append("GITHUB_REPO")
         if not self.agent:
             missing.append("AGENT")
         if self.workspace_root is None or not str(self.workspace_root):

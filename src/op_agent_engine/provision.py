@@ -38,6 +38,7 @@ from op_agent_engine.openproject.client import (
     OpenProjectNotFoundError,
     json_dumps,
 )
+from op_agent_engine.openproject.resolve import expand_projects
 
 TOKEN_ENV_PREFIX = "OP_TOKEN_"
 
@@ -261,6 +262,7 @@ async def provision_workflow(
             "(openproject.provisioning.enabled: false)"
         )
 
+    await expand_projects(client, config)
     report = ProvisionReport(apply=apply)
     roles = await _fetch_roles(client)
     role_ids, missing_roles = _resolve_roles(config, roles)
@@ -315,6 +317,7 @@ async def audit_workflow(
         report.warnings.append("provisioning is disabled in the configuration")
         return report
 
+    await expand_projects(client, config)
     roles = await _fetch_roles(client)
     role_ids, missing_roles = _resolve_roles(config, roles)
     report.missing_roles = missing_roles

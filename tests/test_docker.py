@@ -110,7 +110,6 @@ def test_entrypoint_validates_the_environment_and_seeds_nothing() -> None:
     for required in (
         "OP_BASE_URL",
         "OP_PROJECT",
-        "GITHUB_REPO",
         "AGENT",
         "WORKSPACE_ROOT",
         "DATA_DIR",
@@ -228,7 +227,6 @@ def test_docs_list_every_environment_variable() -> None:
     for required in (
         "OP_BASE_URL",
         "OP_PROJECT",
-        "GITHUB_REPO",
         "OP_ENGINE_TOKEN",
         "AGENT",
         "OP_TOKEN_FRONTEND",

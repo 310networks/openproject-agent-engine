@@ -59,6 +59,8 @@ class Workspace:
     repo_dir: Path
     branch: str
     standard_path: Path
+    #: The remote's default branch (discovered when not configured).
+    default_branch: str | None = None
     #: The agent's shared clone; set when ``repo_dir`` is a git worktree.
     base_repo_dir: Path | None = None
 
@@ -106,6 +108,51 @@ async def run_git(
     return _stdout.decode("utf-8", errors="replace")
 
 
+async def remote_default_branch(repo_dir: Path) -> str | None:
+    """Return the remote default branch, preferring local tracking data.
+
+    ``origin/HEAD`` is set by a normal clone; after a fetch of an older clone
+    it can be stale, so ask the remote with ``ls-remote --symref`` when it is
+    not available. Returns ``None`` when neither works.
+    """
+    prefix = "refs/remotes/origin/"
+    try:
+        ref = (
+            await run_git(
+                ["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"],
+                cwd=repo_dir,
+            )
+        ).strip()
+    except GitError:
+        ref = ""
+    if ref.startswith(prefix):
+        branch = ref[len(prefix):].strip()
+        if branch:
+            return branch
+
+    try:
+        output = await run_git(
+            ["ls-remote", "--symref", "origin", "HEAD"], cwd=repo_dir
+        )
+    except GitError:
+        output = ""
+    ref_prefix = "ref: refs/heads/"
+    for line in output.splitlines():
+        if not line.startswith(ref_prefix):
+            continue
+        branch = line[len(ref_prefix):].split("\t", 1)[0].split(" ", 1)[0].strip()
+        if branch:
+            return branch
+
+    # A remote whose HEAD points at a missing branch (a common state after a
+    # rename) exposes no symref. Fall back to the conventional names if they
+    # actually exist locally.
+    for candidate in ("main", "master"):
+        if await _remote_branch_exists(repo_dir, candidate):
+            return candidate
+    return None
+
+
 async def _remote_branch_exists(repo_dir: Path, branch: str) -> bool:
     try:
         await run_git(
@@ -123,7 +170,7 @@ async def prepare_workspace(
     agent_workspace: str,
     github_repo: str,
     clone_dir: str,
-    default_branch: str,
+    default_branch: str | None,
     project_id: int,
     work_package_id: int,
     role: str,
@@ -170,17 +217,23 @@ async def prepare_workspace(
         await run_git(["fetch", "--quiet", "origin"], cwd=repo_dir)
 
     remote_branch_exists = await _remote_branch_exists(repo_dir, branch)
+    resolved_default_branch = default_branch or await remote_default_branch(repo_dir)
 
     if role == "implementer":
         if remote_branch_exists:
             base = f"origin/{branch}"
         else:
-            if not await _remote_branch_exists(repo_dir, default_branch):
+            if resolved_default_branch is None:
                 raise WorkspaceError(
-                    f"origin/{default_branch} not found after fetch "
+                    "could not determine the default branch for "
+                    f"{github_repo}; set GITHUB_DEFAULT_BRANCH explicitly"
+                )
+            if not await _remote_branch_exists(repo_dir, resolved_default_branch):
+                raise WorkspaceError(
+                    f"origin/{resolved_default_branch} not found after fetch "
                     f"(repository {github_repo})"
                 )
-            base = f"origin/{default_branch}"
+            base = f"origin/{resolved_default_branch}"
     elif role == "reviewer":
         if not remote_branch_exists:
             raise WorkspaceError(
@@ -235,6 +288,7 @@ async def prepare_workspace(
             repo_dir=worktree_dir,
             branch=branch,
             standard_path=standard_path,
+            default_branch=resolved_default_branch,
             base_repo_dir=repo_dir,
         )
 
@@ -245,7 +299,12 @@ async def prepare_workspace(
         branch,
         extra={"repo_dir": str(repo_dir), "branch": branch},
     )
-    return Workspace(repo_dir=repo_dir, branch=branch, standard_path=standard_path)
+    return Workspace(
+        repo_dir=repo_dir,
+        branch=branch,
+        standard_path=standard_path,
+        default_branch=resolved_default_branch,
+    )
 
 
 async def _head_is_detached(repo_dir: Path) -> bool:
