@@ -502,6 +502,111 @@ def _provision_users(
     }
 
 
+def run_provision_users(
+    *,
+    config_dir: Path,
+    reprompt_tokens: bool = False,
+) -> int:
+    """Provision the OpenProject accounts and collect one token each.
+
+    This is the container path of ``install.sh``: there is no ``init`` step and
+    no systemd service, because the compose file owns both. Everything that
+    matters is the same code -- the same account creation, the same one-time
+    passwords and the same per-account token interview -- so it runs *before*
+    the engine container is started and the operator has as long as they need
+    to sign in and mint each token.
+    """
+    env_path = config_dir / "engine.env"
+    workflow_path = config_dir / "workflow.yaml"
+    if not workflow_path.is_file():
+        raise SetupError(f"missing {workflow_path}")
+    if not env_path.is_file():
+        raise SetupError(f"missing {env_path}")
+
+    ui = UI()
+    file_env = install.load_env_file(env_path)
+    base_url = _require_provisioning_values(file_env)
+    requests = token_requests(load_workflow_raw(workflow_path))
+
+    ui.title("OpenProject Agent Engine - users and tokens")
+    ui.info(f"config:   {config_dir}")
+    ui.info(f"instance: {base_url}")
+
+    ui.step(1, "Provisioning OpenProject users and memberships")
+    passwords = _provision_users(
+        env=_provision_env(file_env, config_dir, requests),
+        cwd=config_dir,
+        config_path=workflow_path,
+        ui=ui,
+    )
+
+    ui.step(2, "Create one API token per account")
+    ui.info("OpenProject administrators cannot mint API tokens for other users.")
+    ui.info("Sign in as each account below and create a token under:")
+    ui.info(f"  {base_url}/my/access_tokens")
+    ui.info("(or: My account -> Access tokens)")
+    ui.info("The agent-engine runtime user must be an administrator.")
+    if passwords:
+        ui.info(
+            "Generated passwords are shown once, at that account's token "
+            f"prompt (sign in at {base_url})."
+        )
+
+    updates: dict[str, str] = {}
+    warned_logins: set[str] = set()
+    reused = 0
+    for request in requests:
+        existing = file_env.get(request.env_var)
+        password = passwords.get(request.login)
+
+        if not reprompt_tokens and _usable(existing) and existing is not None:
+            if _reuse_token(request, existing, base_url, ui):
+                reused += 1
+                continue
+            existing = None
+
+        if password:
+            ui.credential(request.label, request.login, password)
+        elif not _usable(existing) and request.login not in warned_logins:
+            warned_logins.add(request.login)
+            ui.warn(
+                f"{request.login} already exists, so its password cannot be "
+                "shown. Reset it in OpenProject (Administration -> Users -> "
+                f"{request.login}) or paste a token you already created."
+            )
+        if request.kind == "engine":
+            ui.warn(
+                f"make {request.login} an administrator before creating this "
+                f"token: Administration -> Users -> {request.login} -> "
+                "Administrator"
+            )
+        updates[request.env_var] = _prompt_token(request, existing, base_url, ui)
+
+    if reused:
+        ui.info(
+            f"reused {reused} existing token(s); pass --reprompt-tokens to "
+            "enter them again"
+        )
+    install.update_env_file(env_path, updates)
+    file_env.update(updates)
+    ui.ok(f"tokens saved to {env_path} (mode 0600)")
+
+    ui.step(3, "Validating the configuration")
+    _run_captured(
+        ["check-config", "--config", str(workflow_path)],
+        env=_build_env(file_env, config_dir),
+        cwd=config_dir,
+        ui=ui,
+        purpose="op-agent-engine check-config",
+    )
+    ui.ok("configuration verified")
+
+    ui.step(4, "Next")
+    ui.info("start the engine: docker compose up -d")
+    ui.info("follow it with:    docker compose logs -f engine")
+    return 0
+
+
 def run_setup(
     *,
     source_dir: Path,

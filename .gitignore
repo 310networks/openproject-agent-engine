@@ -8,6 +8,7 @@
 # Everything else in here is a copy of the operator's credentials, settings,
 # skills and git identity, so it must never reach the repository.
 /config/*
+/provision-tmp.*
 !/config/.gitkeep
 !/config/pi
 /config/pi/*

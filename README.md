@@ -66,9 +66,8 @@ curl -fsSLO https://raw.githubusercontent.com/310networks/openproject-agent-engi
 # then write config/engine.env, config/workflow.yaml and optionally
 # config/pi/{auth.json,settings.json}, config/pi/skills/ and config/gitconfig
 docker compose pull
-docker compose run --rm provision --apply   # create users, prints passwords once
-# paste each account's OP_TOKEN_* into config/engine.env, then:
-docker compose run --rm check-config && docker compose up -d
+./docker/provision-users.sh             # create users + mint tokens, then:
+docker compose up -d
 ```
 
 The agent CLIs are baked into the image; your config, credentials and skills are

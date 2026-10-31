@@ -96,51 +96,50 @@ and copies `~/.pi/agent/{auth.json,settings.json,skills}` plus `~/.gitconfig`.
 
 ## Creating the users and tokens
 
-There is no interactive installer in the container, but `provision` is the same
-code path `install.sh` calls, so the accounts and tokens are created the same
-way. Do the one-time instance setup first (statuses, `AGENT` custom field,
-Agent Worker role): [OPENPROJECT_SETUP.md](OPENPROJECT_SETUP.md).
+Users and tokens are created by a script that runs **before** the engine
+container, so you can take as long as you need to sign in and mint each token.
+Do the one-time instance setup first (statuses, `AGENT` custom field, Agent
+Worker role): [OPENPROJECT_SETUP.md](OPENPROJECT_SETUP.md).
+It needs only `OP_BASE_URL` and `OP_PROVISION_TOKEN` (an administrator's token)
+in `config/engine.env`; leave the `OP_TOKEN_*` values as placeholders.
 
-1. **Provisioning token.** In `config/engine.env` set `OP_BASE_URL` and
-   `OP_PROVISION_TOKEN` to an administrator's token. Nothing else is needed
-   yet — leave the `OP_TOKEN_*` values as placeholders.
+```bash
+./docker/provision-users.sh
+```
 
-2. **Create the accounts.** This creates `agent-engine` plus one user per
-   agent in `workflow.yaml` and prints the generated password of each account
-   it created, once:
+It does, in order:
 
-   ```bash
-   docker compose run --rm provision --apply --json
-   ```
+1. creates `agent-engine` plus one user per agent in `workflow.yaml`;
+2. shows each **generated password once**, at that account's token prompt —
+   store it if you may need to sign in again (passwords are never written to
+   disk; accounts that already exist keep theirs, so reset them under
+   **Administration → Users** instead);
+3. warns you to make `agent-engine` an administrator (**Administration → Users
+   → agent-engine → Administrator**) — the engine needs that to list users and
+   edit work packages;
+4. interviews you for one token per account (mint it at
+   `<OP_BASE_URL>/my/access_tokens`) and verifies each against
+   `/api/v3/users/me` — OpenProject does not let an administrator create tokens
+   for other users, so each one has to be minted while signed in as that user;
+5. writes the tokens into `config/engine.env` (mode `0600`) and runs
+   `check-config`.
 
-   Accounts that already exist are reused, and their password is *not* shown —
-   reset it in **Administration → Users**, or paste a token you already have.
-   Passwords are never written to disk, so store them if you need to sign in
-   again.
+Then start the stack:
 
-3. **Make `agent-engine` an administrator** (**Administration → Users →
-   agent-engine → Administrator**). The engine needs it to list users and to
-   edit work packages without a project role.
+```bash
+docker compose up -d
+```
 
-4. **Mint one token per account.** OpenProject does not let an administrator
-   create tokens for other users, so sign in at `OP_BASE_URL` as each account
-   with the password from step 2 and create the token under **My account →
-   Access tokens**. Put it in `config/engine.env`:
+`up -d`, not `restart`: a changed env file is only picked up when the container
+is recreated. Re-running the script is safe — valid stored tokens are reused
+(`--reprompt-tokens` asks again) — which makes it the way to fix a token that
+turned out to belong to the wrong account.
 
-   | account | variable |
-   |---|---|
-   | `agent-engine` | `OP_ENGINE_TOKEN` |
-   | each agent's `op_login` | the matching `OP_TOKEN_*` referenced by `workflow.yaml` |
-
-5. **Verify.** Each token is checked against `/api/v3/users/me`, so this fails
-   loudly if a token belongs to the wrong user:
-
-   ```bash
-   docker compose run --rm check-config
-   ```
-
-6. **Start.** `docker compose up -d` — `up`, not `restart`, because the env
-   file changed.
+The script runs the same code as `install.sh` does on a systemd host
+(`op-agent-engine provision-users` inside the image), so the accounts, the
+one-time passwords and the verification are identical. For a non-interactive
+run, `docker compose run --rm provision --apply` provisions without the
+interview.
 
 Provider credentials for the agent CLI are separate from all of this: either
 `config/pi/auth.json` (a copy of `~/.pi/agent/auth.json`) or provider keys in

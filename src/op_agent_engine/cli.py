@@ -264,6 +264,30 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    provision_users = subparsers.add_parser(
+        "provision-users",
+        help=(
+            "container install step: create the OpenProject accounts and "
+            "collect one API token per account"
+        ),
+    )
+    provision_users.add_argument(
+        "--config-dir",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help="directory holding workflow.yaml and engine.env (default: the "
+        "directory of $ENGINE_CONFIG, i.e. /config in the container)",
+    )
+    provision_users.add_argument(
+        "--reprompt-tokens",
+        action="store_true",
+        help=(
+            "ask for every API token again instead of reusing the valid "
+            "tokens already stored in engine.env"
+        ),
+    )
+
     uninstall = subparsers.add_parser(
         "uninstall",
         help="remove local files and OpenProject users (dry-run by default)",
@@ -839,6 +863,24 @@ def _setup(
     )
 
 
+def _provision_users(args: argparse.Namespace) -> int:
+    from op_agent_engine import wizard
+
+    config_dir = (
+        Path(args.config_dir).expanduser()
+        if args.config_dir is not None
+        else default_config_path().expanduser().parent
+    )
+    try:
+        return wizard.run_provision_users(
+            config_dir=config_dir,
+            reprompt_tokens=bool(args.reprompt_tokens),
+        )
+    except install.SetupError as error:
+        print(f"op-agent-engine: error: {error}", file=sys.stderr)
+        return CONFIG_ERROR_EXIT
+
+
 def _uninstall(args: argparse.Namespace) -> int:
     source_dir = (
         Path(args.source_dir).expanduser()
@@ -902,6 +944,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             assume_yes=bool(args.yes),
             reprompt_tokens=bool(getattr(args, "reprompt_tokens", False)),
         )
+
+    if args.command == "provision-users":
+        return _provision_users(args)
 
     config_path = (getattr(args, "config", None) or default_config_path()).expanduser()
     if args.command == "init":

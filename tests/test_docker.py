@@ -152,7 +152,7 @@ def test_dockerignore_keeps_secrets_and_state_out_of_the_image() -> None:
 
 
 def test_container_scripts_are_executable() -> None:
-    for script in ("entrypoint.sh", "config-sync.sh"):
+    for script in ("entrypoint.sh", "config-sync.sh", "provision-users.sh"):
         path = REPO_ROOT / "docker" / script
         assert path.is_file()
         assert os.access(path, os.X_OK), f"{path} must be executable"
@@ -313,10 +313,26 @@ def test_compose_runs_the_expected_commands() -> None:
         assert _service(task)["restart"] == "no"
 
 
+def test_provision_users_script_never_hands_out_the_host_uid() -> None:
+    """The wrapper stages a readable copy instead of mounting config writable."""
+    script = (REPO_ROOT / "docker" / "provision-users.sh").read_text()
+
+    # config/ is 0600 and host-owned, so the container user can neither read
+    # nor write it. A staged copy is mounted as /config for this one command...
+    assert 'cp config/engine.env config/workflow.yaml "$work/"' in script
+    assert '-v "${work}:/config"' in script
+    # ...and only the staged result is copied back, still private.
+    assert 'cp "${work}/engine.env" config/engine.env' in script
+    assert "chmod 0600 config/engine.env" in script
+    # No UID/GID matching, and the real config directory stays read-only.
+    assert "--user" not in script
+    assert "config:/config:rw" not in script
+
+
 def test_docs_explain_provisioning_instead_of_the_installer() -> None:
     docs = (REPO_ROOT / "docs" / "DOCKER.md").read_text()
 
-    assert "docker compose run --rm provision --apply" in docs
+    assert "docker/provision-users.sh" in docs
     assert "OP_PROVISION_TOKEN" in docs
     # A changed env file needs a recreate, not a restart.
     assert "docker compose up -d" in docs

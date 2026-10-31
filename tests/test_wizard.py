@@ -11,6 +11,7 @@ import pytest
 
 import op_agent_engine.cli as cli
 import op_agent_engine.wizard as wizard
+from op_agent_engine import install
 from op_agent_engine.install import SetupError
 from op_agent_engine.wizard import (
     UI,
@@ -567,3 +568,64 @@ def test_rerun_restores_tokens_over_checkout_placeholders(
         text = path.read_text(encoding="utf-8")
         assert "OP_ENGINE_TOKEN=stored-engine-token" in text
         assert "OP_TOKEN_FRONTEND=stored-frontend-token" in text
+
+
+def test_provision_users_collects_tokens_into_engine_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The container path: provision, prompt per account, write engine.env."""
+    config = tmp_path / "config"
+    config.mkdir()
+    (config / "workflow.yaml").write_text(WORKFLOW, encoding="utf-8")
+    env_file = config / "engine.env"
+    env_file.write_text(ENV, encoding="utf-8")
+    env_file.chmod(0o600)
+
+    prompted: list[str] = []
+
+    def fake_prompt(text: str) -> str:
+        variable = text.rsplit("(", 1)[1].split(")", 1)[0]
+        prompted.append(variable)
+        return f"tok-{variable}"
+
+    monkeypatch.setattr(wizard, "UI", lambda *args, **kwargs: UI(io.StringIO()))
+    monkeypatch.setattr(wizard, "_verify_token", lambda *args: (True, "ok"))
+    monkeypatch.setattr(wizard, "_secret_prompt", fake_prompt)
+    monkeypatch.setattr(wizard, "_run_captured", lambda *args, **kwargs: (0, "", ""))
+    monkeypatch.setattr(
+        wizard, "_provision_users", lambda **kwargs: {"frontendEngineer": "pw"}
+    )
+
+    assert wizard.run_provision_users(config_dir=config) == 0
+
+    values = install.load_env_file(env_file)
+    assert prompted == ["OP_ENGINE_TOKEN", "OP_TOKEN_FRONTEND"]
+    assert values["OP_ENGINE_TOKEN"] == "tok-OP_ENGINE_TOKEN"
+    assert values["OP_TOKEN_FRONTEND"] == "tok-OP_TOKEN_FRONTEND"
+    # The file holds tokens, so it must stay private.
+    assert env_file.stat().st_mode & 0o077 == 0
+
+
+def test_provision_users_requires_both_config_files(tmp_path: Path) -> None:
+    config = tmp_path / "config"
+    config.mkdir()
+    (config / "engine.env").write_text(ENV, encoding="utf-8")
+
+    with pytest.raises(SetupError, match=r"workflow\.yaml"):
+        wizard.run_provision_users(config_dir=config)
+
+
+def test_provision_users_rejects_a_placeholder_base_url(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = tmp_path / "config"
+    config.mkdir()
+    (config / "workflow.yaml").write_text(WORKFLOW, encoding="utf-8")
+    (config / "engine.env").write_text(
+        ENV.replace("https://openproject.example.com", "https://openproject.example.com"),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(wizard, "UI", lambda *args, **kwargs: UI(io.StringIO()))
+
+    with pytest.raises(SetupError, match="OP_BASE_URL"):
+        wizard.run_provision_users(config_dir=config)
