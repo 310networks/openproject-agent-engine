@@ -20,12 +20,10 @@ Full documentation: [../docs/DOCKER.md](../docs/DOCKER.md).
 
 ```bash
 cd /opt/op-agent-engine          # wherever you put this directory
-$EDITOR config/engine.env        # OP_BASE_URL + OP_PROVISION_TOKEN (see below)
-$EDITOR config/workflow.yaml     # projects, repositories, agents
+vim config/engine.env            # OP_BASE_URL + OP_PROVISION_TOKEN (see below)
+vim config/workflow.yaml         # projects, repositories, agents
 ./provision-users.sh             # create the accounts, mint one token each
-docker compose run --rm --no-deps check-config
-docker compose pull && docker compose up -d
-docker compose logs -f engine
+docker compose up -d
 ```
 
 `config/workflow.yaml` is the same document a systemd install uses
