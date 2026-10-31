@@ -1,9 +1,8 @@
-# `docker/` — the whole deployment
+# op-agent-engine Docker Container
 
-Everything Docker-related lives here, and this directory **is** the deployment:
-copy it to `/opt/op-agent-engine` (or anywhere else), put your configuration in
-`config/`, and run compose. Nothing is built; the image is pulled from Docker
-Hub (`kookster310/op-agent-engine`).
+Copy ./docker/ to `/opt/op-agent-engine` (or anywhere else), put your configuration in
+`config/`, and run compose.
+Docker Hub (`kookster310/op-agent-engine`).
 
 | Path | What it is | Committed? |
 |---|---|---|
