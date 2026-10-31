@@ -28,8 +28,7 @@ agent, verifies the outcome against GitHub and OpenProject, and performs
 2. In `docker/`, run the interactive setup:
 
    ```bash
-   git clone https://github.com/310networks/openproject-agent-engine op-agent-engine && cd op-agent-engine/docker
-   ./provision-users.sh
+   git clone https://github.com/310networks/openproject-agent-engine op-agent-engine && cd op-agent-engine/docker ./provision-users.sh
    ```
 
    It asks for the OpenProject URL and project identifier(s), as well as an
