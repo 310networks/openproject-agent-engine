@@ -67,11 +67,14 @@ publishes.
 
 ## Images and releases
 
-`.github/workflows/docker.yml` runs the test suite and publishes
+`.github/workflows/docker.yml` runs the test suite on every pull request that
+touches the image inputs (`docker/`, `src/`, `prompts/`, `agents/`,
+`pyproject.toml`) and publishes
 [`kookster310/op-agent-engine`](https://hub.docker.com/r/kookster310/op-agent-engine)
-when a push to `main` touches the image inputs (`docker/`, `src/`,
-`prompts/`, `agents/`, `pyproject.toml`) and on `v*` tags. Published tags:
-`<version>`, `latest` (main and release tags) and `sha-<short>`.
+when a push to `main` touches them, and on `v*` tags. Publishing is gated to
+push events, so a pull request — including one from a fork — never reaches the
+Docker Hub credentials. Published tags: `<version>`, `latest` (main and release
+tags) and `sha-<short>`.
 
 There is no supported local build path: `docker/` ships no build overlay, so
 `docker compose up -d` can only pull. Building by hand for development still
@@ -82,6 +85,9 @@ that image is never what a deployment runs.
 - **`docker/version.json` is the tag source.** It must equal
   `project.version` in `pyproject.toml` — `tests/test_docker.py` enforces that,
   so the image tag and `op-agent-engine --version` cannot disagree.
+- **Review:** `.github/CODEOWNERS` requires a maintainer review only for
+  `.github/`, `docker/` and `pyproject.toml`. Everything else, including
+  agent-authored pull requests, merges on the normal review rules.
 - **Secrets:** `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` (a Docker Hub access
   token with write scope).
 - **Optional variables:** `PI_VERSION`, `GH_VERSION`, `OP_CLI_REF` override

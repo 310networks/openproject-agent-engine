@@ -1,0 +1,13 @@
+# Who must review what.
+#
+# There is deliberately no `*` rule. Agents open and merge their own pull
+# requests autonomously, and a catch-all owner would force a human review on
+# every one of them. Only paths that can change CI credentials, the published
+# image or the release version need a human reviewer.
+#
+# Reviewer enforcement comes from "Require review from Code Owners" on `main`,
+# which only counts approvals from the matching owner below.
+
+/.github/         @Kookster310
+/docker/          @Kookster310
+/pyproject.toml   @Kookster310

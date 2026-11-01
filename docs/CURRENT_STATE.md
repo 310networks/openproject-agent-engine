@@ -253,9 +253,14 @@ All commands read the same environment; there is no `--config` option.
   store/recovery/retention, the CLI, dashboard, provisioning and Docker
   packaging. The end-to-end test drives a fake agent through a full ticket
   cycle with fake OpenProject and GitHub backends.
-- `.github/workflows/docker.yml` runs the suite and publishes the image when
-  image inputs change. `docker/version.json` must equal the package version;
-  `tests/test_docker.py` enforces that.
+- `.github/workflows/docker.yml` runs the suite on pull requests and publishes
+  the image when image inputs change on `main`. `docker/version.json` must equal
+  the package version; `tests/test_docker.py` enforces that, along with the
+  workflow only publishing on push events.
+- `.github/CODEOWNERS` lists `@Kookster310` for `.github/`, `docker/` and
+  `pyproject.toml`, so changes that can affect CI credentials, the image build
+  or the release version need a maintainer review. `SECURITY.md` is the private
+  reporting path; `tests/test_open_source.py` keeps both in place.
 - Releases bump both version files, tag `vX.Y.Z`, and push; the workflow refuses
   a tag that disagrees with `docker/version.json`.
 
