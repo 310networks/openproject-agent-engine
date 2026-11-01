@@ -85,9 +85,10 @@ that image is never what a deployment runs.
 - **`docker/version.json` is the tag source.** It must equal
   `project.version` in `pyproject.toml` — `tests/test_docker.py` enforces that,
   so the image tag and `op-agent-engine --version` cannot disagree.
-- **Review:** `.github/CODEOWNERS` requires a maintainer review only for
-  `.github/`, `docker/` and `pyproject.toml`. Everything else, including
-  agent-authored pull requests, merges on the normal review rules.
+- **Review:** `.github/CODEOWNERS` names owners only for `.github/`, `docker/`
+  and `pyproject.toml` — `@Kookster310` and `@KookyAgentReviewer`, so either
+  can approve and merge. Everything else, including agent-authored pull
+  requests, merges on the normal review rules.
 - **Secrets:** `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` (a Docker Hub access
   token with write scope).
 - **Optional variables:** `PI_VERSION`, `GH_VERSION`, `OP_CLI_REF` override

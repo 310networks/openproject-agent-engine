@@ -145,7 +145,7 @@ starts with `ENGINE:`.
 
 Issues and pull requests are welcome. Pull requests run the test suite
 (`ruff`, `mypy`, `pytest`). Changes to `.github/`, `docker/` or
-`pyproject.toml` need a maintainer review, see
+`pyproject.toml` need review from a code owner, see
 [.github/CODEOWNERS](.github/CODEOWNERS).
 
 ## Security

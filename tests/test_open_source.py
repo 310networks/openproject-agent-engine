@@ -27,8 +27,8 @@ def _codeowners_rules() -> list[tuple[str, list[str]]]:
 
 
 def test_codeowners_has_no_catch_all_rule() -> None:
-    # Agents open and merge their own pull requests. A `*` rule would require a
-    # human review on every one of them, which is not how this repository works.
+    # Agents open and merge their own pull requests. A `*` rule would require
+    # the named owners on every one of them, which is not how this works.
     patterns = [pattern for pattern, _ in _codeowners_rules()]
 
     assert patterns, "CODEOWNERS has no rules"
@@ -47,7 +47,23 @@ def test_codeowners_covers_the_paths_that_can_change_credentials_or_the_image() 
 def test_codeowners_owners_are_users_not_teams() -> None:
     owners = {owner for _, rule_owners in _codeowners_rules() for owner in rule_owners}
 
-    assert owners == {"@Kookster310"}
+    # Both have write access, so both can approve and merge a PR the other
+    # opened. The reviewer account must stay listed: the author cannot approve
+    # its own pull request.
+    assert owners == {"@Kookster310", "@KookyAgentReviewer"}
+
+
+def test_the_agent_author_is_never_a_code_owner() -> None:
+    # @KookyAgent opens the engine's pull requests. An owner that is also the
+    # author can never satisfy the code-owner requirement.
+    owners = {owner for _, rule_owners in _codeowners_rules() for owner in rule_owners}
+
+    assert "@KookyAgent" not in owners
+
+
+def test_every_rule_lists_the_reviewer_account() -> None:
+    for pattern, owners in _codeowners_rules():
+        assert "@KookyAgentReviewer" in owners, f"{pattern} would block the reviewer"
 
 
 def test_security_policy_points_at_private_advisories() -> None:
