@@ -142,3 +142,8 @@ starts with `ENGINE:`.
 | [docs/RUNBOOK.md](docs/RUNBOOK.md) | status, pause, run inspection, `On Hold` handling, recovery |
 | [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md) | fake-agent test and manual acceptance checklist |
 | [docs/CURRENT_STATE.md](docs/CURRENT_STATE.md) | implemented architecture, control flow, state and limits |
+
+## License
+
+OpenProject Agent Engine is open source software released under the
+[MIT License](LICENSE).

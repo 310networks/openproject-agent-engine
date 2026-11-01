@@ -19,6 +19,7 @@ directory, which is `docker/` when you are looking at the repository.
 | Node 22 and pi (`PI_VERSION`) | model, git identity | `/home/agent/.local/share/op-agent-engine` (`DATA_DIR`) |
 | `agents/*/AGENTS.md` (seeds the workspace volume) | — | `/home/agent/agents` (`WORKSPACE_ROOT`) |
 | `prompts/` (`PROMPTS_DIR`) | — | — |
+| `LICENSE` (MIT, at `/opt/op-agent-engine/LICENSE`) | — | — |
 
 Nothing is mounted from the host. Change `.env`, then recreate the stack:
 
