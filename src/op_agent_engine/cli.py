@@ -24,6 +24,7 @@ from pydantic import ValidationError
 
 from op_agent_engine import __version__
 from op_agent_engine.config import (
+    GIT_REPO_FIELD,
     ConfigError,
     EngineSettings,
     WorkflowConfig,
@@ -252,7 +253,7 @@ def _config_summary(config: WorkflowConfig) -> dict[str, object]:
         "source": "environment",
         "statuses": config.openproject.statuses.by_key(),
         "agent_field": config.openproject.agent_field,
-        "repo_field": config.repo_discovery.git_repo_field,
+        "repo_field": GIT_REPO_FIELD,
         "default_branch": config.repo_discovery.default_branch,
         "engine_user": config.openproject.engine_user,
         "dispatch_priority": config.openproject.dispatch_priority,

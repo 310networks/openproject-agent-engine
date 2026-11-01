@@ -40,6 +40,11 @@ is set **once per project**; there is nothing to select on each work package.
 4. In each monitored project's Overview page (openproject.example.com/projects/project-identifier), set `GIT_REPO` to its repository
    (`owner/name` or `https://github.com/owner/name`).
 
+The name is matched exactly; it must be `GIT_REPO`.
+
+With `OP_PROJECT=*` the engine monitors every active project with a non-empty
+`GIT_REPO`; explicitly named projects must have one set.
+
 ## 4. Work-package custom field (`AGENT`)
 
 The routing agent is a **work-package** custom field (work-package custom

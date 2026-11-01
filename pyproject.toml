@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "op-agent-engine"
-version = "0.2.1"
+version = "0.2.2"
 description = "Polls OpenProject work packages and dispatches coding agents to work on them"
 readme = "README.md"
 requires-python = ">=3.12"

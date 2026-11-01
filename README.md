@@ -84,7 +84,7 @@ The dashboard is served at `http://127.0.0.1:8765`
 | `OPENROUTER_API_KEY` (or other provider key) | one model provider key for the agent CLI |
 
 Each monitored project must have a **project** custom field named `GIT_REPO`
-(configurable with `OP_GIT_REPO_FIELD`) containing its GitHub repository
+containing its GitHub repository
 (`owner/name` or a github.com URL). Create the field once in
 **Administration → Custom fields → Projects** and choose **For all projects**.
 One field is assigned to every project, so there is no per-project enablement —

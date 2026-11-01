@@ -69,7 +69,6 @@ def test_env_builds_the_whole_workflow() -> None:
     # The repository is resolved from the GIT_REPO project custom field at
     # startup.
     assert config.projects[0].repo is None
-    assert config.repo_discovery.git_repo_field == "GIT_REPO"
     assert set(config.agents) == {"FRONTEND", "BACKEND", "LEAD_DESIGNER", "REVIEWER"}
     assert config.reviewer.name == "codeReviewer"
     assert {agent.kind for agent in config.agents.values()} == {"implementer", "reviewer"}

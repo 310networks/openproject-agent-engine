@@ -272,26 +272,22 @@ class RepoConfig(BaseModel):
         return stripped or None
 
 
+# The project custom field that holds each project's GitHub repository.
+GIT_REPO_FIELD = "GIT_REPO"
+
+
 class RepoDiscoveryConfig(BaseModel):
     """How env-based deployments find each project's repository.
 
-    The repository is read from a project custom field (``GIT_REPO`` by
-    default). ``dir_override`` exists for a single explicit project that wants
-    a clone directory other than the repository name.
+    The repository is read from each project's ``GIT_REPO`` custom field.
+    ``dir_override`` exists for a single explicit project that wants a clone
+    directory other than the repository name.
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    git_repo_field: str = "GIT_REPO"
     dir_override: str | None = None
     default_branch: str | None = None
-
-    @field_validator("git_repo_field")
-    @classmethod
-    def _field_name(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("git_repo_field must not be empty")
-        return value.strip()
 
     @field_validator("dir_override")
     @classmethod
@@ -616,11 +612,11 @@ class WorkflowConfig(BaseModel):
             repo = (
                 f"{project.repo.github} -> {project.repo.dir}"
                 if project.repo is not None
-                else f"<{self.repo_discovery.git_repo_field}>"
+                else f"<{GIT_REPO_FIELD}>"
             )
             lines.append(f"  - {project.identifier}: {repo} [{state}]")
         lines.append(
-            f"repo field: {self.repo_discovery.git_repo_field} "
+            f"repo field: {GIT_REPO_FIELD} "
             f"(default branch: {self.repo_discovery.default_branch or 'auto'})"
         )
         lines.append(f"agents: {len(self.agents)}")
@@ -756,7 +752,6 @@ class WorkflowConfig(BaseModel):
                 },
             },
             "repo_discovery": {
-                "git_repo_field": settings.op_git_repo_field,
                 "dir_override": settings.github_repo_dir if single else None,
                 "default_branch": settings.github_default_branch or None,
             },
@@ -857,7 +852,6 @@ class EngineSettings(BaseSettings):
 
     # OpenProject object names (defaults match a stock OpenProject instance).
     op_agent_field: str = "AGENT"
-    op_git_repo_field: str = "GIT_REPO"
     op_engine_user: str = "agent-engine"
     op_agent_role: str = "Agent Worker"
     op_email_domain: str = "agent-engine.local"

@@ -10,7 +10,7 @@
 # Before running it, create two custom fields in OpenProject (the API cannot
 # create them):
 #   * the work-package list field AGENT (or OP_AGENT_FIELD)
-#   * the project text field GIT_REPO (or OP_GIT_REPO_FIELD)
+#   * the project text field GIT_REPO
 # The engine reads each project's GitHub repository from GIT_REPO, so any
 # project with that field set (and the AGENT field enabled) can be monitored
 # simply by setting OP_PROJECT=*.
@@ -235,11 +235,8 @@ case "$project" in
 esac
 export GITHUB_REPO_DIR
 
-git_repo_field=$(ask_text "Project custom field holding the repository" "$(get_env OP_GIT_REPO_FIELD)")
-[ -n "$git_repo_field" ] || git_repo_field=GIT_REPO
-
 say ""
-info "Repositories are read from the '$git_repo_field' project custom field."
+info "Repositories are read from the GIT_REPO project custom field."
 info "Create it once under Administration -> Custom fields -> Projects"
 info "(text format) and assign it to all projects."
 info "The AGENT work-package custom field is set up the same way."
@@ -260,7 +257,6 @@ admin_token=$(ask_secret "  Administrator API token")
 
 export OP_BASE_URL="$op_base_url" \
        OP_PROJECT="$project" \
-       OP_GIT_REPO_FIELD="$git_repo_field" \
        AGENT="$agent" \
        OP_PROVISION_TOKEN="$admin_token"
 AGENT_MODEL="$model"
@@ -273,7 +269,7 @@ trap cleanup EXIT INT TERM
 
 step 3 "Creating OpenProject users and memberships"
 if ! compose_run \
-    -e OP_BASE_URL -e OP_PROJECT -e OP_GIT_REPO_FIELD \
+    -e OP_BASE_URL -e OP_PROJECT \
     -e GITHUB_REPO_DIR \
     -e AGENT -e AGENT_MODEL -e OP_PROVISION_TOKEN -e LOG_LEVEL \
     engine provision --apply --json --passwords >"$passwords_file" 2>"$provision_err"; then
@@ -313,7 +309,10 @@ reviewer_token=$TOKEN_VALUE
 step 5 "Saving .env"
 set_env OP_BASE_URL "$op_base_url"
 set_env OP_PROJECT "$project"
-set_env OP_GIT_REPO_FIELD "$git_repo_field"
+if [ -n "$(get_env OP_GIT_REPO_FIELD)" ]; then
+  warn "removing the obsolete OP_GIT_REPO_FIELD value; repositories come from GIT_REPO"
+  unset_env OP_GIT_REPO_FIELD
+fi
 if [ -n "$(get_env GITHUB_REPO)" ]; then
   warn "removing the obsolete GITHUB_REPO value; repositories come from GIT_REPO"
   unset_env GITHUB_REPO

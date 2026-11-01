@@ -30,6 +30,7 @@ from typing import Any
 from urllib.parse import quote
 
 from op_agent_engine.config import (
+    GIT_REPO_FIELD,
     ProjectConfig,
     RepoConfig,
     StatusNames,
@@ -263,10 +264,10 @@ async def expand_projects(
     wildcard = any(project.identifier == "*" for project in config.projects)
     explicit = [project for project in config.projects if project.identifier != "*"]
 
-    field_id = await _resolve_project_custom_field(client, discovery.git_repo_field)
+    field_id = await _resolve_project_custom_field(client, GIT_REPO_FIELD)
     if field_id is None:
         raise OpenProjectResolutionError(
-            f"project custom field '{discovery.git_repo_field}' not found in "
+            f"project custom field '{GIT_REPO_FIELD}' not found in "
             "/api/v3/projects/schema. Create it once in OpenProject "
             "(Administration -> Custom fields -> Projects) and assign it to "
             "all projects (For all projects)."
@@ -305,7 +306,7 @@ async def expand_projects(
         github = _github_repo(raw_repo) if raw_repo else None
         if raw_repo and github is None:
             raise OpenProjectResolutionError(
-                f"project '{identifier}': {discovery.git_repo_field} value "
+                f"project '{identifier}': {GIT_REPO_FIELD} value "
                 f"{raw_repo!r} is not a GitHub repository "
                 "(expected owner/name or a github.com URL)"
             )
@@ -314,11 +315,11 @@ async def expand_projects(
                 logger.info(
                     "skipping project %s: %s is not set",
                     identifier,
-                    discovery.git_repo_field,
+                    GIT_REPO_FIELD,
                 )
                 continue
             raise OpenProjectResolutionError(
-                f"project '{identifier}' has no {discovery.git_repo_field} value "
+                f"project '{identifier}' has no {GIT_REPO_FIELD} value "
                 "in OpenProject; set it in the project settings"
             )
 
@@ -344,7 +345,7 @@ async def expand_projects(
 
     if not expanded:
         raise OpenProjectResolutionError(
-            f"no OpenProject project has a {discovery.git_repo_field} value; "
+            f"no OpenProject project has a {GIT_REPO_FIELD} value; "
             "set the field on at least one project (or set OP_PROJECT to an "
             "explicit identifier)"
         )
@@ -363,14 +364,7 @@ async def expand_projects(
 async def _resolve_project_custom_field(
     client: OpenProjectClient, field_name: str
 ) -> str | None:
-    """Return the ``customField<N>`` key for a project custom field name.
-
-    An explicit ``customField<N>`` value is accepted as-is, so a deployment
-    can bypass the schema lookup if its OpenProject version does not expose
-    project custom fields there.
-    """
-    if _CUSTOM_FIELD_KEY.fullmatch(field_name):
-        return field_name
+    """Return the ``customField<N>`` key for a project custom field name."""
     try:
         payload = await client.get_json("/api/v3/projects/schema")
     except OpenProjectNotFoundError:

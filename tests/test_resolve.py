@@ -581,17 +581,3 @@ async def test_repo_directories_are_unique_across_projects() -> None:
     ]
 
 
-async def test_git_repo_field_can_be_an_explicit_custom_field_id() -> None:
-    fake = make_fake(
-        projects=[project_with_repo("demo")],
-        project_schema={},
-    )
-    config = make_config(
-        projects=[{"identifier": "demo"}],
-        repo_discovery={"git_repo_field": "customField5"},
-    )
-
-    await resolve(fake, config)
-
-    assert config.projects[0].repo is not None
-    assert config.projects[0].repo.github == "acme/demo"

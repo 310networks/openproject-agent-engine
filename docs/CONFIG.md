@@ -87,7 +87,7 @@ docker compose restart engine
 ```
 
 If you changed `docker/.env` instead (for example `OP_PROJECT` or
-`OP_GIT_REPO_FIELD`), recreate the container so compose picks up the new
+`OP_AGENT_FIELD`), recreate the container so compose picks up the new
 environment:
 
 ```bash
@@ -98,7 +98,6 @@ docker compose up -d engine
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `OP_GIT_REPO_FIELD` | `GIT_REPO` | project custom field holding the GitHub repository (a field name, or `customField<N>` to skip the schema lookup) |
 | `GITHUB_REPO_DIR` | the repository name | single-project clone directory under `WORKSPACE_ROOT` |
 | `GITHUB_DEFAULT_BRANCH` | auto-discovered | override the branch work branches are based on |
 | `OP_AGENT_FIELD` | `AGENT` | custom field that routes a work package to an agent |

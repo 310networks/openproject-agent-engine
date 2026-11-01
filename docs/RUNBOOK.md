@@ -28,7 +28,7 @@ means the container is stopped or stuck — check
   docker compose restart engine
   ```
 
-- **Changed `docker/.env`** (for example `OP_PROJECT`, `OP_GIT_REPO_FIELD`,
+- **Changed `docker/.env`** (for example `OP_PROJECT`, `OP_AGENT_FIELD`,
   tokens): recreate the container; `restart` does **not** re-read `.env`.
 
   ```bash
