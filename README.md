@@ -28,8 +28,8 @@ agent, verifies the outcome against GitHub and OpenProject, and performs
    ```
 
    It asks for the OpenProject URL and project identifier(s), the model provider
-   and its API key, a GitHub token, and an administrator token
-   (used once, never stored). The model is asked for without the provider prefix
+   and its API key, and an administrator token (used once, never stored). The
+   model is asked for without the provider prefix
    (`deepseek/deepseek-v4.1-flash-1017`); the script writes
    `AGENT_MODEL=openrouter/deepseek/deepseek-v4.1-flash-1017` and stores the
    provider's key itself. It also asks whether the agents share that model or
@@ -37,21 +37,27 @@ agent, verifies the outcome against GitHub and OpenProject, and performs
    provider.
 
    It creates the engine user and one account per agent, prints each generated
-   password at that account's token prompt, verifies the GitHub and OpenProject
-   tokens and writes to `docker/.env`. Passwords are shown once — record them;
-   a later run cannot recover them, so a forgotten password must be reset under
-   **Administration → Users**. It finishes with `check-config`, which also
-   checks that the provider key is present. Re-running is safe;
-   `--reprompt-tokens` asks for all tokens again.
+   password in its own block at that account's token prompt, verifies the
+   OpenProject tokens and writes to `docker/.env`. Passwords are shown once —
+   record them; a later run cannot recover them, so a forgotten password must
+   be reset under **Administration → Users**. It finishes with `check-config`,
+   which also checks that the provider key is present. Re-running is safe;
+   `--reprompt-tokens` asks for the OpenProject tokens again.
 
-3. Start the stack:
+3. Finish `docker/.env` before starting the stack. The wizard does not ask for
+   GitHub credentials: add `GH_TOKEN` (and the optional `GH_TOKEN_REVIEWER`,
+   `GIT_REVIEWER_NAME` and `GIT_REVIEWER_EMAIL` for a dedicated reviewer
+   account) as described below. `docker/.env.example` documents every other
+   optional setting.
+
+4. Start the stack:
 
    ```bash
    docker compose up -d
    docker compose logs -f engine
    ```
 
-4. Notes
+5. Notes
 
    After adding a project or changing its `GIT_REPO` / `AGENT` setup in
    OpenProject, run `docker compose restart engine`. After changing
@@ -63,8 +69,9 @@ The dashboard is served at `http://127.0.0.1:8765`
 
 ## Required environment variables
 
-`agent-init.sh` writes every one of them, the provider key and GitHub token
-included.
+`agent-init.sh` writes the OpenProject settings, the agent tokens and the
+provider key. It leaves the GitHub token(s) to you: add them to `docker/.env`
+before starting the stack.
 
 | Variable | Meaning |
 |---|---|
@@ -86,8 +93,9 @@ account to differ from the pull request's author, give `codeReviewer` its own
 GitHub account: `GH_TOKEN_REVIEWER` (plus optional `GIT_REVIEWER_NAME` and
 `GIT_REVIEWER_EMAIL`). The reviewer then switches `gh`/git to that account and
 can submit an approving review before merging; without it every agent keeps
-using `GH_TOKEN`. `agent-init.sh` asks for this and verifies that the two tokens
-belong to different GitHub accounts.
+using `GH_TOKEN`. Add these values to `docker/.env` yourself; the setup script
+no longer asks for GitHub tokens. If both tokens belong to the same account,
+branch protection that requires a different approver still blocks the merge.
 
 Each monitored project must have a **project attribute** named `GIT_REPO`
 containing its GitHub repository

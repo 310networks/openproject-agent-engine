@@ -2,18 +2,20 @@
 # Set up a deployment: the OpenProject accounts, the agent configuration and
 # the engine's .env file.
 #
-# Setting up is two steps:
+# Setting up is three steps:
 #   1. ./agent-init.sh        (this script, fully interactive)
-#   2. docker compose up -d
+#   2. add the GitHub token(s) to .env
+#   3. docker compose up -d
 #
 # It asks for the deployment values, the model (optionally one per agent) and
-# its provider key, a GitHub token (plus an optional dedicated codeReviewer
-# token/identity for branch-protected repositories), and an OpenProject
-# administrator token. Then it creates/reconciles the engine and agent users,
-# shows each generated
-# password once, interviews you for one API token per account (sign in at your
-# OpenProject URL -> My account -> Access tokens), writes .env and validates
-# the result. Nothing has to be edited by hand afterwards.
+# its provider key, and an OpenProject administrator token. Then it creates or
+# reconciles the engine and agent users, shows each generated password once,
+# interviews you for one API token per account (sign in at your OpenProject
+# URL -> My account -> Access tokens), writes .env and validates the result.
+#
+# It does not ask for GitHub credentials. Add GH_TOKEN (and the optional
+# GH_TOKEN_REVIEWER) to .env before starting the stack; the final message
+# reminds you.
 #
 # Before running it, set up two fields in OpenProject (the API cannot create
 # them):
@@ -23,11 +25,11 @@
 # attribute, so any project with that value set (and the AGENT field enabled)
 # can be monitored simply by setting OP_PROJECT=*.
 #
-# Tokens, the provider key and the GitHub token are written to .env next to
+# OpenProject tokens and the provider key are written to .env next to
 # docker-compose.yml (mode 0600), so compose picks them up on the next start.
 #
 #   ./agent-init.sh                      guided run
-#   ./agent-init.sh --reprompt-tokens    enter the tokens again
+#   ./agent-init.sh --reprompt-tokens    enter the OpenProject tokens again
 #
 # Needs Docker Compose and the image (pulled if it is missing).
 set -eu
@@ -51,7 +53,29 @@ title() { printf '\n%s\n%s\n' "$1" "$(printf '%*s' "${#1}" '' | tr ' ' '-')"; }
 info() { printf '    %s\n' "$*"; }
 ok() { printf '    ok  %s\n' "$*"; }
 warn() { printf '    !!  %s\n' "$*"; }
-step() { printf '\n[%s] %s\n' "$1" "$2"; }
+step() { printf '\n[%s] %s\n\n' "$1" "$2"; }
+
+# A credential block on its own lines, so the generated password can be
+# copied without hunting through a wall of prompt text.
+account_block() {
+  account_label=$1
+  account_login=$2
+  account_password=$3
+  account_token=$4
+  say ""
+  say "    ------------------------------------------------------------"
+  printf '    %s\n' "$account_label"
+  printf '      login:    %s\n' "$account_login"
+  if [ -n "$account_password" ]; then
+    printf '      password: %s\n' "$account_password"
+    say "      ^ copy this password now; it is shown only once"
+  else
+    say "      password: (not shown; the account already existed)"
+  fi
+  printf '      token:    %s\n' "$account_token"
+  say "    ------------------------------------------------------------"
+  say ""
+}
 
 # --- .env helpers -----------------------------------------------------------
 
@@ -223,24 +247,6 @@ verify_token() {
   return 1
 }
 
-verify_github_token() {
-  token=$1
-  label=${2:-GH_TOKEN}
-  out=$(mktemp "${TMPDIR:-/tmp}/op-agent-engine-github.XXXXXX")
-  err=$(mktemp "${TMPDIR:-/tmp}/op-agent-engine-github.XXXXXX")
-  # gh is in the image; bypass the entrypoint because .env may not exist yet.
-  if GH_TOKEN="$token" compose_run --entrypoint gh -e GH_TOKEN \
-      engine api user --jq .login >"$out" 2>"$err"; then
-    github_login=$(tr -d '\r\n' <"$out")
-    rm -f "$out" "$err"
-    ok "$label: authenticated as ${github_login:-the token's account}"
-    return 0
-  fi
-  sed 's/^/    /' "$err" >&2
-  rm -f "$out" "$err"
-  return 1
-}
-
 password_for() {
   [ -s "$passwords_file" ] || return 0
   awk -F '\t' -v login="$1" '$1 == login { print $2; exit }' "$passwords_file"
@@ -265,9 +271,8 @@ prompt_token() {
   fi
 
   password=$(password_for "$login")
-  if [ -n "$password" ]; then
-    printf '    %s: login %s / password %s\n' "$label" "$login" "$password"
-  else
+  account_block "$label" "$login" "$password" "$env_var"
+  if [ -z "$password" ]; then
     warn "$login already exists, so its password cannot be shown. Reset it in"
     warn "OpenProject (Administration -> Users -> $login) if you need to sign in."
   fi
@@ -278,7 +283,7 @@ prompt_token() {
 
   attempt=1
   while [ "$attempt" -le 3 ]; do
-    TOKEN_VALUE=$(ask_secret "    $label token ($env_var)")
+    TOKEN_VALUE=$(ask_secret "API token for $login ($env_var)")
     TOKEN_VALUE=$(printf '%s' "$TOKEN_VALUE" | tr -d '\r')
     if [ -z "$TOKEN_VALUE" ]; then
       warn "a token is required"
@@ -286,6 +291,7 @@ prompt_token() {
       continue
     fi
     if verify_token "$login" "$TOKEN_VALUE" "$admin"; then
+      ok "$env_var: token verified for $login"
       return 0
     fi
     attempt=$((attempt + 1))
@@ -532,110 +538,9 @@ if [ -n "$provider_keys" ]; then
   fi
 fi
 
-step 3 "GitHub token"
-info "The engine and agents clone, push and open pull requests with this token."
-info "Use an account that can write to the monitored repositories. A classic"
-info "token needs the 'repo' scope; a fine-grained token needs contents and"
-info "pull-request write access."
-
-github_token=
-existing=$(get_env GH_TOKEN)
-if [ "$reprompt" -eq 0 ] && usable "$existing"; then
-  if verify_github_token "$existing"; then
-    ok "GH_TOKEN: reusing the existing token"
-    github_token=$existing
-  else
-    warn "GH_TOKEN: the stored token was not accepted by GitHub"
-  fi
-fi
-
-attempt=1
-while [ -z "$github_token" ] && [ "$attempt" -le 3 ]; do
-  entered=$(ask_secret "  GitHub token (GH_TOKEN)")
-  entered=$(printf '%s' "$entered" | tr -d '\r')
-  if [ -z "$entered" ]; then
-    warn "a GitHub token is required"
-    attempt=$((attempt + 1))
-    continue
-  fi
-  if verify_github_token "$entered"; then
-    github_token=$entered
-    break
-  fi
-  attempt=$((attempt + 1))
-done
-[ -n "$github_token" ] ||
-  die "could not verify a GitHub token after 3 attempts"
-
-shared_github_login=${github_login:-}
-say ""
-info "Branch protection can require the account that approves or merges a PR"
-info "to be different from the account that opened it. A dedicated codeReviewer"
-info "token lets the reviewer approve and merge as its own GitHub account."
-reviewer_default=n
-if usable "$(get_env GH_TOKEN_REVIEWER)"; then
-  reviewer_default=y
-fi
-dedicated=$(ask_text "Use a dedicated GitHub token for codeReviewer? (y/N)" "$reviewer_default")
-reviewer_github_token=
-reviewer_name=
-reviewer_email=
-case "$dedicated" in
-  y|Y|yes|YES)
-    existing_reviewer=$(get_env GH_TOKEN_REVIEWER)
-    if [ "$reprompt" -eq 0 ] && usable "$existing_reviewer"; then
-      if verify_github_token "$existing_reviewer" GH_TOKEN_REVIEWER; then
-        ok "GH_TOKEN_REVIEWER: reusing the existing token"
-        reviewer_github_token=$existing_reviewer
-      else
-        warn "GH_TOKEN_REVIEWER: the stored token was not accepted by GitHub"
-      fi
-    fi
-
-    attempt=1
-    while [ -z "$reviewer_github_token" ] && [ "$attempt" -le 3 ]; do
-      entered=$(ask_secret "  codeReviewer GitHub token (GH_TOKEN_REVIEWER)")
-      entered=$(printf '%s' "$entered" | tr -d '\r')
-      if [ -z "$entered" ]; then
-        warn "a token is required"
-        attempt=$((attempt + 1))
-        continue
-      fi
-      if verify_github_token "$entered" GH_TOKEN_REVIEWER; then
-        reviewer_github_token=$entered
-        break
-      fi
-      attempt=$((attempt + 1))
-    done
-    [ -n "$reviewer_github_token" ] ||
-      die "could not verify a codeReviewer GitHub token after 3 attempts"
-
-    if [ -n "$shared_github_login" ] &&
-       [ "${github_login:-}" = "$shared_github_login" ]; then
-      warn "this token belongs to the same GitHub account as GH_TOKEN; branch"
-      warn "protection that requires a different approver will still block merges."
-    fi
-
-    # Commit/merge identity for the reviewer. It defaults to the token's login,
-    # but can be set explicitly (for example to a verified domain address).
-    reviewer_name=$(get_env GIT_REVIEWER_NAME)
-    [ -n "$reviewer_name" ] || reviewer_name=${github_login:-codeReviewer}
-    reviewer_email=$(get_env GIT_REVIEWER_EMAIL)
-    [ -n "$reviewer_email" ] ||
-      reviewer_email="${reviewer_name}@users.noreply.github.com"
-    reviewer_name=$(ask_text "codeReviewer git author name" "$reviewer_name")
-    reviewer_email=$(ask_text "codeReviewer git author email" "$reviewer_email")
-    ;;
-  *)
-    if [ -n "$(get_env GH_TOKEN_REVIEWER)" ]; then
-      warn "removing GH_TOKEN_REVIEWER; codeReviewer shares GH_TOKEN"
-    fi
-    ;;
-esac
-
-step 4 "OpenProject administrator token"
+step 3 "OpenProject administrator token"
 info "It is used once to create the users and is not stored."
-admin_token=$(ask_secret "  Administrator API token")
+admin_token=$(ask_secret "Administrator API token")
 [ -n "$admin_token" ] || die "an administrator token is required"
 
 export OP_BASE_URL="$op_base_url" \
@@ -649,7 +554,7 @@ provision_err=$(mktemp "${TMPDIR:-/tmp}/op-agent-engine-provision.XXXXXX")
 cleanup() { rm -f "$passwords_file" "$provision_err"; }
 trap cleanup EXIT INT TERM
 
-step 5 "Creating OpenProject users and memberships"
+step 4 "Creating OpenProject users and memberships"
 if ! compose_run \
     -e OP_BASE_URL -e OP_PROJECT \
     -e GITHUB_REPO_DIR \
@@ -664,31 +569,31 @@ else
   ok "users already existed; no new passwords"
 fi
 
-step 6 "Create one API token per account"
+step 5 "Create one API token per account"
 info "OpenProject administrators cannot mint API tokens for other users."
 info "Sign in as each account and create a token under:"
 info "  $op_base_url/my/access_tokens"
-info "Passwords for accounts created just now are shown with their prompt."
+info "Copy each password when it appears; it is shown only once."
 
 engine_user=$(get_env OP_ENGINE_USER)
 [ -n "$engine_user" ] || engine_user=agent-engine
 
-prompt_token OP_ENGINE_TOKEN "$engine_user" "$engine_user (runtime)" 1
+prompt_token OP_ENGINE_TOKEN "$engine_user" "ENGINE (runtime user)" 1
 engine_token=$TOKEN_VALUE
 
-prompt_token OP_TOKEN_FRONTEND frontendEngineer "FRONTEND (frontendEngineer)" 0
+prompt_token OP_TOKEN_FRONTEND frontendEngineer "FRONTEND" 0
 frontend_token=$TOKEN_VALUE
 
-prompt_token OP_TOKEN_BACKEND backendEngineer "BACKEND (backendEngineer)" 0
+prompt_token OP_TOKEN_BACKEND backendEngineer "BACKEND" 0
 backend_token=$TOKEN_VALUE
 
-prompt_token OP_TOKEN_DESIGNER leadDesigner "LEAD_DESIGNER (leadDesigner)" 0
+prompt_token OP_TOKEN_DESIGNER leadDesigner "LEAD_DESIGNER" 0
 designer_token=$TOKEN_VALUE
 
-prompt_token OP_TOKEN_REVIEWER codeReviewer "REVIEWER (codeReviewer)" 0
+prompt_token OP_TOKEN_REVIEWER codeReviewer "REVIEWER" 0
 reviewer_token=$TOKEN_VALUE
 
-step 7 "Saving .env"
+step 6 "Saving .env"
 set_env OP_BASE_URL "$op_base_url"
 set_env OP_PROJECT "$project"
 if [ -n "$(get_env OP_GIT_REPO_FIELD)" ]; then
@@ -723,31 +628,27 @@ set_env OP_TOKEN_FRONTEND "$frontend_token"
 set_env OP_TOKEN_BACKEND "$backend_token"
 set_env OP_TOKEN_DESIGNER "$designer_token"
 set_env OP_TOKEN_REVIEWER "$reviewer_token"
-set_env GH_TOKEN "$github_token"
-if [ -n "$reviewer_github_token" ]; then
-  set_env GH_TOKEN_REVIEWER "$reviewer_github_token"
-  set_env GIT_REVIEWER_NAME "$reviewer_name"
-  set_env GIT_REVIEWER_EMAIL "$reviewer_email"
-  ok "codeReviewer GitHub identity: ${github_login:-dedicated account}"
-else
-  unset_env GH_TOKEN_REVIEWER
-  unset_env GIT_REVIEWER_NAME
-  unset_env GIT_REVIEWER_EMAIL
-fi
+# GitHub credentials (GH_TOKEN and optional GH_TOKEN_REVIEWER) are left for
+# the operator to fill in by hand; this wizard only sets up OpenProject.
+
 # The administrator token was needed for this run only.
 unset_env OP_PROVISION_TOKEN
 ok "wrote $env_file (mode 0600)"
 
-step 8 "Validating the configuration"
+step 7 "Validating the configuration"
 if ! compose_run engine check-config; then
   die "check-config failed; fix the message above and re-run this script"
 fi
 
-step 9 "Next"
-info "start the engine: docker compose up -d"
-info "follow it with:    docker compose logs -f engine"
+step 8 "Before you start the stack"
+info "Finish updating $env_file:"
+info "  - add GH_TOKEN (and the optional GH_TOKEN_REVIEWER)"
+info "  - review any other settings this wizard does not manage"
 say ""
-info "Every answer from this wizard is a line in $env_file: edit that file to"
-info "change any of them later (URL, project(s), models, provider key, GitHub"
-info "token, limits), then run docker compose up -d again so the"
-info "container is recreated with the new values."
+info "Then start the engine:"
+info "  docker compose up -d"
+info "  docker compose logs -f engine"
+say ""
+info "Every answer from this wizard is a line in $env_file. After editing it,"
+info "run docker compose up -d again so the container is recreated with the"
+info "new values."

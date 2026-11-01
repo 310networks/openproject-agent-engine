@@ -303,7 +303,7 @@ def test_agent_init_script_is_interactive_and_private() -> None:
     script = (REPO_ROOT / "docker" / "agent-init.sh").read_text()
 
     # The administrator token is asked for at run time and never stored.
-    assert 'ask_secret "  Administrator API token"' in script
+    assert 'ask_secret "Administrator API token"' in script
     assert "unset_env OP_PROVISION_TOKEN" in script
     # Per-token verification runs in the container.
     assert "engine verify-token --login" in script
@@ -316,7 +316,7 @@ def test_agent_init_script_is_interactive_and_private() -> None:
 
 
 def test_agent_init_asks_for_the_provider_and_its_key() -> None:
-    """Setting up is the script and `docker compose up -d`; no .env editing."""
+    """The wizard sets up the harness and the model provider credential."""
     script = (REPO_ROOT / "docker" / "agent-init.sh").read_text()
 
     # The provider and the model are separate questions; the script joins them.
@@ -346,39 +346,56 @@ def test_agent_init_handles_the_local_llama_cpp_endpoint() -> None:
     assert "LLAMA_API_KEY is optional" in script
 
 
-def test_agent_init_asks_for_a_github_token() -> None:
-    """The wizard writes every credential a functional deployment needs."""
-    script = (DOCKER_DIR / "agent-init.sh").read_text()
-
-    assert 'step 3 "GitHub token"' in script
-    assert 'ask_secret "  GitHub token (GH_TOKEN)"' in script
-    assert 'set_env GH_TOKEN "$github_token"' in script
-    # Verify it in the image before writing it; a bad token would otherwise only
-    # fail during the first clone. --reprompt-tokens also asks for it again.
-    assert "verify_github_token" in script
-    assert "--entrypoint gh" in script
-    assert script.index('step 3 "GitHub token"') < script.index(
-        'step 4 "OpenProject administrator token"'
-    )
-
-
-def test_agent_init_offers_a_dedicated_reviewer_identity() -> None:
-    """Branch protection can need a reviewer account different from the author."""
+def test_agent_init_leaves_github_credentials_to_the_operator() -> None:
+    """The wizard sets up OpenProject; GitHub tokens are manual .env values."""
     script = (DOCKER_DIR / "agent-init.sh").read_text()
     env_template = (DOCKER_DIR / ".env.example").read_text()
 
-    assert "GH_TOKEN_REVIEWER" in env_template
-    assert "GIT_REVIEWER_NAME" in env_template
-    assert "GIT_REVIEWER_EMAIL" in env_template
-    assert 'ask_text "Use a dedicated GitHub token for codeReviewer? (y/N)"' in script
-    assert 'ask_secret "  codeReviewer GitHub token (GH_TOKEN_REVIEWER)"' in script
-    assert 'set_env GH_TOKEN_REVIEWER "$reviewer_github_token"' in script
-    assert 'set_env GIT_REVIEWER_NAME "$reviewer_name"' in script
-    assert 'set_env GIT_REVIEWER_EMAIL "$reviewer_email"' in script
-    # The token is verified before it is stored, and the wizard warns when both
-    # tokens belong to the same account (which would not satisfy protection).
-    assert "verify_github_token \"$entered\" GH_TOKEN_REVIEWER" in script
-    assert "same GitHub account as GH_TOKEN" in script
+    # No GitHub prompt, verification or write belongs in this wizard.
+    assert 'step 3 "GitHub token"' not in script
+    assert 'ask_secret "  GitHub token (GH_TOKEN)"' not in script
+    assert "a GitHub token is required" not in script
+    assert "verify_github_token" not in script
+    assert "--entrypoint gh" not in script
+    assert "set_env GH_TOKEN" not in script
+    assert "set_env GH_TOKEN_REVIEWER" not in script
+    assert "Use a dedicated GitHub token" not in script
+    # The template still documents the manual values, including the optional
+    # dedicated reviewer identity for branch-protected repositories.
+    for name in (
+        "GH_TOKEN",
+        "GH_TOKEN_REVIEWER",
+        "GIT_REVIEWER_NAME",
+        "GIT_REVIEWER_EMAIL",
+    ):
+        assert name in env_template, name
+
+
+def test_agent_init_finishes_with_an_env_reminder() -> None:
+    """The last step tells the operator what to finish before starting."""
+    script = (DOCKER_DIR / "agent-init.sh").read_text()
+
+    reminder = 'step 8 "Before you start the stack"'
+    assert reminder in script
+    assert "Finish updating $env_file" in script
+    assert "add GH_TOKEN" in script
+    assert script.index('step 7 "Validating the configuration"') < script.index(
+        reminder
+    )
+    assert "docker compose up -d" in script[script.index(reminder) :]
+
+
+def test_agent_init_prints_account_credentials_on_separate_lines() -> None:
+    """Passwords need to be easy to copy while creating each API token."""
+    script = (DOCKER_DIR / "agent-init.sh").read_text()
+
+    assert "account_block() {" in script
+    assert 'printf \'      login:    %s\\n\'' in script
+    assert 'printf \'      password: %s\\n\'' in script
+    assert 'printf \'      token:    %s\\n\'' in script
+    assert "copy this password now; it is shown only once" in script
+    # Steps are separated from their content by a blank line as well.
+    assert "printf '\\n[%s] %s\\n\\n'" in script
 
 
 def test_agent_init_offers_per_agent_models_from_one_provider() -> None:
