@@ -1,0 +1,18 @@
+# Who must review what.
+#
+# There is deliberately no `*` rule. Agents open and merge their own pull
+# requests autonomously, and a catch-all owner would force the reviewer account
+# onto every PR. Only paths that can change CI credentials, the published image
+# or the release version need a named reviewer.
+#
+# Reviewer enforcement comes from "Require review from Code Owners" on `main`,
+# which only counts approvals from the owners below.
+#
+# @KookyAgentReviewer is listed so the reviewer account can approve and merge
+# these paths on its own: a PR author cannot approve its own PR, and here the
+# author is @KookyAgent. Remove that account from a line to make the matching
+# path human-review-only.
+
+/.github/         @Kookster310 @KookyAgentReviewer
+/docker/          @Kookster310 @KookyAgentReviewer
+/pyproject.toml   @Kookster310 @KookyAgentReviewer

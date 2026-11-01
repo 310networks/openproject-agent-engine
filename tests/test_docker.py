@@ -465,3 +465,42 @@ def test_workflow_publishes_to_the_same_repository() -> None:
     # The tag must come from docker/version.json, not from the workflow.
     assert "VERSION_FILE: docker/version.json" in text
     assert "docker/build-push-action" in text
+
+
+def _workflow() -> dict:
+    return yaml.safe_load(WORKFLOW.read_text())
+
+
+def _triggers() -> dict:
+    workflow = _workflow()
+    # PyYAML resolves the bare key `on` to the boolean True.
+    return workflow.get("on") or workflow.get(True) or {}
+
+
+def test_workflow_tests_pull_requests_on_the_same_inputs_as_main() -> None:
+    triggers = _triggers()
+
+    assert "pull_request" in triggers, "contributions get no CI without this"
+    assert triggers["pull_request"]["branches"] == ["main"]
+    # The paths that rebuild the image must be the paths a pull request tests.
+    assert set(triggers["pull_request"]["paths"]) == set(triggers["push"]["paths"])
+
+
+def test_publish_never_runs_for_a_pull_request() -> None:
+    publish = _workflow()["jobs"]["publish"]
+    condition = " ".join(publish.get("if", "").split())
+
+    # A job without a condition also runs on pull_request events, where the
+    # Docker Hub credentials are not available and must not be reachable.
+    assert condition, "publish needs an `if` that excludes pull_request"
+    assert "pull_request" not in condition
+    assert "github.event_name == 'push'" in condition
+    assert "github.event_name == 'workflow_dispatch'" in condition
+
+
+def test_the_test_job_needs_no_secrets() -> None:
+    # Fork pull requests run this job without secrets, so it must not read any.
+    job = yaml.safe_dump(_workflow()["jobs"]["test"])
+
+    assert "secrets." not in job
+    assert "DOCKERHUB" not in job

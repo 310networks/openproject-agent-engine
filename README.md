@@ -141,6 +141,18 @@ starts with `ENGINE:`.
 | [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md) | fake-agent test and manual acceptance checklist |
 | [docs/CURRENT_STATE.md](docs/CURRENT_STATE.md) | implemented architecture, control flow, state and limits |
 
+## Contributing
+
+Issues and pull requests are welcome. Pull requests run the test suite
+(`ruff`, `mypy`, `pytest`). Changes to `.github/`, `docker/` or
+`pyproject.toml` need review from a code owner, see
+[.github/CODEOWNERS](.github/CODEOWNERS).
+
+## Security
+
+Do not open a public issue for a vulnerability — use
+[private reporting](SECURITY.md) instead.
+
 ## License
 
 OpenProject Agent Engine is open source software released under the

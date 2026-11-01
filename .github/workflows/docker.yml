@@ -13,6 +13,10 @@ name: docker
 # Required repository secrets: DOCKERHUB_USERNAME, DOCKERHUB_TOKEN.
 # Optional repository variables (defaults come from the Dockerfile):
 # PI_VERSION, GH_VERSION, OP_CLI_REF.
+#
+# Pull requests from any branch, including forks, run only the `test` job: it
+# needs no secrets. The `publish` job is gated to push events so a pull request
+# can never reach the Docker Hub credentials. Keep that `if` in place.
 
 on:
   push:
@@ -26,6 +30,16 @@ on:
       - "pyproject.toml"
       - ".github/workflows/docker.yml"
     tags: ["v*"]
+  pull_request:
+    branches: [main]
+    paths:
+      - ".dockerignore"
+      - "docker/**"
+      - "src/**"
+      - "prompts/**"
+      - "agents/**"
+      - "pyproject.toml"
+      - ".github/workflows/docker.yml"
   workflow_dispatch:
 
 concurrency:
@@ -66,6 +80,9 @@ jobs:
   publish:
     name: build and push
     needs: test
+    # Never on a pull request: `pull_request` runs are untrusted, and this job
+    # uses the Docker Hub credentials.
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
