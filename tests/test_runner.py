@@ -156,6 +156,29 @@ def test_build_request_forwards_provider_credentials(
     assert "OP_ENGINE_TOKEN" not in request.env
 
 
+def test_build_request_forwards_the_llama_cpp_server(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LLAMA_BASE_URL", "http://192.168.1.10:8080")
+    monkeypatch.setenv("LLAMA_API_KEY", "llama-secret")
+
+    runner = GenericRunner(_config())
+    request = runner.build_request(
+        "FE",
+        run_id=1,
+        work_package_id=100,
+        run_dir=tmp_path / "run",
+        repo_dir=tmp_path / "repo",
+        workspace_dir=tmp_path / "ws",
+        branch="op-4-100",
+        prompt_file=tmp_path / "prompt.txt",
+        timeout_seconds=120,
+    )
+
+    assert request.env["LLAMA_BASE_URL"] == "http://192.168.1.10:8080"
+    assert request.env["LLAMA_API_KEY"] == "llama-secret"
+
+
 def test_build_request_uses_a_per_agent_github_token(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

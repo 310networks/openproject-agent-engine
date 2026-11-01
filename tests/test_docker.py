@@ -333,6 +333,19 @@ def test_agent_init_asks_for_the_provider_and_its_key() -> None:
     assert "docker compose up -d" in script
 
 
+def test_agent_init_handles_the_local_llama_cpp_endpoint() -> None:
+    """llama.cpp is selected by a URL; its API key is optional."""
+    script = (DOCKER_DIR / "agent-init.sh").read_text()
+
+    assert "llama.cpp LLAMA_BASE_URL LLAMA_API_KEY" in script
+    # The endpoint is typed visibly, not as a secret, while ordinary provider
+    # keys keep the hidden prompt.
+    assert '*_URL|*_ENDPOINT)' in script
+    assert 'key=$(ask_text "$primary" "$existing")' in script
+    assert 'key=$(ask_secret "$primary" "$hint")' in script
+    assert "LLAMA_API_KEY is optional" in script
+
+
 def test_agent_init_asks_for_a_github_token() -> None:
     """The wizard writes every credential a functional deployment needs."""
     script = (DOCKER_DIR / "agent-init.sh").read_text()

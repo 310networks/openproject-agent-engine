@@ -124,8 +124,10 @@ provider/GitHub environment variables of
 [`providers.py`](../src/op_agent_engine/providers.py) (`ANTHROPIC_API_KEY`,
 `OPENROUTER_API_KEY`, `GH_TOKEN`, ...), and `check-config` fails when the
 provider of the configured model has no credentials; see
-[CONFIG.md](CONFIG.md#provider-credentials). The engine's own tokens are not
-forwarded. The reviewer additionally receives `GH_TOKEN_REVIEWER` as its
+[CONFIG.md](CONFIG.md#provider-credentials). The local llama.cpp provider uses
+`LLAMA_BASE_URL` (required) and the optional `LLAMA_API_KEY`, so the same
+environment-only rule covers a self-hosted router. The engine's own tokens are
+not forwarded. The reviewer additionally receives `GH_TOKEN_REVIEWER` as its
 `GH_TOKEN`/`GITHUB_TOKEN` when configured, and its workspace clone uses that
 token, so it can act as a different GitHub approver under branch protection.
 
@@ -158,7 +160,7 @@ values, credentials and deliberate tuning.
 `docker/agent-init.sh` is the supported setup path:
 
 1. prompts for the OpenProject URL and project(s), the model provider and its
-   key;
+   key (for llama.cpp, the router URL and optional API key);
 2. asks for a GitHub token, verifies it with `gh api user`, and stores it as
    `GH_TOKEN`; it then offers an optional dedicated reviewer token
    (`GH_TOKEN_REVIEWER`) and the reviewer's git identity;
@@ -169,7 +171,7 @@ values, credentials and deliberate tuning.
 5. prompts for one token per account and verifies it with
    `verify-token --login ...` (the engine token is also checked for admin);
 6. writes `docker/.env` (mode `0600`) and runs `check-config`, which also
-   checks that the provider key is present.
+   checks that the provider key (or, for llama.cpp, the router URL) is present.
 
 The engine user must be an OpenProject administrator; the agent users only get
 the project-scoped `Agent Worker` role. Re-running the script is safe and is the
