@@ -35,7 +35,7 @@ agent, verifies the outcome against GitHub and OpenProject, and performs
 
 3. Finish `docker/.env` before starting the stack. Add `GH_TOKEN` (and the 
    optional `GH_TOKEN_REVIEWER`, `GIT_REVIEWER_NAME` and `GIT_REVIEWER_EMAIL` 
-   for a dedicated reviewer account, see below).
+   for a dedicated reviewer account, ie: branch protection rules, see below).
 
 4. Start the stack:
 
