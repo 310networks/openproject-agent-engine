@@ -6,8 +6,9 @@ containers) or from your shell. The agent team, the pi runner and the
 OpenProject object names have defaults baked into the code, so a deployment
 only supplies its URL, project(s) and tokens.
 
-`docker/agent-init.sh` writes the required variables for you; the
-commented reference is [`docker/.env.example`](../docker/.env.example). The
+`docker/agent-init.sh` writes the OpenProject and model variables for you; the
+GitHub token(s) are added to `docker/.env` by hand. The commented reference is
+[`docker/.env.example`](../docker/.env.example). The
 [root README](../README.md) covers getting started; this page is the full
 reference.
 
@@ -45,7 +46,8 @@ account. The engine itself (polling and PR lookups) keeps using `GH_TOKEN`. The
 reviewer standard then allows a formal approving review before the merge when
 the account differs from the PR author. If the two tokens belong to the same
 account, branch protection that requires a different approver still blocks the
-merge; `agent-init.sh` warns in that case.
+merge. Configure these variables directly in `docker/.env`; `agent-init.sh`
+does not manage GitHub tokens.
 
 `GH_TOKEN_REVIEWER`, `GIT_REVIEWER_NAME` and `GIT_REVIEWER_EMAIL` are optional;
 leaving them unset preserves the single shared GitHub identity.
@@ -157,9 +159,9 @@ docker compose up -d engine
 
 pi reads its model provider key from the environment; no `auth.json` or
 `settings.json` is mounted. `agent-init.sh` asks for the key belonging to the
-provider in `AGENT_MODEL`, asks for a GitHub token, and writes both to
-`docker/.env`, so neither is a manual step. If you write `.env` yourself, set
-the variable for your provider (the table below is
+provider in `AGENT_MODEL` and writes it to `docker/.env`. The GitHub token is a
+manual `docker/.env` value. If you write `.env` yourself, set the variable for
+your provider (the table below is
 [`src/op_agent_engine/providers.py`](../src/op_agent_engine/providers.py)):
 
 `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`,

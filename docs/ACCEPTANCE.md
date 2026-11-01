@@ -28,11 +28,12 @@ cycle, or back the run with a real branch/PR when testing live.
 - [ ] One-time OpenProject setup done ([OPENPROJECT_SETUP.md](OPENPROJECT_SETUP.md)).
 - [ ] `./agent-init.sh` asks for the deployment values, the model provider and
       its key (or, for llama.cpp, its router URL and optional API key), and
-      optionally one model per agent, a GitHub token, and an administrator
-      token; provisions the users,
-      prints each generated password at that account's token prompt, prompts for
-      one token per account, verifies the GitHub and OpenProject tokens, writes
-      `docker/.env` and runs `check-config`.
+      optionally one model per agent, and an administrator token; provisions
+      the users, prints each generated password in its own block at that
+      account's token prompt, prompts for one token per account, verifies the
+      OpenProject tokens, writes `docker/.env` and runs `check-config`.
+- [ ] The script finishes by reminding you to add `GH_TOKEN` (and the optional
+      reviewer credentials) to `docker/.env` before starting the stack.
 - [ ] `docker compose up -d` starts `engine` and `dashboard`; the dashboard
       answers on `http://127.0.0.1:8765`.
 - [ ] `docker compose down -v` stops the stack and deletes the volumes; the

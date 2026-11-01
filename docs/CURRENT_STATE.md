@@ -140,9 +140,10 @@ templates live in `prompts/` and are rendered per run.
 ## Configuration
 
 Everything is an environment variable; `docker/agent-init.sh` writes the
-required ones to `docker/.env` and the documented template is
-`docker/.env.example`. The full reference, including provider variables,
-object names, limits and compose-only settings, is [CONFIG.md](CONFIG.md).
+OpenProject and model values to `docker/.env`, and the GitHub token(s) are
+added by hand. The documented template is `docker/.env.example`. The full
+reference, including provider variables, object names, limits and compose-only
+settings, is [CONFIG.md](CONFIG.md).
 
 Required values: `OP_BASE_URL`, `OP_PROJECT`, `OP_ENGINE_TOKEN`, the four
 `OP_TOKEN_*` agent tokens, one model provider key and `GH_TOKEN`. The
@@ -163,21 +164,21 @@ values, credentials and deliberate tuning.
 
 1. prompts for the OpenProject URL and project(s), the model provider and its
    key (for llama.cpp, the router URL and optional API key);
-2. asks for a GitHub token, verifies it with `gh api user`, and stores it as
-   `GH_TOKEN`; it then offers an optional dedicated reviewer token
-   (`GH_TOKEN_REVIEWER`) and the reviewer's git identity;
-3. asks for an OpenProject administrator token (used once, never written);
-4. runs `provision --apply --json --passwords` in the container, which creates
+2. asks for an OpenProject administrator token (used once, never written);
+3. runs `provision --apply --json --passwords` in the container, which creates
    or reconciles the engine user, the four agent users and the `Agent Worker`
-   role/memberships, and shows each new password;
-5. prompts for one token per account and verifies it with
+   role/memberships, and shows each new password in its own block;
+4. prompts for one token per account and verifies it with
    `verify-token --login ...` (the engine token is also checked for admin);
-6. writes `docker/.env` (mode `0600`) and runs `check-config`, which also
-   checks that the provider key (or, for llama.cpp, the router URL) is present.
+5. writes `docker/.env` (mode `0600`) and runs `check-config`, which also
+   checks that the provider key (or, for llama.cpp, the router URL) is present;
+6. finishes by reminding the operator to add `GH_TOKEN` (and the optional
+   dedicated reviewer credentials) to `docker/.env` before starting the stack.
 
 The engine user must be an OpenProject administrator; the agent users only get
-the project-scoped `Agent Worker` role. Re-running the script is safe and is the
-supported way to fix a wrong token (`--reprompt-tokens`).
+the project-scoped `Agent Worker` role. The script does not ask for GitHub
+credentials. Re-running the script is safe and is the supported way to fix a
+wrong OpenProject token (`--reprompt-tokens`).
 
 ## State and artifacts
 
