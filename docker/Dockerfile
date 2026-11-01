@@ -106,6 +106,7 @@ RUN pip install --no-cache-dir . \
  && rm -rf /app
 
 COPY prompts /opt/op-agent-engine/prompts
+COPY LICENSE /opt/op-agent-engine/LICENSE
 
 # Fixed, unprivileged runtime user. The UID is arbitrary on purpose: no host
 # file is ever mounted, so it only has to be consistent with the image.

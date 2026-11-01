@@ -8,7 +8,7 @@ version = "0.2.4"
 description = "Polls OpenProject work packages and dispatches coding agents to work on them"
 readme = "README.md"
 requires-python = ">=3.12"
-license = { text = "Proprietary" }
+license = { text = "MIT" }
 dependencies = [
     "httpx>=0.27",
     "Jinja2>=3.1",
