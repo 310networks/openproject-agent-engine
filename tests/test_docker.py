@@ -349,6 +349,25 @@ def test_agent_init_asks_for_a_github_token() -> None:
     )
 
 
+def test_agent_init_offers_a_dedicated_reviewer_identity() -> None:
+    """Branch protection can need a reviewer account different from the author."""
+    script = (DOCKER_DIR / "agent-init.sh").read_text()
+    env_template = (DOCKER_DIR / ".env.example").read_text()
+
+    assert "GH_TOKEN_REVIEWER" in env_template
+    assert "GIT_REVIEWER_NAME" in env_template
+    assert "GIT_REVIEWER_EMAIL" in env_template
+    assert 'ask_text "Use a dedicated GitHub token for codeReviewer? (y/N)"' in script
+    assert 'ask_secret "  codeReviewer GitHub token (GH_TOKEN_REVIEWER)"' in script
+    assert 'set_env GH_TOKEN_REVIEWER "$reviewer_github_token"' in script
+    assert 'set_env GIT_REVIEWER_NAME "$reviewer_name"' in script
+    assert 'set_env GIT_REVIEWER_EMAIL "$reviewer_email"' in script
+    # The token is verified before it is stored, and the wizard warns when both
+    # tokens belong to the same account (which would not satisfy protection).
+    assert "verify_github_token \"$entered\" GH_TOKEN_REVIEWER" in script
+    assert "same GitHub account as GH_TOKEN" in script
+
+
 def test_agent_init_offers_per_agent_models_from_one_provider() -> None:
     """One provider, but an agent may use another model from it."""
     script = (DOCKER_DIR / "agent-init.sh").read_text()

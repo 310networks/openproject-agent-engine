@@ -631,6 +631,13 @@ class WorkflowConfig(BaseModel):
                 f"runner={agent.runner}, projects={','.join(agent.projects)}"
                 f"{model_text}"
             )
+        reviewer = self.reviewer
+        github_identity = (
+            "dedicated reviewer token"
+            if "GH_TOKEN" in reviewer.env
+            else "shared GH_TOKEN"
+        )
+        lines.append(f"github identity: {github_identity}")
         provisioning = self.openproject.provisioning
         engine_role = (
             repr(provisioning.engine_role)
@@ -742,6 +749,12 @@ class WorkflowConfig(BaseModel):
         per_agent_models = _agent_models(settings)
         agents: dict[str, Any] = {}
         for key, login, kind, token_var in TEAM:
+            agent_env: dict[str, str] = {
+                "OP_CLI_HOST": settings.op_base_url,
+                "OP_CLI_TOKEN": (env.get(token_var) or "").strip(),
+            }
+            if kind == "reviewer":
+                agent_env.update(_reviewer_github_env(settings))
             agents[key] = {
                 "name": login,
                 "kind": kind,
@@ -750,10 +763,7 @@ class WorkflowConfig(BaseModel):
                 "runner": "pi",
                 "model": per_agent_models[key],
                 "timeout_seconds": settings.agent_timeout_seconds,
-                "env": {
-                    "OP_CLI_HOST": settings.op_base_url,
-                    "OP_CLI_TOKEN": (env.get(token_var) or "").strip(),
-                },
+                "env": agent_env,
             }
 
         mapping: dict[str, Any] = {
@@ -880,6 +890,13 @@ class EngineSettings(BaseSettings):
     workspace_root: Path | None = None
     prompts_dir: Path | None = None
     gh_token: SecretStr | None = None
+    # Optional dedicated GitHub identity for the reviewer. A branch protection
+    # rule can require the approving/merging account to differ from the account
+    # that authored the pull request; when set, the reviewer process receives
+    # this token as GH_TOKEN/GITHUB_TOKEN instead of the shared GH_TOKEN.
+    gh_token_reviewer: SecretStr | None = None
+    git_reviewer_name: str | None = None
+    git_reviewer_email: str | None = None
     engine_paused: bool = False
     log_level: str = "INFO"
     dashboard_host: str = "127.0.0.1"
@@ -957,3 +974,38 @@ def _agent_models(settings: EngineSettings) -> dict[str, str | None]:
         "LEAD_DESIGNER": settings.agent_model_designer,
         "REVIEWER": settings.agent_model_reviewer,
     }
+
+
+def _secret_value(value: SecretStr | None) -> str | None:
+    if value is None:
+        return None
+    stripped = value.get_secret_value().strip()
+    return stripped or None
+
+
+def _reviewer_github_env(settings: EngineSettings) -> dict[str, str]:
+    """Extra environment for the reviewer's dedicated GitHub identity.
+
+    A dedicated token changes the account ``gh`` acts as, which is what branch
+    protection checks. The optional git-config part is the commit identity: it
+    defaults to the reviewer login so a commit or merge created locally is not
+    attributed to the implementer account.
+    """
+    token = _secret_value(settings.gh_token_reviewer)
+    env: dict[str, str] = {}
+    if token is not None:
+        env["GH_TOKEN"] = token
+        env["GITHUB_TOKEN"] = token
+
+    name = (settings.git_reviewer_name or "").strip()
+    email = (settings.git_reviewer_email or "").strip()
+    if token is not None:
+        name = name or "codeReviewer"
+        email = email or f"codeReviewer@{settings.op_email_domain}"
+    if name:
+        env["GIT_AUTHOR_NAME"] = name
+        env["GIT_COMMITTER_NAME"] = name
+    if email:
+        env["GIT_AUTHOR_EMAIL"] = email
+        env["GIT_COMMITTER_EMAIL"] = email
+    return env

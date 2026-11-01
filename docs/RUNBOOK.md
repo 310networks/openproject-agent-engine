@@ -100,8 +100,10 @@ add one cron entry on the host:
 - Ticket and PR content is untrusted input; the engine never executes it.
 - Agents run as the image's own unprivileged user (`uid 10001`), never as the
   host user; nothing is mounted from the host, only named volumes.
-- If branch protection is enabled later, give the reviewer a dedicated
-  `GH_TOKEN`; otherwise the reviewer's merge is blocked by its own review.
-- `OP_*`/`GH_TOKEN` values are redacted to `***` in logs and `meta.json`.
+- If branch protection requires a different approver, set
+  `GH_TOKEN_REVIEWER` (and optionally `GIT_REVIEWER_NAME`/`_EMAIL`) to a second
+  GitHub account. The reviewer then approves and merges as that account; with
+  only `GH_TOKEN` its merge is blocked by its own review.
+- `OP_*`/`GH_TOKEN*` values are redacted to `***` in logs and `meta.json`.
   Keep `docker/.env` at mode `0600`; it is read by compose on the host and is
   never mounted.

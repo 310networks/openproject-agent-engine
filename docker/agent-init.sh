@@ -7,8 +7,10 @@
 #   2. docker compose up -d
 #
 # It asks for the deployment values, the model (optionally one per agent) and
-# its provider key, a GitHub token, and an OpenProject administrator token.
-# Then it creates/reconciles the engine and agent users, shows each generated
+# its provider key, a GitHub token (plus an optional dedicated codeReviewer
+# token/identity for branch-protected repositories), and an OpenProject
+# administrator token. Then it creates/reconciles the engine and agent users,
+# shows each generated
 # password once, interviews you for one API token per account (sign in at your
 # OpenProject URL -> My account -> Access tokens), writes .env and validates
 # the result. Nothing has to be edited by hand afterwards.
@@ -220,14 +222,15 @@ verify_token() {
 
 verify_github_token() {
   token=$1
+  label=${2:-GH_TOKEN}
   out=$(mktemp "${TMPDIR:-/tmp}/op-agent-engine-github.XXXXXX")
   err=$(mktemp "${TMPDIR:-/tmp}/op-agent-engine-github.XXXXXX")
   # gh is in the image; bypass the entrypoint because .env may not exist yet.
   if GH_TOKEN="$token" compose_run --entrypoint gh -e GH_TOKEN \
       engine api user --jq .login >"$out" 2>"$err"; then
-    gh_login=$(tr -d '\r\n' <"$out")
+    github_login=$(tr -d '\r\n' <"$out")
     rm -f "$out" "$err"
-    ok "GH_TOKEN: authenticated as ${gh_login:-the token's account}"
+    ok "$label: authenticated as ${github_login:-the token's account}"
     return 0
   fi
   sed 's/^/    /' "$err" >&2
@@ -548,6 +551,72 @@ done
 [ -n "$github_token" ] ||
   die "could not verify a GitHub token after 3 attempts"
 
+shared_github_login=${github_login:-}
+say ""
+info "Branch protection can require the account that approves or merges a PR"
+info "to be different from the account that opened it. A dedicated codeReviewer"
+info "token lets the reviewer approve and merge as its own GitHub account."
+reviewer_default=n
+if usable "$(get_env GH_TOKEN_REVIEWER)"; then
+  reviewer_default=y
+fi
+dedicated=$(ask_text "Use a dedicated GitHub token for codeReviewer? (y/N)" "$reviewer_default")
+reviewer_github_token=
+reviewer_name=
+reviewer_email=
+case "$dedicated" in
+  y|Y|yes|YES)
+    existing_reviewer=$(get_env GH_TOKEN_REVIEWER)
+    if [ "$reprompt" -eq 0 ] && usable "$existing_reviewer"; then
+      if verify_github_token "$existing_reviewer" GH_TOKEN_REVIEWER; then
+        ok "GH_TOKEN_REVIEWER: reusing the existing token"
+        reviewer_github_token=$existing_reviewer
+      else
+        warn "GH_TOKEN_REVIEWER: the stored token was not accepted by GitHub"
+      fi
+    fi
+
+    attempt=1
+    while [ -z "$reviewer_github_token" ] && [ "$attempt" -le 3 ]; do
+      entered=$(ask_secret "  codeReviewer GitHub token (GH_TOKEN_REVIEWER)")
+      entered=$(printf '%s' "$entered" | tr -d '\r')
+      if [ -z "$entered" ]; then
+        warn "a token is required"
+        attempt=$((attempt + 1))
+        continue
+      fi
+      if verify_github_token "$entered" GH_TOKEN_REVIEWER; then
+        reviewer_github_token=$entered
+        break
+      fi
+      attempt=$((attempt + 1))
+    done
+    [ -n "$reviewer_github_token" ] ||
+      die "could not verify a codeReviewer GitHub token after 3 attempts"
+
+    if [ -n "$shared_github_login" ] &&
+       [ "${github_login:-}" = "$shared_github_login" ]; then
+      warn "this token belongs to the same GitHub account as GH_TOKEN; branch"
+      warn "protection that requires a different approver will still block merges."
+    fi
+
+    # Commit/merge identity for the reviewer. It defaults to the token's login,
+    # but can be set explicitly (for example to a verified domain address).
+    reviewer_name=$(get_env GIT_REVIEWER_NAME)
+    [ -n "$reviewer_name" ] || reviewer_name=${github_login:-codeReviewer}
+    reviewer_email=$(get_env GIT_REVIEWER_EMAIL)
+    [ -n "$reviewer_email" ] ||
+      reviewer_email="${reviewer_name}@users.noreply.github.com"
+    reviewer_name=$(ask_text "codeReviewer git author name" "$reviewer_name")
+    reviewer_email=$(ask_text "codeReviewer git author email" "$reviewer_email")
+    ;;
+  *)
+    if [ -n "$(get_env GH_TOKEN_REVIEWER)" ]; then
+      warn "removing GH_TOKEN_REVIEWER; codeReviewer shares GH_TOKEN"
+    fi
+    ;;
+esac
+
 step 4 "OpenProject administrator token"
 info "It is used once to create the users and is not stored."
 admin_token=$(ask_secret "  Administrator API token")
@@ -639,6 +708,16 @@ set_env OP_TOKEN_BACKEND "$backend_token"
 set_env OP_TOKEN_DESIGNER "$designer_token"
 set_env OP_TOKEN_REVIEWER "$reviewer_token"
 set_env GH_TOKEN "$github_token"
+if [ -n "$reviewer_github_token" ]; then
+  set_env GH_TOKEN_REVIEWER "$reviewer_github_token"
+  set_env GIT_REVIEWER_NAME "$reviewer_name"
+  set_env GIT_REVIEWER_EMAIL "$reviewer_email"
+  ok "codeReviewer GitHub identity: ${github_login:-dedicated account}"
+else
+  unset_env GH_TOKEN_REVIEWER
+  unset_env GIT_REVIEWER_NAME
+  unset_env GIT_REVIEWER_EMAIL
+fi
 # The administrator token was needed for this run only.
 unset_env OP_PROVISION_TOKEN
 ok "wrote $env_file (mode 0600)"

@@ -13,7 +13,7 @@ This file is the engineering standard for every repository you work in. It appli
 | Ticket status | Owned by the engine. **Never change it.** Do not change the assignee or other ticket fields either. |
 | Your inputs | Ticket ID, project ID, title, description, repository path, branch name, and the standard file path. On a fix pass, also the latest reviewer feedback. |
 | Your outputs | Commits on the task branch, a pull request, one report comment on the ticket, and a final result line. |
-| Git and PRs | Use the global GitHub PR skill for commits, pushes, and pull requests. All agents share one GitHub identity. |
+| Git and PRs | Use the global GitHub PR skill for commits, pushes, and pull requests. Use the GitHub identity the engine provides in your environment. |
 | Autonomy | Complete the task without asking for intervention. Stop only for a genuine blocker (section 7). |
 
 Your final message must end with exactly one of these lines:

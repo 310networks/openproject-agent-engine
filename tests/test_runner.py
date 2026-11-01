@@ -156,6 +156,36 @@ def test_build_request_forwards_provider_credentials(
     assert "OP_ENGINE_TOKEN" not in request.env
 
 
+def test_build_request_uses_a_per_agent_github_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GH_TOKEN", "developer-token")
+    mapping = base_mapping()
+    agents = mapping["agents"]
+    assert isinstance(agents, dict)
+    reviewer = agents["REVIEW"]
+    assert isinstance(reviewer, dict)
+    reviewer["env"] = {"GH_TOKEN": "reviewer-token"}
+    config = WorkflowConfig.from_mapping(mapping, environ={})
+    runner = GenericRunner(config)
+
+    def build(agent_key: str) -> RunRequest:
+        return runner.build_request(
+            agent_key,
+            run_id=1,
+            work_package_id=100,
+            run_dir=tmp_path / "run",
+            repo_dir=tmp_path / "repo",
+            workspace_dir=tmp_path / "ws",
+            branch="op-4-100",
+            prompt_file=tmp_path / "prompt.txt",
+            timeout_seconds=120,
+        )
+
+    assert build("REVIEW").env["GH_TOKEN"] == "reviewer-token"
+    assert build("FE").env["GH_TOKEN"] == "developer-token"
+
+
 def test_build_request_unknown_placeholder_raises(tmp_path: Path) -> None:
     mapping = base_mapping()
     runners = mapping["runners"]

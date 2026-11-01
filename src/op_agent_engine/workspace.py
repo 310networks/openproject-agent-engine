@@ -214,6 +214,19 @@ async def prepare_workspace(
             ]
         )
     else:
+        if gh_token is not None and clone_url is None:
+            # Keep the stored remote credential in step with the configured
+            # token. Reviewer and implementer workspaces are separate, so this
+            # is how a role (and a rotated token) keeps its own identity.
+            await run_git(
+                [
+                    "remote",
+                    "set-url",
+                    "origin",
+                    clone_url_for(github_repo, gh_token),
+                ],
+                cwd=repo_dir,
+            )
         await run_git(["fetch", "--quiet", "origin"], cwd=repo_dir)
 
     remote_branch_exists = await _remote_branch_exists(repo_dir, branch)

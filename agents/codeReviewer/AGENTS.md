@@ -15,7 +15,7 @@ This file is the review standard for every repository you review. It applies reg
 | Ticket status | Owned by the engine. **Never change it.** Do not change the assignee or other ticket fields either. |
 | Your inputs | Ticket ID, project ID, title, description, repository path, branch name, and the PR URL when available. |
 | Your outputs | A merged PR or a rejection comment on the ticket, and a final result line. |
-| Git and PRs | Use the global GitHub PR skill or the `gh` CLI. All agents share one GitHub identity (see section 6). |
+| Git and PRs | Use the global GitHub PR skill or the `gh` CLI. The engine may give you a dedicated GitHub identity; check it as described in section 6. |
 | Autonomy | Reach a decision without asking for intervention. Stop only for a genuine blocker (section 7). |
 
 Your final message must end with exactly one of these lines:
@@ -86,10 +86,11 @@ On a re-review after a fix pass, review the whole PR against the ticket again, n
 
 **Approve.** Approve only when there are no blocking issues and you have verified the checks yourself.
 
-1. Merge the PR using the repository's configured merge method. If none is configured, use squash merge.
-2. Confirm that the PR state is merged.
-3. Post a short approval comment on the ticket with the PR URL and the checks you ran.
-4. End with `RESULT: APPROVED <pr-url>`.
+1. If you authenticate as a different GitHub account than the PR author, submit an approving review first: `gh pr review <pr> --approve --body "<short reason>"`. This is what satisfies branch protection that requires a different approver. If you are the PR author's account, skip this step.
+2. Merge the PR using the repository's configured merge method. If none is configured, use squash merge.
+3. Confirm that the PR state is merged.
+4. Post a short approval comment on the ticket with the PR URL and the checks you ran.
+5. End with `RESULT: APPROVED <pr-url>`.
 
 **Reject.** Reject when any blocking issue exists.
 
@@ -126,12 +127,16 @@ Rules for the comment:
 
 ## 6. GitHub identity
 
-All agents, including you, use the same GitHub account. GitHub does not allow an account to approve or request changes on its own pull request. Therefore:
+Your `GH_TOKEN` may belong to the same GitHub account as the implementers, or the engine may configure a dedicated reviewer account (`GH_TOKEN_REVIEWER`). GitHub never allows an account to approve its own pull request, so determine which case applies before deciding how to review:
 
-- Do not use GitHub's formal review states (Approve or Request changes).
-- Communicate through the ticket comment (authoritative) and, optionally, a PR comment with the same content.
-- Merge with the global GitHub PR skill or `gh pr merge`.
-- If the merge fails because branch protection requires an approving review or other conditions you cannot satisfy, do not work around it. Stop with `RESULT: BLOCKED` and state the exact protection rule in a ticket comment.
+```bash
+gh api user --jq .login
+gh pr view <pr> --json author --jq .author.login
+```
+
+- **Different accounts.** Use a formal approving review (`gh pr review <pr> --approve`) and then merge. This is the supported path for branch protection that requires a different approver.
+- **Same account.** Do not use GitHub's formal review states (Approve or Request changes); GitHub rejects them. Communicate through the ticket comment (authoritative) and, optionally, a PR comment with the same content, then merge directly with the global GitHub PR skill or `gh pr merge`.
+- If the merge still fails because branch protection requires an approval or conditions you cannot satisfy, do not work around it. Stop with `RESULT: BLOCKED` and state the exact protection rule in a ticket comment.
 
 ## 7. Boundaries and blockers
 

@@ -1155,7 +1155,7 @@ class Dispatcher:
                     project_id=wp.project_id,
                     work_package_id=wp.id,
                     role=agent.kind,
-                    gh_token=self._gh_token(),
+                    gh_token=self._gh_token(claimed.item.agent_key),
                     use_worktree=self._settings.max_runs_per_agent > 1,
                 )
         except WorkspaceError as error:
@@ -1312,9 +1312,22 @@ class Dispatcher:
             )
         return root
 
-    def _gh_token(self) -> str | None:
-        token = self._settings.gh_token
-        return token.get_secret_value() if token is not None else None
+    def _gh_token(self, agent_key: str | None = None) -> str | None:
+        """The GitHub token used by an agent (or the engine when unset).
+
+        A per-agent ``GH_TOKEN`` in the workflow config wins, so the reviewer
+        can clone/fetch with its dedicated account while the engine keeps using
+        the shared token for lookups. This also makes a configured token the
+        clone URL's credential for that agent's workspace.
+        """
+        if agent_key is not None:
+            agent = self._config.agents.get(agent_key)
+            if agent is not None:
+                configured_token = agent.env.get("GH_TOKEN", "").strip()
+                if configured_token:
+                    return configured_token
+        shared_token = self._settings.gh_token
+        return shared_token.get_secret_value() if shared_token is not None else None
 
     def _project_for(self, project_id: int) -> ProjectConfig:
         for project in self._config.projects:

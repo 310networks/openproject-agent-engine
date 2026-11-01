@@ -376,6 +376,43 @@ async def test_implement_success_with_pr(
         store.close()
 
 
+async def test_reviewer_workspace_uses_its_dedicated_github_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = FakeRunner(make_result(tmp_path))
+    dispatcher, _fake, store, client, settings = await make_dispatcher(
+        tmp_path, monkeypatch, runner=runner, gh=FakeGitHub(pr=PR)
+    )
+    settings.gh_token = SecretStr("shared-token")
+    dispatcher._config.agents["REVIEWER"].env["GH_TOKEN"] = "reviewer-token"
+
+    captured: dict[str, Any] = {}
+
+    async def capture_workspace(**kwargs: Any) -> Workspace:
+        captured.update(kwargs)
+        return Workspace(
+            repo_dir=tmp_path / "repo",
+            branch="op-4-100",
+            standard_path=tmp_path / "AGENTS.md",
+        )
+
+    monkeypatch.setattr(
+        "op_agent_engine.dispatcher.prepare_workspace", capture_workspace
+    )
+    try:
+        await dispatcher._prepare_workspace(claim(store, make_review_item(101)), 1)
+        assert captured["gh_token"] == "reviewer-token"
+        assert captured["role"] == "reviewer"
+
+        captured.clear()
+        await dispatcher._prepare_workspace(claim(store, make_item(102)), 2)
+        assert captured["gh_token"] == "shared-token"
+        assert captured["role"] == "implementer"
+    finally:
+        await client.aclose()
+        store.close()
+
+
 async def test_runner_receives_workspace_paths(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

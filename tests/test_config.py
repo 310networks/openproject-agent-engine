@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import SecretStr
 
 from op_agent_engine.config import (
     AGENT_MODEL_VARS,
@@ -74,6 +75,50 @@ def test_env_builds_the_whole_workflow() -> None:
     assert config.agents["FRONTEND"].env["OP_CLI_TOKEN"] == "frontend-token"
     assert config.agents["FRONTEND"].env["OP_CLI_HOST"] == DEPLOYMENT_ENV["OP_BASE_URL"]
     assert set(config.runners) == {"pi"}
+
+
+def test_reviewer_can_use_a_dedicated_github_identity() -> None:
+    config = WorkflowConfig.from_settings(
+        deployment_settings(
+            gh_token_reviewer=SecretStr("reviewer-gh-token"),
+            git_reviewer_name="reviewer-account",
+            git_reviewer_email="reviewer@example.com",
+        ),
+        environ=dict(DEPLOYMENT_ENV),
+    )
+
+    reviewer = config.agents["REVIEWER"].env
+    assert reviewer["GH_TOKEN"] == "reviewer-gh-token"
+    assert reviewer["GITHUB_TOKEN"] == "reviewer-gh-token"
+    assert reviewer["GIT_AUTHOR_NAME"] == "reviewer-account"
+    assert reviewer["GIT_AUTHOR_EMAIL"] == "reviewer@example.com"
+    assert reviewer["GIT_COMMITTER_NAME"] == "reviewer-account"
+    assert reviewer["GIT_COMMITTER_EMAIL"] == "reviewer@example.com"
+    # Implementers keep the shared GH_TOKEN inherited from the container.
+    assert "GH_TOKEN" not in config.agents["FRONTEND"].env
+    assert "github identity: dedicated reviewer token" in "\n".join(config.summary())
+
+
+def test_dedicated_reviewer_identity_has_safe_defaults() -> None:
+    config = WorkflowConfig.from_settings(
+        deployment_settings(gh_token_reviewer=SecretStr("reviewer-gh-token")),
+        environ=dict(DEPLOYMENT_ENV),
+    )
+
+    reviewer = config.agents["REVIEWER"].env
+    assert reviewer["GIT_AUTHOR_NAME"] == "codeReviewer"
+    assert reviewer["GIT_AUTHOR_EMAIL"] == "codeReviewer@agent-engine.local"
+
+
+def test_shared_github_identity_remains_the_default() -> None:
+    config = WorkflowConfig.from_settings(
+        deployment_settings(), environ=dict(DEPLOYMENT_ENV)
+    )
+
+    reviewer = config.agents["REVIEWER"].env
+    assert "GH_TOKEN" not in reviewer
+    assert "GIT_AUTHOR_NAME" not in reviewer
+    assert "github identity: shared GH_TOKEN" in "\n".join(config.summary())
 
 
 def test_env_summary_mentions_entities() -> None:

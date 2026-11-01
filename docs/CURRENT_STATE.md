@@ -124,7 +124,9 @@ provider/GitHub environment variables of
 `OPENROUTER_API_KEY`, `GH_TOKEN`, ...), and `check-config` fails when the
 provider of the configured model has no credentials; see
 [CONFIG.md](CONFIG.md#provider-credentials). The engine's own tokens are not
-forwarded.
+forwarded. The reviewer additionally receives `GH_TOKEN_REVIEWER` as its
+`GH_TOKEN`/`GITHUB_TOKEN` when configured, and its workspace clone uses that
+token, so it can act as a different GitHub approver under branch protection.
 
 Agent results are read from the last `RESULT:` line of the log
 (`BLOCKED ...`, `REJECTED ...`, or a successful completion). The prompt
@@ -157,7 +159,8 @@ values, credentials and deliberate tuning.
 1. prompts for the OpenProject URL and project(s), the model provider and its
    key;
 2. asks for a GitHub token, verifies it with `gh api user`, and stores it as
-   `GH_TOKEN`;
+   `GH_TOKEN`; it then offers an optional dedicated reviewer token
+   (`GH_TOKEN_REVIEWER`) and the reviewer's git identity;
 3. asks for an OpenProject administrator token (used once, never written);
 4. runs `provision --apply --json --passwords` in the container, which creates
    or reconciles the engine user, the four agent users and the `Agent Worker`

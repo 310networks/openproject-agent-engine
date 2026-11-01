@@ -27,6 +27,29 @@ reference.
 `OP_PROVISION_TOKEN` is an administrator token used only by
 `agent-init.sh` and `docker compose run --rm provision`.
 
+## GitHub identity
+
+Every agent normally uses the shared `GH_TOKEN`. Some protected repositories
+require the approving or merging account to differ from the account that
+authored the pull request. The reviewer can use a second GitHub account:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `GH_TOKEN_REVIEWER` | unset (shared `GH_TOKEN`) | GitHub token for `codeReviewer`; also used for its clone/fetch remote and as `GITHUB_TOKEN` |
+| `GIT_REVIEWER_NAME` | `codeReviewer` when the token is set | git author/committer name for reviewer runs |
+| `GIT_REVIEWER_EMAIL` | `codeReviewer@OP_EMAIL_DOMAIN` when the token is set | git author/committer email for reviewer runs |
+
+When `GH_TOKEN_REVIEWER` is set, the reviewer process receives it as
+`GH_TOKEN`/`GITHUB_TOKEN` and its workspace is cloned/fetched with that
+account. The engine itself (polling and PR lookups) keeps using `GH_TOKEN`. The
+reviewer standard then allows a formal approving review before the merge when
+the account differs from the PR author. If the two tokens belong to the same
+account, branch protection that requires a different approver still blocks the
+merge; `agent-init.sh` warns in that case.
+
+`GH_TOKEN_REVIEWER`, `GIT_REVIEWER_NAME` and `GIT_REVIEWER_EMAIL` are optional;
+leaving them unset preserves the single shared GitHub identity.
+
 ## What is baked in
 
 The team is fixed, one OpenProject account and one token each:

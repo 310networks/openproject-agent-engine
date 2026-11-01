@@ -84,6 +84,14 @@ included.
 | `OPENROUTER_API_KEY` (or other provider key) | one model provider key for pi |
 | `GH_TOKEN` | GitHub token used to clone, push and look up pull requests |
 
+For repositories with branch protection that requires the approving or merging
+account to differ from the pull request's author, give `codeReviewer` its own
+GitHub account: `GH_TOKEN_REVIEWER` (plus optional `GIT_REVIEWER_NAME` and
+`GIT_REVIEWER_EMAIL`). The reviewer then switches `gh`/git to that account and
+can submit an approving review before merging; without it every agent keeps
+using `GH_TOKEN`. `agent-init.sh` asks for this and verifies that the two tokens
+belong to different GitHub accounts.
+
 Each monitored project must have a **project attribute** named `GIT_REPO`
 containing its GitHub repository
 (`owner/name` or a github.com URL). Create it once in
@@ -105,8 +113,8 @@ The team is fixed in the image, one OpenProject account and one token each:
 For reference, the model the script writes looks like
 `AGENT_MODEL=openrouter/deepseek/deepseek-v4.1-flash-1017`.
 
-Everything else — concurrency, timings, status names, paths, git identity —
-has a working default. See [docs/CONFIG.md](docs/CONFIG.md) and the commented
+Everything else — concurrency, timings, status names, paths and the shared git
+identity — has a working default. See [docs/CONFIG.md](docs/CONFIG.md) and the commented
 [`docker/.env.example`](docker/.env.example).
 
 ## How a ticket flows
