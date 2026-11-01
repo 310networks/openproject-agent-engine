@@ -11,10 +11,10 @@ Work package, relation and priority fixtures are plain dicts shaped like the
 live HAL entries; the fake applies the ``project``/``status``/``type``/
 ``parent`` and ``involved`` filters and the ``sortBy`` order the poller uses.
 
-``PATCH /api/v3/work_packages/<id>`` mirrors the verified live behaviour
-(docs/VERIFICATION.md): the body must carry the current ``lockVersion`` or
-the fake answers 409 ``UpdateConflict``; on success the status/assignee links
-are applied and the lockVersion is incremented.
+``PATCH /api/v3/work_packages/<id>`` mirrors the verified live behaviour:
+the body must carry the current ``lockVersion`` or the fake answers 409
+``UpdateConflict``; on success the status/assignee links are applied and the
+lockVersion is incremented.
 """
 
 from __future__ import annotations
@@ -134,7 +134,7 @@ class FakeOpenProject:
         # ``authorId``, ``createdAt`` and ``content``. Posted comments are
         # appended here with auto-assigned ids.
         self.comments: list[dict[str, JSON]] = list(comments or [])
-        # Activity fixtures shaped like the live API (docs/VERIFICATION.md):
+        # Activity fixtures shaped like the live API:
         # ``_type``, ``comment.raw``, ``details[]``, ``createdAt`` and
         # ``_links.user``. Posted engine comments are mirrored here so a
         # reviewer-comment check sees a realistic history.
@@ -333,7 +333,7 @@ class FakeOpenProject:
     def _patch_work_package(
         self, work_package_id: int, request: httpx.Request
     ) -> httpx.Response:
-        """Mirror the verified live PATCH behaviour (docs/VERIFICATION.md).
+        """Mirror the verified live PATCH behaviour.
 
         * ``lockVersion`` is required in the body; missing or stale -> 409
           ``UpdateConflict``.
@@ -801,9 +801,8 @@ class FakeOpenProject:
     ) -> httpx.Response:
         """Mirror the live POST /work_packages/<id>/activities behaviour.
 
-        Verified live (docs/VERIFICATION.md section 11): the body is
-        ``{"comment": {"raw": "..."}}``; ``/work_packages/<id>/comments``
-        does not exist.
+        Verified live: the body is ``{"comment": {"raw": "..."}}``;
+        ``/work_packages/<id>/comments`` does not exist.
         """
         if not any(wp.get("id") == work_package_id for wp in self.work_packages):
             return self._error(404, "The requested resource could not be found.")

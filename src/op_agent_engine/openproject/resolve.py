@@ -4,7 +4,7 @@ Everything is resolved once at startup and fails fast: statuses, agent users,
 the engine user, projects, eligible project types, and the ``AGENT`` custom
 field with its option IDs.
 
-Verified API details (see ``docs/VERIFICATION.md``):
+Verified API details:
 
 * Statuses: ``GET /api/v3/statuses`` (paginated).
 * Users: ``GET /api/v3/users`` with a ``login`` filter. Requires the global

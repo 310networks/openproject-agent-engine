@@ -9,7 +9,7 @@ def entry(**links: object) -> dict[str, object]:
         "displayId": "77",
         "subject": "Gather data points",
         "_links": {
-            "project": {"href": "/api/v3/projects/4", "title": "Example Project"},
+            "project": {"href": "/api/v3/projects/4", "title": "Demo Project"},
             "type": {"href": "/api/v3/types/1", "title": "Task"},
             "status": {"href": "/api/v3/statuses/1", "title": "New"},
             "priority": {"href": "/api/v3/priorities/8", "title": "Normal"},

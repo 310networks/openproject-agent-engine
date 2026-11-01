@@ -9,10 +9,10 @@ OpenProject work package histories are exposed through
 * ``_links.user`` for the author,
 * ``createdAt`` for the journal timestamp.
 
-The shapes are verified against the live instance (docs/VERIFICATION.md,
-section 11). OpenProject aggregates consecutive journals made by the same
-user within a short window (``Setting.journal_aggregation_time_minutes``,
-default 5), so rejection counting counts *details* rather than journals.
+The shapes are verified against a live OpenProject instance. OpenProject
+aggregates consecutive journals made by the same user within a short window
+(``Setting.journal_aggregation_time_minutes``, default 5), so rejection
+counting counts *details* rather than journals.
 
 This module is deliberately tolerant about missing/extra fields: a malformed
 entry is ignored instead of crashing a dispatch.

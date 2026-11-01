@@ -24,7 +24,7 @@ from tests.fakes import non_write_requests
 
 EXAMPLE_ENV = {
     "OP_BASE_URL": "https://openproject.example.com",
-    "OP_PROJECT": "example-project",
+    "OP_PROJECT": "demo-project",
     "AGENT_MODEL": "openrouter/deepseek/deepseek-v4.1-flash-1017",
     "OPENROUTER_API_KEY": "sk-or-test",
     "OP_ENGINE_TOKEN": "engine-token",
@@ -51,8 +51,8 @@ SAMPLE_RESOLUTION = OpenProjectResolution(
     },
     engine_user=ResolvedUser("agent-engine", 10, "Agent Engine"),
     projects={
-        "example-project": ResolvedProject(
-            "example-project", 4, "Example Project", {"Task": ResolvedType("Task", 1)}
+        "demo-project": ResolvedProject(
+            "demo-project", 4, "Demo Project", {"Task": ResolvedType("Task", 1)}
         )
     },
     agent_field=ResolvedAgentField(
@@ -200,7 +200,7 @@ def test_check_config_reports_resolved_ids(
     assert "Resolved OpenProject IDs:" in output
     assert "in_testing: In Testing (id 4)" in output
     assert "agent-engine: Agent Engine (id 10)" in output
-    assert "example-project: Example Project (id 4)" in output
+    assert "demo-project: Demo Project (id 4)" in output
     assert "agent field: AGENT -> customField3" in output
     assert "FRONTEND: option id 11" in output
     assert "Provisioning audit:" in output
@@ -218,7 +218,7 @@ def test_check_config_json_includes_resolved_ids(
     assert payload["resolved"]["statuses"]["in_testing"]["id"] == 4
     assert payload["resolved"]["agent_field"]["field_id"] == "customField3"
     assert payload["resolved"]["agent_field"]["options"]["REVIEWER"] == 14
-    assert payload["resolved"]["projects"]["example-project"]["types"]["Task"] == 1
+    assert payload["resolved"]["projects"]["demo-project"]["types"]["Task"] == 1
     assert payload["provisioning"]["apply"] is False
     assert payload["agents"]["FRONTEND"]["projects"] == ["*"]
 
