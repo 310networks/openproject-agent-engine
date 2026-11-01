@@ -126,8 +126,10 @@ provider/GitHub environment variables of
 provider of the configured model has no credentials; see
 [CONFIG.md](CONFIG.md#provider-credentials). The local llama.cpp provider uses
 `LLAMA_BASE_URL` (required) and the optional `LLAMA_API_KEY`, so the same
-environment-only rule covers a self-hosted router. The engine's own tokens are
-not forwarded. The reviewer additionally receives `GH_TOKEN_REVIEWER` as its
+environment-only rule covers a self-hosted router; for those runs the runner
+also writes a per-run Pi `models.json` (pointed to by `PI_CODING_AGENT_DIR`),
+because `pi -p` does not load the router's model catalog over the network.
+The engine's own tokens are not forwarded. The reviewer additionally receives `GH_TOKEN_REVIEWER` as its
 `GH_TOKEN`/`GITHUB_TOKEN` when configured, and its workspace clone uses that
 token, so it can act as a different GitHub approver under branch protection.
 

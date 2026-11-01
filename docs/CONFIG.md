@@ -195,8 +195,17 @@ LLAMA_BASE_URL=http://192.168.1.10:8080
 enough. `LLAMA_API_KEY` is optional because Pi supplies the literal key
 `local` to an unauthenticated server. The model id is the router's model name
 (one of the ids in the router's `/models` response); start `llama-server` in
-router mode and load or preset the model so Pi can see it. `agent-init.sh`
-asks for the URL as plain text and offers the optional API key.
+router mode and load or preset the model. `agent-init.sh` asks for the URL as
+plain text and offers the optional API key.
+
+The engine runs Pi in print mode (`pi -p`), which does not discover a
+llama.cpp router's model list over the network. For a llama.cpp run it writes a
+per-run `models.json` into a private agent directory and points
+`PI_CODING_AGENT_DIR` at it, so the configured `AGENT_MODEL`/per-agent model is
+available without an interactive login or a shared model cache. The file
+contains the model id, the OpenAI-compatible `/v1` URL derived from
+`LLAMA_BASE_URL`, and an environment reference (`$LLAMA_API_KEY`) rather than
+the key value; an unauthenticated server gets the literal key `local`.
 
 The URL is resolved from inside the engine container, not from the host.
 `127.0.0.1` therefore means the container itself; use an address the container
