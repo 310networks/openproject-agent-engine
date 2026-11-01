@@ -6,12 +6,12 @@
 #   1. ./agent-init.sh        (this script, fully interactive)
 #   2. docker compose up -d
 #
-# It asks for the deployment values, the agent CLI, the model (optionally one
-# per agent) and its provider key, and an OpenProject administrator token. Then it creates/reconciles the
-# engine and agent users, shows each generated password once, interviews you for
-# one API token per account (sign in at your OpenProject URL -> My account ->
-# Access tokens), writes .env and validates the result. Nothing has to be
-# edited by hand afterwards.
+# It asks for the deployment values, the model (optionally one per agent) and
+# its provider key, a GitHub token, and an OpenProject administrator token.
+# Then it creates/reconciles the engine and agent users, shows each generated
+# password once, interviews you for one API token per account (sign in at your
+# OpenProject URL -> My account -> Access tokens), writes .env and validates
+# the result. Nothing has to be edited by hand afterwards.
 #
 # Before running it, set up two fields in OpenProject (the API cannot create
 # them):
@@ -21,8 +21,8 @@
 # attribute, so any project with that value set (and the AGENT field enabled)
 # can be monitored simply by setting OP_PROJECT=*.
 #
-# Tokens and the provider key are written to .env next to docker-compose.yml
-# (mode 0600), so compose picks them up on the next start.
+# Tokens, the provider key and the GitHub token are written to .env next to
+# docker-compose.yml (mode 0600), so compose picks them up on the next start.
 #
 #   ./agent-init.sh                      guided run
 #   ./agent-init.sh --reprompt-tokens    enter the tokens again
@@ -94,8 +94,8 @@ unset_env() {
 }
 
 # --- model providers --------------------------------------------------------
-# AGENT_MODEL is <provider>/<model>, and the agent CLI authenticates with the
-# provider's own environment variables. This table mirrors PROVIDER_ENV_VARS in
+# AGENT_MODEL is <provider>/<model>, and pi authenticates with the provider's
+# own environment variables. This table mirrors PROVIDER_ENV_VARS in
 # src/op_agent_engine/providers.py (tests/test_providers.py keeps them in step);
 # it lives here as well so the prompts work before the engine runs. The first
 # variable of a provider is its API key, the rest are endpoints or alternative
@@ -205,16 +205,33 @@ verify_token() {
   else
     set --
   fi
-  # OP_PROJECT and AGENT are not in .env yet on a fresh deployment, so they
-  # are passed through explicitly too.
+  # OP_PROJECT is not in .env yet on a fresh deployment, so it is passed
+  # through explicitly too.
   if OP_VERIFY_TOKEN="$token" compose_run \
-      -e OP_BASE_URL -e OP_PROJECT -e AGENT -e OP_VERIFY_TOKEN \
+      -e OP_BASE_URL -e OP_PROJECT -e OP_VERIFY_TOKEN \
       engine verify-token --login "$login" "$@" >/dev/null 2>"$err"; then
     rm -f "$err"
     return 0
   fi
   sed 's/^/    /' "$err" >&2
   rm -f "$err"
+  return 1
+}
+
+verify_github_token() {
+  token=$1
+  out=$(mktemp "${TMPDIR:-/tmp}/op-agent-engine-github.XXXXXX")
+  err=$(mktemp "${TMPDIR:-/tmp}/op-agent-engine-github.XXXXXX")
+  # gh is in the image; bypass the entrypoint because .env may not exist yet.
+  if GH_TOKEN="$token" compose_run --entrypoint gh -e GH_TOKEN \
+      engine api user --jq .login >"$out" 2>"$err"; then
+    gh_login=$(tr -d '\r\n' <"$out")
+    rm -f "$out" "$err"
+    ok "GH_TOKEN: authenticated as ${gh_login:-the token's account}"
+    return 0
+  fi
+  sed 's/^/    /' "$err" >&2
+  rm -f "$out" "$err"
   return 1
 }
 
@@ -318,14 +335,7 @@ info "Create it once under Administration -> Projects -> Project attributes"
 info "(text format) and make it available for all projects."
 info "The AGENT work-package custom field is set up separately."
 
-step 2 "Agent CLI, model and provider key"
-agent=$(ask_text "Agent CLI (pi or opencode)" "$(get_env AGENT)")
-[ -n "$agent" ] || agent=pi
-case "$agent" in
-  pi|opencode) ;;
-  *) die "AGENT must be pi or opencode" ;;
-esac
-
+step 2 "Model and provider key"
 # The model is one setting for the engine (AGENT_MODEL=<provider>/<model>), but
 # two questions here: the provider is also what selects the credential variable.
 existing_model=$(get_env AGENT_MODEL)
@@ -375,7 +385,7 @@ case "$separate" in
   y|Y|yes|YES)
     say ""
     info "The model id only - the provider prefix is added for you."
-    info "Press Enter to leave an agent on the CLI's own default model."
+    info "Press Enter to leave an agent on pi's own default model."
     agent_model=
     configured=0
     for entry in \
@@ -405,7 +415,7 @@ case "$separate" in
         configured=1
       else
         unset_env "$name"
-        warn "$agent_name: no model; the CLI's own default is used"
+        warn "$agent_name: no model; pi's own default is used"
       fi
     done
     [ "$configured" -eq 1 ] ||
@@ -503,14 +513,48 @@ if [ -n "$provider_keys" ]; then
   fi
 fi
 
-step 3 "OpenProject administrator token"
+step 3 "GitHub token"
+info "The engine and agents clone, push and open pull requests with this token."
+info "Use an account that can write to the monitored repositories. A classic"
+info "token needs the 'repo' scope; a fine-grained token needs contents and"
+info "pull-request write access."
+
+github_token=
+existing=$(get_env GH_TOKEN)
+if [ "$reprompt" -eq 0 ] && usable "$existing"; then
+  if verify_github_token "$existing"; then
+    ok "GH_TOKEN: reusing the existing token"
+    github_token=$existing
+  else
+    warn "GH_TOKEN: the stored token was not accepted by GitHub"
+  fi
+fi
+
+attempt=1
+while [ -z "$github_token" ] && [ "$attempt" -le 3 ]; do
+  entered=$(ask_secret "  GitHub token (GH_TOKEN)")
+  entered=$(printf '%s' "$entered" | tr -d '\r')
+  if [ -z "$entered" ]; then
+    warn "a GitHub token is required"
+    attempt=$((attempt + 1))
+    continue
+  fi
+  if verify_github_token "$entered"; then
+    github_token=$entered
+    break
+  fi
+  attempt=$((attempt + 1))
+done
+[ -n "$github_token" ] ||
+  die "could not verify a GitHub token after 3 attempts"
+
+step 4 "OpenProject administrator token"
 info "It is used once to create the users and is not stored."
 admin_token=$(ask_secret "  Administrator API token")
 [ -n "$admin_token" ] || die "an administrator token is required"
 
 export OP_BASE_URL="$op_base_url" \
        OP_PROJECT="$project" \
-       AGENT="$agent" \
        OP_PROVISION_TOKEN="$admin_token"
 AGENT_MODEL="$agent_model"
 export AGENT_MODEL LOG_LEVEL=CRITICAL
@@ -520,11 +564,11 @@ provision_err=$(mktemp "${TMPDIR:-/tmp}/op-agent-engine-provision.XXXXXX")
 cleanup() { rm -f "$passwords_file" "$provision_err"; }
 trap cleanup EXIT INT TERM
 
-step 4 "Creating OpenProject users and memberships"
+step 5 "Creating OpenProject users and memberships"
 if ! compose_run \
     -e OP_BASE_URL -e OP_PROJECT \
     -e GITHUB_REPO_DIR \
-    -e AGENT -e AGENT_MODEL -e OP_PROVISION_TOKEN -e LOG_LEVEL \
+    -e AGENT_MODEL -e OP_PROVISION_TOKEN -e LOG_LEVEL \
     engine provision --apply --json --passwords >"$passwords_file" 2>"$provision_err"; then
   sed 's/^/    /' "$provision_err" >&2
   die "provisioning failed (see the message above)"
@@ -535,7 +579,7 @@ else
   ok "users already existed; no new passwords"
 fi
 
-step 5 "Create one API token per account"
+step 6 "Create one API token per account"
 info "OpenProject administrators cannot mint API tokens for other users."
 info "Sign in as each account and create a token under:"
 info "  $op_base_url/my/access_tokens"
@@ -559,7 +603,7 @@ designer_token=$TOKEN_VALUE
 prompt_token OP_TOKEN_REVIEWER codeReviewer "REVIEWER (codeReviewer)" 0
 reviewer_token=$TOKEN_VALUE
 
-step 6 "Saving .env"
+step 7 "Saving .env"
 set_env OP_BASE_URL "$op_base_url"
 set_env OP_PROJECT "$project"
 if [ -n "$(get_env OP_GIT_REPO_FIELD)" ]; then
@@ -570,6 +614,10 @@ if [ -n "$(get_env GITHUB_REPO)" ]; then
   warn "removing the obsolete GITHUB_REPO value; repositories come from GIT_REPO"
   unset_env GITHUB_REPO
 fi
+if [ -n "$(get_env AGENT)" ]; then
+  warn "removing the obsolete AGENT value; pi is always used"
+  unset_env AGENT
+fi
 case "$project" in
   *,*|"*")
     if [ -n "$(get_env GITHUB_REPO_DIR)" ]; then
@@ -578,7 +626,6 @@ case "$project" in
     unset_env GITHUB_REPO_DIR
     ;;
 esac
-set_env AGENT "$agent"
 if [ -n "$AGENT_MODEL" ]; then
   set_env AGENT_MODEL "$AGENT_MODEL"
   ok "model: $AGENT_MODEL"
@@ -591,20 +638,21 @@ set_env OP_TOKEN_FRONTEND "$frontend_token"
 set_env OP_TOKEN_BACKEND "$backend_token"
 set_env OP_TOKEN_DESIGNER "$designer_token"
 set_env OP_TOKEN_REVIEWER "$reviewer_token"
+set_env GH_TOKEN "$github_token"
 # The administrator token was needed for this run only.
 unset_env OP_PROVISION_TOKEN
 ok "wrote $env_file (mode 0600)"
 
-step 7 "Validating the configuration"
+step 8 "Validating the configuration"
 if ! compose_run engine check-config; then
   die "check-config failed; fix the message above and re-run this script"
 fi
 
-step 8 "Next"
+step 9 "Next"
 info "start the engine: docker compose up -d"
 info "follow it with:    docker compose logs -f engine"
 say ""
 info "Every answer from this wizard is a line in $env_file: edit that file to"
-info "change any of them later (URL, project(s), agent CLI, models, provider"
-info "key, limits), then run docker compose up -d again so the container is"
-info "recreated with the new values."
+info "change any of them later (URL, project(s), models, provider key, GitHub"
+info "token, limits), then run docker compose up -d again so the"
+info "container is recreated with the new values."

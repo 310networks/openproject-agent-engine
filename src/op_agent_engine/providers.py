@@ -1,6 +1,6 @@
 """Model providers and the environment variables that authenticate them.
 
-The agent CLIs read their provider credentials from the environment: no
+The pi agent reads its provider credentials from the environment: no
 ``auth.json``, ``settings.json`` or ``models.json`` is mounted. This table is
 the single definition of "which variables belong to which provider". It backs
 the runner's environment allowlist (:mod:`op_agent_engine.runners.generic`) and
@@ -139,7 +139,7 @@ def credential_status(
         return (
             "warn",
             "no model is configured (AGENT_MODEL and the AGENT_MODEL_<AGENT> "
-            "overrides are unset): the agent CLI's own default is used, so its "
+            "overrides are unset): pi's own default is used, so its "
             "provider credentials are not checked",
         )
 

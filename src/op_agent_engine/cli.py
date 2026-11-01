@@ -388,8 +388,8 @@ def _check_config(*, as_json: bool, offline: bool) -> int:
         print(f"op-agent-engine: error: {error}", file=sys.stderr)
         return CONFIG_ERROR_EXIT
 
-    # The agent CLIs read their provider key from the environment, so a model
-    # whose provider has no credentials would only fail inside the first run.
+    # pi reads its provider key from the environment, so a model whose provider
+    # has no credentials would only fail inside the first run.
     credential_level, credential_message = credential_status(
         settings.configured_models(), os.environ
     )

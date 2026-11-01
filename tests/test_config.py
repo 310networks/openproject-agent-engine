@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import pytest
-from pydantic import ValidationError
 
 from op_agent_engine.config import (
     AGENT_MODEL_VARS,
@@ -15,7 +14,6 @@ from op_agent_engine.config import (
 DEPLOYMENT_ENV = {
     "OP_BASE_URL": "https://openproject.example.com",
     "OP_PROJECT": "demo",
-    "AGENT": "pi",
     "OP_TOKEN_FRONTEND": "frontend-token",
     "OP_TOKEN_BACKEND": "backend-token",
     "OP_TOKEN_DESIGNER": "designer-token",
@@ -56,7 +54,6 @@ def deployment_settings(**overrides: object) -> EngineSettings:
     values: dict[str, object] = {
         "op_base_url": "https://openproject.example.com",
         "op_project": "demo",
-        "agent": "pi",
     }
     values.update(overrides)
     return EngineSettings(**values)
@@ -76,7 +73,7 @@ def test_env_builds_the_whole_workflow() -> None:
     assert {agent.kind for agent in config.agents.values()} == {"implementer", "reviewer"}
     assert config.agents["FRONTEND"].env["OP_CLI_TOKEN"] == "frontend-token"
     assert config.agents["FRONTEND"].env["OP_CLI_HOST"] == DEPLOYMENT_ENV["OP_BASE_URL"]
-    assert set(config.runners) == {"pi", "opencode"}
+    assert set(config.runners) == {"pi"}
 
 
 def test_env_summary_mentions_entities() -> None:
@@ -89,15 +86,6 @@ def test_env_summary_mentions_entities() -> None:
     assert "demo: <GIT_REPO> [enabled]" in summary
     assert "repo attribute: GIT_REPO" in summary
     assert "REVIEWER: codeReviewer (reviewer)" in summary
-
-
-def test_agent_variable_selects_the_runner() -> None:
-    for agent in ("pi", "opencode"):
-        config = WorkflowConfig.from_settings(
-            deployment_settings(agent=agent),
-            environ={**DEPLOYMENT_ENV, "AGENT": agent},
-        )
-        assert {item.runner for item in config.agents.values()} == {agent}
 
 
 def test_repo_dir_and_branch_can_be_overridden() -> None:
@@ -322,7 +310,6 @@ def test_engine_settings_reads_environment(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setenv("OP_BASE_URL", "https://openproject.example.com")
     monkeypatch.setenv("OP_ENGINE_TOKEN", "engine-token")
     monkeypatch.setenv("OP_PROJECT", "demo")
-    monkeypatch.setenv("AGENT", "opencode")
     monkeypatch.setenv("WORKSPACE_ROOT", "/srv/agents")
     monkeypatch.setenv("MAX_CONCURRENT_RUNS", "2")
     monkeypatch.setenv("MAX_RUNS_PER_AGENT", "3")
@@ -334,17 +321,9 @@ def test_engine_settings_reads_environment(monkeypatch: pytest.MonkeyPatch) -> N
     assert settings.max_concurrent_runs == 2
     assert settings.max_runs_per_agent == 3
     assert settings.engine_paused is True
-    assert settings.agent == "opencode"
     assert settings.op_project == "demo"
     assert settings.op_engine_token is not None
     assert settings.op_engine_token.get_secret_value() == "engine-token"
-
-
-def test_engine_settings_rejects_an_unknown_agent(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("AGENT", "claude")
-
-    with pytest.raises(ValidationError, match="'pi' or 'opencode'"):
-        EngineSettings()
 
 
 def test_engine_settings_reports_missing_runtime_values(
@@ -354,7 +333,6 @@ def test_engine_settings_reports_missing_runtime_values(
         "OP_BASE_URL",
         "OP_ENGINE_TOKEN",
         "OP_PROJECT",
-        "AGENT",
         "WORKSPACE_ROOT",
         *AGENT_TOKEN_VARS,
     ):
@@ -366,7 +344,6 @@ def test_engine_settings_reports_missing_runtime_values(
         "OP_BASE_URL",
         "OP_ENGINE_TOKEN",
         "OP_PROJECT",
-        "AGENT",
         "WORKSPACE_ROOT",
         *AGENT_TOKEN_VARS,
     ]

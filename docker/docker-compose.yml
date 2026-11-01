@@ -38,9 +38,6 @@ x-engine: &engine
     - engine-data:/home/agent/.local/share/op-agent-engine
     # Agent workspaces: AGENTS.md (seeded from the image) plus the git clones.
     - agent-workspace:/home/agent/agents
-    # opencode state (sessions, history), only used when the image is built
-    # with INSTALL_OPENCODE=true. Empty and unused otherwise.
-    - opencode-data:/home/agent/.local/share/opencode
   restart: unless-stopped
   # STOP_GRACE_SECONDS (60) + the runner's 20 s SIGKILL grace, with margin.
   stop_grace_period: 90s
@@ -99,4 +96,3 @@ volumes:
   pi-agent:
   engine-data:
   agent-workspace:
-  opencode-data:

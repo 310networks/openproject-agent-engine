@@ -1,9 +1,9 @@
 # Container image for the OpenProject agent engine.
 #
 # The engine itself is a plain Python package; the interesting part of this
-# image is the agent runtime. The agent CLIs (pi, optionally opencode) and the
-# tools they use (git, gh, rg, fd, op) are baked in, so a run inside the
-# container never depends on the host's installed agents.
+# image is the agent runtime. The pi CLI and the tools it uses (git, gh, rg,
+# fd, op) are baked in, so a run inside the container never depends on the
+# host's installed agent.
 #
 # Build context is the repository root:
 #   docker build -f docker/Dockerfile -t kookster310/op-agent-engine:latest .
@@ -31,10 +31,6 @@ FROM python:3.12-slim-bookworm
 ARG NODE_VERSION=22.23.3
 ARG PI_VERSION=1.4.0
 ARG GH_VERSION=2.80.0
-# opencode is opt-in: its install downloads a ~180 MB platform binary and the
-# engine's example workflow only uses the pi runner.
-ARG INSTALL_OPENCODE=false
-ARG OPENCODE_VERSION=1.18.4
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
@@ -86,8 +82,7 @@ RUN set -eu; \
       | tar -xz --strip-components=1 -C /usr/local; \
     node --version; npm --version
 
-# gh: the engine uses `gh pr list` to verify outcomes, independently of the
-# agent CLIs.
+# gh: the engine uses `gh pr list` to verify outcomes, independently of pi.
 RUN set -eu; \
     arch="$(dpkg --print-architecture)"; \
     curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${arch}.tar.gz" \
@@ -95,16 +90,11 @@ RUN set -eu; \
         "gh_${GH_VERSION}_linux_${arch}/bin/gh"; \
     gh --version
 
-# The agent CLI itself. Pinning it makes container runs reproducible; the
-# host's own pi install is never touched.
+# The pi CLI. Pinning it makes container runs reproducible; the host's own pi
+# install is never touched.
 RUN npm install --global --no-fund --no-audit \
       "@earendil-works/pi-coding-agent@${PI_VERSION}" \
  && pi --version
-
-RUN if [ "${INSTALL_OPENCODE}" = "true" ]; then \
-      npm install --global --no-fund --no-audit "opencode-ai@${OPENCODE_VERSION}"; \
-      opencode --version; \
-    fi
 
 COPY --from=opcli /out/op /usr/local/bin/op
 
@@ -131,8 +121,6 @@ RUN chmod 0755 /usr/local/bin/docker-entrypoint.sh \
              /home/agent/.pi/agent/sessions \
              /home/agent/.pi/agent/logs \
              /home/agent/.local/share/op-agent-engine \
-             /home/agent/.local/share/opencode \
-             /home/agent/.config/opencode \
  && chown -R agent:agent /home/agent
 
 USER agent

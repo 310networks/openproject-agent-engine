@@ -1,9 +1,9 @@
 """The generic command runner: fills placeholders and executes.
 
 A runner is a pure command template: argv, cwd, env and
-optional stdin_file with ``{placeholder}`` substitution. The engine knows
-nothing about the agent CLI itself. The only contract is the final
-``RESULT:`` line on stdout.
+optional stdin_file with ``{placeholder}`` substitution. The engine does not
+special-case pi's CLI. The only contract is the final ``RESULT:`` line on
+stdout.
 """
 
 from __future__ import annotations
@@ -27,13 +27,13 @@ from op_agent_engine.runners.base import (
     run_command,
 )
 
-#: Inherited environment: the minimum an agent CLI needs to behave like a
-#: manual run (section 6). Everything else is passed explicitly.
+#: Inherited environment: the minimum pi needs to behave like a manual run
+#: (section 6). Everything else is passed explicitly.
 _BASE_ENV_VARS = ("PATH", "HOME", "USER", "LOGNAME", "TZ", "LANG", "LC_ALL")
 
-#: Provider credentials and endpoints the agent CLIs read directly. The
-#: deployment supplies them as environment variables; no auth.json or
-#: settings.json is mounted. The provider table is shared with check-config and
+#: Provider credentials and endpoints pi reads directly. The deployment
+#: supplies them as environment variables; no auth.json or settings.json is
+#: mounted. The provider table is shared with check-config and
 #: with the setup script, so a provider can never be asked for a key the runner
 #: then refuses to forward. GH_TOKEN/GITHUB_TOKEN let the agents push and open
 #: pull requests with gh.

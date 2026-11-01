@@ -2,7 +2,7 @@
 
 There is no configuration file. Everything deployment-specific is an
 environment variable, read from `docker/.env` (which compose passes to the
-containers) or from your shell. The agent team, the runners and the
+containers) or from your shell. The agent team, the pi runner and the
 OpenProject object names have defaults baked into the code, so a deployment
 only supplies its URL, project(s) and tokens.
 
@@ -18,11 +18,11 @@ reference.
 | `OP_BASE_URL` | OpenProject URL |
 | `OP_PROJECT` | project identifier(s): one, a comma-separated list, or `*` for every active project with `GIT_REPO` set |
 | `OP_ENGINE_TOKEN` | API token of the administrator runtime user |
-| `AGENT` | `pi` or `opencode` |
 | `OP_TOKEN_FRONTEND` | token of `frontendEngineer` |
 | `OP_TOKEN_BACKEND` | token of `backendEngineer` |
 | `OP_TOKEN_DESIGNER` | token of `leadDesigner` |
 | `OP_TOKEN_REVIEWER` | token of `codeReviewer` |
+| `GH_TOKEN` | GitHub token used to clone, push and look up pull requests |
 
 `OP_PROVISION_TOKEN` is an administrator token used only by
 `agent-init.sh` and `docker compose run --rm provision`.
@@ -31,24 +31,23 @@ reference.
 
 The team is fixed, one OpenProject account and one token each:
 
-| `AGENT` option | Login | Kind | Token |
+| `AGENT` field value | Login | Kind | Token |
 |---|---|---|---|
 | `FRONTEND` | `frontendEngineer` | implementer | `OP_TOKEN_FRONTEND` |
 | `BACKEND` | `backendEngineer` | implementer | `OP_TOKEN_BACKEND` |
 | `LEAD_DESIGNER` | `leadDesigner` | implementer | `OP_TOKEN_DESIGNER` |
 | `REVIEWER` | `codeReviewer` | reviewer | `OP_TOKEN_REVIEWER` |
 
-Exactly one agent is the reviewer. The implementers and the reviewer run the
-same CLI selected by `AGENT`:
+Exactly one agent is the reviewer. The implementers and the reviewer all run
+`pi`:
 
-- `pi`: `pi -p --approve --no-extensions --no-context-files --no-session
+- `pi -p --approve --no-extensions --no-context-files --no-session
   --model {model} @{prompt_file} ...`
-- `opencode`: `opencode run --auto --model {model} --file {prompt_file} ...`
 
 `AGENT_MODEL` sets the model for every agent; when it is unset the `{model}`
-placeholder and the flag in front of it are dropped, so the CLI's own default
-is used. The value must be one token (no spaces), in the CLI's own format —
-`provider/id` works for both.
+placeholder and the flag in front of it are dropped, so pi's own default is
+used. The value must be one token (no spaces), in pi's own format —
+`provider/id` works.
 
 The provider is the part before the first `/`, and it selects the credential
 variable as well: `openrouter/deepseek/deepseek-v4.1-flash-1017` is the
@@ -61,7 +60,7 @@ means joining them yourself.
 (`AGENT_MODEL_FRONTEND`, `AGENT_MODEL_BACKEND`, `AGENT_MODEL_DESIGNER`,
 `AGENT_MODEL_REVIEWER`); without one, the agent uses `AGENT_MODEL`. A
 deployment can therefore name a model per agent and leave `AGENT_MODEL` unset
-entirely — an agent with neither uses the CLI's own default. The deployment
+entirely — an agent with neither uses pi's own default. The deployment
 still has **one provider**, because it stores one provider key: a model
 override may name a different model but not a different provider.
 `check-config` rejects a mix (`one model provider per deployment`), and
@@ -133,10 +132,10 @@ docker compose up -d engine
 
 ## Provider credentials
 
-The agent CLI reads its model provider key from the environment; no
-`auth.json`, `settings.json` or opencode config is mounted. `agent-init.sh`
-asks for the key belonging to the provider in `AGENT_MODEL` and writes it to
-`docker/.env`, so it is not a manual step. If you write `.env` yourself, set
+pi reads its model provider key from the environment; no `auth.json` or
+`settings.json` is mounted. `agent-init.sh` asks for the key belonging to the
+provider in `AGENT_MODEL`, asks for a GitHub token, and writes both to
+`docker/.env`, so neither is a manual step. If you write `.env` yourself, set
 the variable for your provider (the table below is
 [`src/op_agent_engine/providers.py`](../src/op_agent_engine/providers.py)):
 

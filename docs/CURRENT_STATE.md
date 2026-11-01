@@ -35,7 +35,6 @@ Named volumes hold all mutable state; there are no bind mounts:
 | `agent-workspace` | `/home/agent/agents` | `AGENTS.md` standards, one clone per agent, per-run worktrees when enabled |
 | `engine-data` | `/home/agent/.local/share/op-agent-engine` | SQLite store, `runs/<id>/`, heartbeat, pause flag, engine lock |
 | `pi-agent` | `/home/agent/.pi/agent` | pi sessions, logs, model cache, downloaded tools |
-| `opencode-data` | `/home/agent/.local/share/opencode` | opencode sessions and history |
 
 `docker/entrypoint.sh` validates the required variables, creates the state
 directories, writes the agents' git identity from `GIT_AUTHOR_NAME` /
@@ -57,8 +56,8 @@ One loop iteration:
    assignee, `lockVersion`). A claim inserts a `runs` row first; a database
    conflict means another claimant won.
 4. **Dispatch** (`dispatcher.py`): prepare the workspace, render the prompt,
-   run the agent CLI, verify the outcome externally, apply the status
-   transition and engine comment, and write the run record.
+   run pi, verify the outcome externally, apply the status transition and
+   engine comment, and write the run record.
 5. **Recover/retain**: failed runs feed the crash-retry counter; `recovery.py`
    marks stale running rows interrupted on startup; `cleanup` removes run
    directories older than `RUN_RETENTION_DAYS`.
@@ -102,21 +101,20 @@ detached. Workspace preparation is serialized per agent, and the worktree is
 removed after the agent exits. With the default of 1, the agent's clone is
 checked out directly.
 
-## Agents and runners
+## Agents and pi runner
 
 The team is fixed in code and in the image (`agents/*/AGENTS.md`):
 
-| `AGENT` option | OpenProject login | Kind | Token variable |
+| `AGENT` field value | OpenProject login | Kind | Token variable |
 |---|---|---|---|
 | `FRONTEND` | `frontendEngineer` | implementer | `OP_TOKEN_FRONTEND` |
 | `BACKEND` | `backendEngineer` | implementer | `OP_TOKEN_BACKEND` |
 | `LEAD_DESIGNER` | `leadDesigner` | implementer | `OP_TOKEN_DESIGNER` |
 | `REVIEWER` | `codeReviewer` | reviewer | `OP_TOKEN_REVIEWER` |
 
-`AGENT` selects the CLI for every agent:
+Every agent runs pi:
 
 - `pi -p --approve --no-extensions --no-context-files --no-session --model ...`
-- `opencode run --auto --model ... --file ...`
 
 `AGENT_MODEL` is `<provider>/<model>`, and `AGENT_MODEL_<AGENT>` overrides it
 for one agent (same provider, one key); the provider selects the credential
@@ -139,9 +137,9 @@ required ones to `docker/.env` and the documented template is
 `docker/.env.example`. The full reference, including provider variables,
 object names, limits and compose-only settings, is [CONFIG.md](CONFIG.md).
 
-Required values: `OP_BASE_URL`, `OP_PROJECT`, `OP_ENGINE_TOKEN`, `AGENT`, the
-four `OP_TOKEN_*` agent tokens, and one model provider key. The `GIT_REPO`
-project and `AGENT` work-package custom fields are each created once and
+Required values: `OP_BASE_URL`, `OP_PROJECT`, `OP_ENGINE_TOKEN`, the four
+`OP_TOKEN_*` agent tokens, one model provider key and `GH_TOKEN`. The
+`GIT_REPO` project and `AGENT` work-package custom fields are each created once and
 assigned to all projects, so each monitored project only needs its own
 `GIT_REPO` value.
 `OP_PROVISION_TOKEN` is an administrator token used only for provisioning; the
@@ -156,15 +154,17 @@ values, credentials and deliberate tuning.
 
 `docker/agent-init.sh` is the supported setup path:
 
-1. prompts for the OpenProject URL and project(s), the agent CLI, the model
-   provider and its key;
-2. asks for an OpenProject administrator token (used once, never written);
-3. runs `provision --apply --json --passwords` in the container, which creates
+1. prompts for the OpenProject URL and project(s), the model provider and its
+   key;
+2. asks for a GitHub token, verifies it with `gh api user`, and stores it as
+   `GH_TOKEN`;
+3. asks for an OpenProject administrator token (used once, never written);
+4. runs `provision --apply --json --passwords` in the container, which creates
    or reconciles the engine user, the four agent users and the `Agent Worker`
    role/memberships, and shows each new password;
-4. prompts for one token per account and verifies it with
+5. prompts for one token per account and verifies it with
    `verify-token --login ...` (the engine token is also checked for admin);
-5. writes `docker/.env` (mode `0600`) and runs `check-config`, which also
+6. writes `docker/.env` (mode `0600`) and runs `check-config`, which also
    checks that the provider key is present.
 
 The engine user must be an OpenProject administrator; the agent users only get
@@ -257,7 +257,6 @@ All commands read the same environment; there is no `--config` option.
   field are created once and assigned to all projects; a newly added project
   only needs its `GIT_REPO` value set.
 - The team is fixed; adding a member is a code change, not configuration.
-- opencode is opt-in at image build time (`INSTALL_OPENCODE=true`).
 - The dashboard has no authentication and no write actions.
 - Agents can run in parallel only with per-run worktrees; the default per-agent
   limit is 1.

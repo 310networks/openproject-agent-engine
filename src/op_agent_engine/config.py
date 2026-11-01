@@ -5,7 +5,7 @@ There is no configuration file. Everything comes from environment variables:
 * :class:`EngineSettings` (pydantic-settings) reads the deployment and runtime
   variables.
 * :meth:`WorkflowConfig.from_settings` turns those variables into the workflow
-  model the engine uses. The agent team, the runners and the status names have
+  model the engine uses. The agent team, the pi runner and the status names have
   defaults, so a deployment only supplies its OpenProject URL, project,
   repository and tokens.
 
@@ -590,8 +590,8 @@ class WorkflowConfig(BaseModel):
         """Return the model used by ``agent_key``.
 
         An agent's own ``model`` wins over the default declared on its runner.
-        ``None`` means the agent CLI's own default is used and ``{model}`` (and
-        its flag) is dropped from the runner argv.
+        ``None`` means pi's own default is used and ``{model}`` (and its flag)
+        is dropped from the runner argv.
         """
         agent = self.agents[agent_key]
         return agent.model or self.runners[agent.runner].model
@@ -686,10 +686,10 @@ class WorkflowConfig(BaseModel):
     ) -> WorkflowConfig:
         """Build the workflow from environment variables.
 
-        The team, the runners and the status defaults are baked in; the
-        deployment supplies its OpenProject URL, project(s), agent CLI and one
-        token per agent. Each project's repository is read from its ``GIT_REPO``
-        project attribute at startup (see :func:`expand_projects`).
+        The team, the pi runner and the status defaults are baked in; the
+        deployment supplies its OpenProject URL, project(s) and one token per
+        agent. Each project's repository is read from its ``GIT_REPO`` project
+        attribute at startup (see :func:`expand_projects`).
         """
         env = os.environ if environ is None else environ
         missing = [
@@ -697,7 +697,6 @@ class WorkflowConfig(BaseModel):
             for name, value in (
                 ("OP_BASE_URL", settings.op_base_url),
                 ("OP_PROJECT", settings.op_project),
-                ("AGENT", settings.agent),
             )
             if not value
         ]
@@ -708,7 +707,6 @@ class WorkflowConfig(BaseModel):
 
         assert settings.op_base_url is not None
         assert settings.op_project is not None
-        assert settings.agent is not None
 
         providers = {
             provider
@@ -749,7 +747,7 @@ class WorkflowConfig(BaseModel):
                 "kind": kind,
                 "op_login": login,
                 "workspace": login,
-                "runner": settings.agent,
+                "runner": "pi",
                 "model": per_agent_models[key],
                 "timeout_seconds": settings.agent_timeout_seconds,
                 "env": {
@@ -812,28 +810,12 @@ _PI_ARGV = [
     "@{prompt_file}",
     "Follow the instructions in the attached prompt file.",
 ]
-_OPENCODE_ARGV = [
-    "opencode",
-    "run",
-    "--auto",
-    "--model",
-    "{model}",
-    "--file",
-    "{prompt_file}",
-    "Follow the instructions in the attached prompt file.",
-]
 
 
 def _runner_mapping(model: str | None) -> dict[str, Any]:
     return {
         "pi": {
             "argv": list(_PI_ARGV),
-            "model": model,
-            "cwd": "{repo_dir}",
-            "inject_standard": True,
-        },
-        "opencode": {
-            "argv": list(_OPENCODE_ARGV),
             "model": model,
             "cwd": "{repo_dir}",
             "inject_standard": True,
@@ -858,8 +840,6 @@ class EngineSettings(BaseSettings):
     op_engine_token: SecretStr | None = None
     op_provision_token: SecretStr | None = None
     op_project: str | None = None
-    # Which agent CLI to run: ``pi`` or ``opencode``.
-    agent: Literal["pi", "opencode"] | None = None
     # Model for every agent as ``<provider>/<model>``; the per-agent overrides
     # win for their agent. All of them share one provider, because the
     # deployment stores one provider key.
@@ -939,8 +919,6 @@ class EngineSettings(BaseSettings):
         missing = self.missing_api_values()
         if not self.op_project:
             missing.append("OP_PROJECT")
-        if not self.agent:
-            missing.append("AGENT")
         if self.workspace_root is None or not str(self.workspace_root):
             missing.append("WORKSPACE_ROOT")
         missing.extend(self.missing_agent_tokens())

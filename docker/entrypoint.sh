@@ -3,9 +3,9 @@
 # engine command.
 #
 # Everything deployment-specific is an environment variable (compose reads
-# docker/.env); nothing is mounted from the host. Provider credentials for the
-# agent CLIs are environment variables too, so this script does not seed
-# auth.json, settings.json or an opencode config.
+# docker/.env); nothing is mounted from the host. Provider credentials for pi
+# are environment variables too, so this script does not seed auth.json or
+# settings.json.
 set -eu
 
 umask 022
@@ -15,7 +15,6 @@ AGENT_DIR=${PI_CODING_AGENT_DIR:-${HOME}/.pi/agent}
 # Fail at startup, with the variable named, instead of inside a poll or a run.
 : "${OP_BASE_URL:?OP_BASE_URL is not set -- your OpenProject URL (see .env)}"
 : "${OP_PROJECT:?OP_PROJECT is not set -- one project identifier, a list, or *}"
-: "${AGENT:?AGENT is not set -- use pi or opencode}"
 : "${WORKSPACE_ROOT:?WORKSPACE_ROOT is not set (see the image defaults)}"
 : "${DATA_DIR:?DATA_DIR is not set (see the image defaults)}"
 

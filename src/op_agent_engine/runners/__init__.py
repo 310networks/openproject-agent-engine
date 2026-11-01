@@ -1,9 +1,9 @@
 """Runner abstraction.
 
-The engine knows nothing about the agent CLI itself: a runner is a command
-template (argv/cwd/env/stdin_file) whose placeholders are filled per run.
-The only contract is that the agent prints a final ``RESULT:`` line on
-stdout, which the engine extracts from the log tail.
+The engine does not special-case pi's CLI: a runner is a command template
+(argv/cwd/env/stdin_file) whose placeholders are filled per run. The only
+contract is that the agent prints a final ``RESULT:`` line on stdout, which
+the engine extracts from the log tail.
 """
 
 from op_agent_engine.runners.base import (

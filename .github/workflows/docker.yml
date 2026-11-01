@@ -12,7 +12,7 @@ name: docker
 # Tags pushed: `<version>`, `latest` (main and release tags) and `sha-<short>`.
 # Required repository secrets: DOCKERHUB_USERNAME, DOCKERHUB_TOKEN.
 # Optional repository variables (defaults come from the Dockerfile):
-# PI_VERSION, GH_VERSION, OP_CLI_REF, INSTALL_OPENCODE.
+# PI_VERSION, GH_VERSION, OP_CLI_REF.
 
 on:
   push:
@@ -122,7 +122,6 @@ jobs:
             PI_VERSION=${{ vars.PI_VERSION || '1.4.0' }}
             GH_VERSION=${{ vars.GH_VERSION || '2.80.0' }}
             OP_CLI_REF=${{ vars.OP_CLI_REF || '259f293a' }}
-            INSTALL_OPENCODE=${{ vars.INSTALL_OPENCODE || 'false' }}
 
       - name: summary
         run: |

@@ -192,9 +192,8 @@ def _author_label(
 def with_standard(prompt: str, standard_path: Path) -> str:
     """Prepend the workspace AGENTS.md under a heading (section 10).
 
-    Used when the runner does not discover the standard on its own (e.g.
-    ``opencode``); ``pi`` discovers ``AGENTS.md`` by walking up from the
-    working directory, so the prompt stays lean.
+    The pi runner runs with ``--no-context-files``, so the standard is injected
+    explicitly instead of relying on directory discovery.
     """
     content = standard_path.read_text(encoding="utf-8").strip()
     return (

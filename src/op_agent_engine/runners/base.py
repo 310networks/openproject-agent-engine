@@ -5,8 +5,8 @@ streams stdout/stderr into the per-run directory, enforces the run timeout
 (SIGTERM to the whole group, then SIGKILL after a grace period), and
 extracts the agent's final ``RESULT:`` line from the tail of stdout.
 
-Killing the process group is what makes the timeout reliable: agent CLIs
-spawn their own children (shells, compilers, git), and all of them must die
+Killing the process group is what makes the timeout reliable: the agent
+spawns its own children (shells, compilers, git), and all of them must die
 with the run.
 """
 

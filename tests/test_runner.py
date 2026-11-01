@@ -149,7 +149,7 @@ def test_build_request_forwards_provider_credentials(
         timeout_seconds=120,
     )
 
-    # The agent CLI reads its key and gh credential from the environment.
+    # pi reads its key and gh credential from the environment.
     assert request.env["ANTHROPIC_API_KEY"] == "sk-ant-test"
     assert request.env["GH_TOKEN"] == "ghp-test"
     # The engine's own OpenProject token is not forwarded to the agent.
@@ -440,7 +440,7 @@ def test_agent_model_overrides_the_runner_model(tmp_path: Path) -> None:
 
 
 def test_unset_model_drops_the_placeholder_and_its_flag(tmp_path: Path) -> None:
-    # The agent CLI's own default model must apply: no empty --model argument.
+    # pi's own default model must apply: no empty --model argument.
     config = WorkflowConfig.from_mapping(_model_mapping(), environ={})
 
     assert config.model_for("FE") is None

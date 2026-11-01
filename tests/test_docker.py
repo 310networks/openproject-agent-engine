@@ -9,7 +9,7 @@ The container design relies on a few things lining up:
   path;
 * the image never receives operator state or secrets (``.dockerignore``);
 * no auth.json/settings.json/config file is required or documented as a mount:
-  the agent CLIs read provider credentials from the environment.
+  pi reads provider credentials from the environment.
 
 These tests fail when one of them drifts, which is otherwise only visible after
 a full image build.
@@ -95,15 +95,14 @@ def test_env_example_is_tracked_and_the_real_env_is_not() -> None:
     assert not [path for path in tracked if path.endswith("auth.json")]
 
 
-def test_agent_env_var_selects_the_runner() -> None:
-    """`AGENT` is the single knob for pi versus opencode."""
+def test_pi_is_baked_in_without_a_selector() -> None:
     env_template = (DOCKER_DIR / ".env.example").read_text()
     entrypoint = (DOCKER_DIR / "entrypoint.sh").read_text()
+    dockerfile = DOCKERFILE.read_text()
 
-    # Switching agent CLIs is one variable, not four agent edits.
-    assert "\nAGENT=pi\n" in env_template
-    # The container refuses to start rather than failing inside a config build.
-    assert ': "${AGENT:?AGENT is not set' in entrypoint
+    assert "\nAGENT=" not in env_template
+    assert ': "${AGENT:' not in entrypoint
+    assert '"@earendil-works/pi-coding-agent@${PI_VERSION}"' in dockerfile
 
 
 def test_entrypoint_validates_the_environment_and_seeds_nothing() -> None:
@@ -112,7 +111,6 @@ def test_entrypoint_validates_the_environment_and_seeds_nothing() -> None:
     for required in (
         "OP_BASE_URL",
         "OP_PROJECT",
-        "AGENT",
         "WORKSPACE_ROOT",
         "DATA_DIR",
     ):
@@ -160,13 +158,15 @@ def test_volume_mount_points_exist_in_the_image() -> None:
     assert "chown -R agent:agent /home/agent" in mkdirs
 
 
-def test_opencode_state_is_persisted_like_pi_state() -> None:
+def test_state_volumes_are_persisted() -> None:
     volumes = {str(v) for v in _service("engine")["volumes"]}
 
-    assert "opencode-data:/home/agent/.local/share/opencode" in volumes
     assert "pi-agent:/home/agent/.pi/agent" in volumes
-    for volume in ("opencode-data", "pi-agent", "engine-data", "agent-workspace"):
-        assert volume in _compose()["volumes"], f"{volume} is not declared"
+    assert set(_compose()["volumes"]) == {
+        "pi-agent",
+        "engine-data",
+        "agent-workspace",
+    }
 
 
 def test_image_paths_match_the_compose_mounts() -> None:
@@ -196,9 +196,10 @@ def test_generated_env_keeps_host_paths_out() -> None:
     # silently point at the wrong directory.
     for name in ("WORKSPACE_ROOT", "DATA_DIR", "ENGINE_CONFIG"):
         assert name not in env, f"{name} must come from the image"
-    # Inside a container the dashboard has to bind every interface; the host
-    # port is published on loopback by docker-compose.yml.
-    assert env["DASHBOARD_HOST"] == "0.0.0.0"
+    # The image binds the dashboard inside the container (0.0.0.0); .env only
+    # controls the host interface compose publishes it on, loopback by default.
+    assert "DASHBOARD_HOST" not in env
+    assert env["DASHBOARD_BIND"] == "127.0.0.1"
     assert env["DASHBOARD_PORT"] == "8765"
 
 
@@ -230,7 +231,6 @@ def test_docs_list_every_environment_variable() -> None:
         "OP_BASE_URL",
         "OP_PROJECT",
         "OP_ENGINE_TOKEN",
-        "AGENT",
         "OP_TOKEN_FRONTEND",
         "OP_TOKEN_BACKEND",
         "OP_TOKEN_DESIGNER",
@@ -331,6 +331,22 @@ def test_agent_init_asks_for_the_provider_and_its_key() -> None:
     # ... but the wizard does say that every answer is an editable .env line.
     assert "Every answer from this wizard is a line in" in script
     assert "docker compose up -d" in script
+
+
+def test_agent_init_asks_for_a_github_token() -> None:
+    """The wizard writes every credential a functional deployment needs."""
+    script = (DOCKER_DIR / "agent-init.sh").read_text()
+
+    assert 'step 3 "GitHub token"' in script
+    assert 'ask_secret "  GitHub token (GH_TOKEN)"' in script
+    assert 'set_env GH_TOKEN "$github_token"' in script
+    # Verify it in the image before writing it; a bad token would otherwise only
+    # fail during the first clone. --reprompt-tokens also asks for it again.
+    assert "verify_github_token" in script
+    assert "--entrypoint gh" in script
+    assert script.index('step 3 "GitHub token"') < script.index(
+        'step 4 "OpenProject administrator token"'
+    )
 
 
 def test_agent_init_offers_per_agent_models_from_one_provider() -> None:

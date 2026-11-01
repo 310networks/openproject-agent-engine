@@ -25,7 +25,6 @@ from tests.fakes import non_write_requests
 EXAMPLE_ENV = {
     "OP_BASE_URL": "https://openproject.example.com",
     "OP_PROJECT": "example-project",
-    "AGENT": "pi",
     "AGENT_MODEL": "openrouter/deepseek/deepseek-v4.1-flash-1017",
     "OPENROUTER_API_KEY": "sk-or-test",
     "OP_ENGINE_TOKEN": "engine-token",
@@ -105,7 +104,7 @@ def test_check_config_reads_the_environment(capsys: pytest.CaptureFixture[str]) 
     output = capsys.readouterr().out
     assert "Configuration OK" in output
     assert "agents: 4" in output
-    assert "runners: 2" in output
+    assert "runners: 1" in output
     # Secrets must never appear in check-config output.
     assert "frontend-token" not in output
 

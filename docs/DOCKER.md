@@ -16,15 +16,15 @@ directory, which is `docker/` when you are looking at the repository.
 | Baked into the image | In `.env` (host only) | Named volumes (read-write) |
 |---|---|---|
 | Python 3.12, `git`, `gh`, `ripgrep`, `fd`, `op` | deployment values, limits, API tokens, provider keys | `/home/agent/.pi/agent` (pi state, model cache, tools) |
-| Node 22 and pi (`PI_VERSION`) | agent CLI, model, git identity | `/home/agent/.local/share/op-agent-engine` (`DATA_DIR`) |
+| Node 22 and pi (`PI_VERSION`) | model, git identity | `/home/agent/.local/share/op-agent-engine` (`DATA_DIR`) |
 | `agents/*/AGENTS.md` (seeds the workspace volume) | — | `/home/agent/agents` (`WORKSPACE_ROOT`) |
-| `prompts/` (`PROMPTS_DIR`) | — | `/home/agent/.local/share/opencode` (opencode sessions) |
+| `prompts/` (`PROMPTS_DIR`) | — | — |
 
 Nothing is mounted from the host. Change `.env`, then recreate the stack:
 
 | Changed | Command |
 |---|---|
-| `.env` (written by `agent-init.sh`: tokens, model, provider key, limits) | `docker compose up -d` — compose must recreate the container; `restart` keeps the old environment |
+| `.env` (written by `agent-init.sh`: tokens, model, provider key, GitHub token, limits) | `docker compose up -d` — compose must recreate the container; `restart` keeps the old environment |
 | the image tag | `docker compose pull && docker compose up -d` |
 
 ## The entrypoint
@@ -32,14 +32,14 @@ Nothing is mounted from the host. Change `.env`, then recreate the stack:
 `docker/entrypoint.sh` runs as `uid 10001` (`agent`) and, before `exec
 op-agent-engine "$@"`:
 
-1. refuses to start without `OP_BASE_URL`, `OP_PROJECT`, `AGENT`,
-   `WORKSPACE_ROOT` or `DATA_DIR`, so a deployment that forgot one
-   fails immediately with the variable named rather than inside a run;
+1. refuses to start without `OP_BASE_URL`, `OP_PROJECT`, `WORKSPACE_ROOT` or
+   `DATA_DIR`, so a deployment that forgot one fails immediately with the
+   variable named rather than inside a run;
 2. creates the writable state directories in the volumes;
 3. writes the agents' git identity from `GIT_AUTHOR_NAME`/`GIT_AUTHOR_EMAIL`
    (defaults: `OP_ENGINE_USER` and `OP_ENGINE_USER@OP_EMAIL_DOMAIN`).
 
-Provider credentials and agent settings are environment variables in `.env`;
+Provider credentials and model settings are environment variables in `.env`;
 the entrypoint seeds no credential files.
 
 ## Volumes
@@ -49,7 +49,6 @@ the entrypoint seeds no credential files.
 | `agent-workspace` | `/home/agent/agents` | the seeded `agents/` tree and one clone per agent workspace |
 | `engine-data` | `/home/agent/.local/share/op-agent-engine` | SQLite store, `runs/<id>/`, heartbeat, pause flag, lock |
 | `pi-agent` | `/home/agent/.pi/agent` | pi sessions, logs, model cache, installed tools |
-| `opencode-data` | `/home/agent/.local/share/opencode` | opencode sessions and history |
 
 Every mount point exists in the image. That matters: Docker creates a fresh
 named volume with the *image's* ownership for that path, so a mount point
@@ -84,8 +83,8 @@ that image is never what a deployment runs.
   so the image tag and `op-agent-engine --version` cannot disagree.
 - **Secrets:** `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` (a Docker Hub access
   token with write scope).
-- **Optional variables:** `PI_VERSION`, `GH_VERSION`, `OP_CLI_REF`,
-  `INSTALL_OPENCODE` override the Dockerfile defaults.
+- **Optional variables:** `PI_VERSION`, `GH_VERSION`, `OP_CLI_REF` override
+  the Dockerfile defaults.
 
 Releasing:
 
@@ -115,15 +114,8 @@ without a new tag.
   deployment directory on a normal path such as `/opt/op-agent-engine` or
   `~/op-agent-engine`. `docker --env-file` fails with "permission denied"
   otherwise.
-- **Which agent CLI runs** is `AGENT` in `.env` (`pi` or `opencode`), not
-  something to set per agent: every agent uses the selected runner. Switching
-  is `AGENT=opencode` followed by `docker compose up -d` (a changed env file
-  needs a recreate), plus a rebuilt image when opencode was not installed yet
-  (`INSTALL_OPENCODE=true`).
-- **opencode** is opt-in (`INSTALL_OPENCODE=true`). Its `run` mode works in the
-  container; a host wrapper that `attach`es to a remote opencode server does
-  not, because the agent would then work on the *server's* filesystem instead
-  of the container's checkout.
+- **The agent is pi.** `AGENT_MODEL` selects the model; there is no separate
+  agent-CLI setting.
 - The engine spawns one process group per run and kills it on timeout, so the
   container runs under `tini` and `stop_grace_period` is 90 s
   (`STOP_GRACE_SECONDS` + the runner's 20 s SIGKILL grace). Raise both together.

@@ -10,7 +10,7 @@ is configured, and their literal values are replaced with ``***`` wherever they
 appear in a log event or extra field. Extra fields whose *name* looks secret are
 redacted too.
 
-The suffix rule covers the provider keys the agent CLIs read (for example
+The suffix rule covers the provider keys pi reads (for example
 ``OPENROUTER_API_KEY`` or ``ANTHROPIC_API_KEY``), which do not share the
 engine's ``OP_`` prefix.
 """

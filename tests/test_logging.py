@@ -107,10 +107,10 @@ def test_provider_api_key_env_names_are_redacted() -> None:
 def test_extra_field_with_provider_key_name_is_redacted() -> None:
     stream = io.StringIO()
     configure_logging("INFO", stream=stream, environ={})
-    get_logger("test").info("hello", extra={"OPENCODE_API_KEY": "plain", "OP_TOKEN_X": "plain"})
+    get_logger("test").info("hello", extra={"ANTHROPIC_API_KEY": "plain", "OP_TOKEN_X": "plain"})
     payload = json.loads(stream.getvalue().strip())
 
-    assert payload["OPENCODE_API_KEY"] == REDACTED
+    assert payload["ANTHROPIC_API_KEY"] == REDACTED
     assert payload["OP_TOKEN_X"] == REDACTED
 
 
@@ -119,5 +119,5 @@ def test_non_secret_names_stay_visible() -> None:
 
     assert not is_secret_name("MAX_REJECTIONS")
     assert not is_secret_name("WORKSPACE_ROOT")
-    assert not is_secret_name("OPENCODE")
+    assert not is_secret_name("AGENT_MODEL")
     assert is_secret_name("OPENROUTER_API_KEY")
