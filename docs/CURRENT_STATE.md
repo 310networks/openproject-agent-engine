@@ -1,9 +1,9 @@
 # Current state
 
-What the repository contains today. This replaces the old `PLAN.md` design
-document: it describes the implemented system, not a roadmap.
+What the repository contains today: it describes the implemented system, not a
+roadmap.
 
-- **Version:** `0.2.3` (`pyproject.toml`, `docker/version.json`).
+- **Version:** `0.2.4` (`pyproject.toml`, `docker/version.json`).
 - **Package:** `op_agent_engine` (Python 3.12), installed into a container image
   and published as `kookster310/op-agent-engine`.
 - **Deployment:** Docker Compose only. Nothing is built or installed on the
@@ -178,10 +178,10 @@ supported way to fix a wrong token (`--reprompt-tokens`).
 
 `DATA_DIR` (volume `engine-data`) contains:
 
-- `engine.sqlite3` — `runs` and `crash_counts` tables;
+- `engine.db` — `runs` and `crash_counts` tables;
 - `runs/<id>/` — `prompt.txt`, `stdout.log`, `stderr.log`, `meta.json`;
 - `heartbeat` — last completed poll timestamp (dashboard staleness);
-- `engine.paused` — present means no new claims;
+- `PAUSE` — present means no new claims;
 - `engine.lock` — single-instance `flock`.
 
 `meta.json` records the run identity, argv, cwd, redacted env, state, outcome,
@@ -238,7 +238,7 @@ All commands read the same environment; there is no `--config` option.
 | `prompts/` | prompt templates |
 | `agents/` | the engineering standard per agent workspace |
 | `docker/` | image, compose file, entrypoint and setup script |
-| `docs/` | configuration, deployment, setup, runbook, dashboard, acceptance, verification |
+| `docs/` | configuration, deployment, setup, runbook, dashboard, acceptance, current state |
 
 ## Tests and release
 
