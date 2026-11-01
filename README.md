@@ -9,6 +9,8 @@ the engine claims work, prepares a per-agent clone, renders a prompt, runs the
 agent, verifies the outcome against GitHub and OpenProject, and performs
 **every** status transition itself. Agents never change status.
 
+![](docs/op-agent-engine-demo.gif)
+
 ## Requirements
 
 - Docker
@@ -24,31 +26,16 @@ agent, verifies the outcome against GitHub and OpenProject, and performs
 2. In `docker/`, run the interactive setup:
 
    ```bash
-   git clone https://github.com/310networks/openproject-agent-engine op-agent-engine && cd op-agent-engine/docker && ./agent-init.sh
+   git clone https://github.com/310networks/openproject-agent-engine op-agent-engine 
+   cd op-agent-engine/docker && ./agent-init.sh
    ```
 
-   It asks for the OpenProject URL and project identifier(s), the model provider
-   and its API key, and an administrator token (used once, never stored). The
-   model is asked for without the provider prefix
-   (`deepseek/deepseek-v4.1-flash-1017`); the script writes
-   `AGENT_MODEL=openrouter/deepseek/deepseek-v4.1-flash-1017` and stores the
-   provider's key itself. It also asks whether the agents share that model or
-   each names its own (`AGENT_MODEL_<AGENT>`); either way they stay on the one
-   provider.
-
-   It creates the engine user and one account per agent, prints each generated
-   password in its own block at that account's token prompt, verifies the
-   OpenProject tokens and writes to `docker/.env`. Passwords are shown once —
-   record them; a later run cannot recover them, so a forgotten password must
-   be reset under **Administration → Users**. It finishes with `check-config`,
-   which also checks that the provider key is present. Re-running is safe;
+   Re-running is safe.
    `--reprompt-tokens` asks for the OpenProject tokens again.
 
-3. Finish `docker/.env` before starting the stack. The wizard does not ask for
-   GitHub credentials: add `GH_TOKEN` (and the optional `GH_TOKEN_REVIEWER`,
-   `GIT_REVIEWER_NAME` and `GIT_REVIEWER_EMAIL` for a dedicated reviewer
-   account) as described below. `docker/.env.example` documents every other
-   optional setting.
+3. Finish `docker/.env` before starting the stack. Add `GH_TOKEN` (and the 
+   optional `GH_TOKEN_REVIEWER`, `GIT_REVIEWER_NAME` and `GIT_REVIEWER_EMAIL` 
+   for a dedicated reviewer account, see below).
 
 4. Start the stack:
 
@@ -60,9 +47,9 @@ agent, verifies the outcome against GitHub and OpenProject, and performs
 5. Notes
 
    After adding a project or changing its `GIT_REPO` / `AGENT` setup in
-   OpenProject, run `docker compose restart engine`. After changing
-   `docker/.env`, run `docker compose up -d engine` so compose recreates the
-   container with the new environment.
+   OpenProject, run `docker compose restart engine`. 
+   After changing `docker/.env`, run `docker compose up -d engine` so compose 
+   recreates the container with the new environment.
 
 The dashboard is served at `http://127.0.0.1:8765`
 (see [docs/DASHBOARD.md](docs/DASHBOARD.md)).
