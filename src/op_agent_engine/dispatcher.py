@@ -1156,7 +1156,6 @@ class Dispatcher:
                     work_package_id=wp.id,
                     role=agent.kind,
                     gh_token=self._gh_token(claimed.item.agent_key),
-                    use_worktree=self._settings.max_runs_per_agent > 1,
                 )
         except WorkspaceError as error:
             await self._fail_before_run(

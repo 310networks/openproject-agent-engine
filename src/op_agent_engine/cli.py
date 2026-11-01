@@ -19,6 +19,7 @@ import json
 import os
 import sys
 from collections.abc import Sequence
+from pathlib import Path
 
 from pydantic import ValidationError
 
@@ -58,6 +59,10 @@ from op_agent_engine.provision import (
 )
 from op_agent_engine.retention import CleanupReport, cleanup_run_dirs
 from op_agent_engine.store import RUNS_DIR_NAME, Run, Store
+from op_agent_engine.workspace import (
+    WorktreeCleanupReport,
+    cleanup_stale_worktrees,
+)
 
 CONFIG_ERROR_EXIT = 1
 OK_EXIT = 0
@@ -632,8 +637,24 @@ def _provision(*, apply: bool, as_json: bool, passwords: bool = False) -> int:
     return OK_EXIT if report.ok else CONFIG_ERROR_EXIT
 
 
+def _active_worktree_branches(store_path: Path) -> frozenset[str]:
+    """Branches with a running row; never remove their worktrees."""
+    if not store_path.exists():
+        return frozenset()
+    try:
+        store = Store(store_path, read_only=True)
+    except (OSError, ValueError):
+        return frozenset()
+    try:
+        return frozenset(run.branch for run in store.active_runs())
+    except Exception:
+        return frozenset()
+    finally:
+        store.close()
+
+
 def _cleanup(*, days: int | None, as_json: bool, dry_run: bool) -> int:
-    """Log retention job: remove old ``DATA_DIR/runs/<runId>`` directories."""
+    """Retention job: remove old run directories and stale worktrees."""
     try:
         settings = EngineSettings()
     except ValidationError as error:
@@ -652,12 +673,37 @@ def _cleanup(*, days: int | None, as_json: bool, dry_run: bool) -> int:
         older_than_days=retention_days,
         dry_run=dry_run,
     )
+    worktrees: WorktreeCleanupReport | None = None
+    if settings.workspace_root is not None:
+        worktrees = asyncio.run(
+            cleanup_stale_worktrees(
+                settings.workspace_root,
+                older_than_days=retention_days,
+                dry_run=dry_run,
+                active_branches=_active_worktree_branches(
+                    settings.data_dir / STORE_FILE_NAME
+                ),
+            )
+        )
+
     if as_json:
-        print(json.dumps(report.as_dict(), indent=2))
+        payload = report.as_dict()
+        payload["worktrees"] = (
+            worktrees.as_dict() if worktrees is not None else None
+        )
+        print(json.dumps(payload, indent=2))
     else:
         for line in report.summary():
             print(line)
-    return OK_EXIT if not report.errors else CONFIG_ERROR_EXIT
+        if worktrees is None:
+            print("worktree root: not configured; skipped worktree cleanup")
+        else:
+            for line in worktrees.summary():
+                print(line)
+    errors = list(report.errors)
+    if worktrees is not None:
+        errors.extend(worktrees.errors)
+    return OK_EXIT if not errors else CONFIG_ERROR_EXIT
 
 
 async def _verify_token_async(

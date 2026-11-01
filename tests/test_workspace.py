@@ -14,6 +14,7 @@ from op_agent_engine.workspace import (
     GitError,
     Workspace,
     WorkspaceError,
+    cleanup_stale_worktrees,
     cleanup_workspace,
     clone_url_for,
     prepare_workspace,
@@ -143,6 +144,9 @@ async def test_implementer_creates_branch_from_default(
     workspace = await _prepare(_workspace_root(tmp_path), git_repo)
     assert workspace.branch == "op-4-100"
     assert workspace.repo_dir == (
+        tmp_path / "ws" / "fe" / "worktrees" / "op-4-100"
+    )
+    assert workspace.base_repo_dir == (
         tmp_path / "ws" / "fe" / "repositories" / "thing"
     )
     assert workspace.standard_path.is_file()
@@ -177,6 +181,9 @@ async def test_implementer_fetches_new_default_commits(
         ["log", "--oneline", "origin/main", "--", "newer.txt"], cwd=second.repo_dir
     )
     assert "newer.txt" in log
+    # The shared clone stays detached so every run branch is free to use.
+    head = _git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=second.base_repo_dir)
+    assert head.strip() == "HEAD"
 
 
 async def test_reviewer_checks_out_existing_branch(
@@ -226,13 +233,13 @@ def test_clone_url_for() -> None:
         "https://x-access-token:tok123@github.com/acme/thing.git"
     )
 
-async def test_parallel_agents_use_separate_worktrees(
+async def test_runs_use_separate_worktrees(
     tmp_path: Path, git_repo: GitFixture
 ) -> None:
     root = _workspace_root(tmp_path)
 
-    first = await _prepare(root, git_repo, use_worktree=True)
-    second = await _prepare(root, git_repo, work_package_id=101, use_worktree=True)
+    first = await _prepare(root, git_repo)
+    second = await _prepare(root, git_repo, work_package_id=101)
 
     # Same agent, same clone, different checkouts.
     assert first.repo_dir != second.repo_dir
@@ -264,3 +271,73 @@ async def test_default_branch_is_discovered_when_not_configured(
     assert workspace.default_branch == "main"
     head = _git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=workspace.repo_dir).strip()
     assert head == "op-4-100"
+
+async def test_cleanup_stale_worktrees_removes_old_worktree(
+    tmp_path: Path, git_repo: GitFixture
+) -> None:
+    import os
+    from datetime import UTC, datetime, timedelta
+
+    root = _workspace_root(tmp_path)
+    workspace = await _prepare(root, git_repo, work_package_id=102)
+    old = (datetime.now(UTC) - timedelta(days=40)).timestamp()
+    for path in [workspace.repo_dir, *workspace.repo_dir.rglob("*")]:
+        os.utime(path, (old, old))
+
+    report = await cleanup_stale_worktrees(root, older_than_days=30)
+
+    assert report.removed_count == 1
+    assert report.removed[0].branch == "op-4-102"
+    assert not workspace.repo_dir.exists()
+    assert workspace.base_repo_dir is not None
+    assert (workspace.base_repo_dir / ".git").exists()
+    assert _git(
+        ["-C", str(workspace.base_repo_dir), "branch", "--list", "op-4-102"]
+    ).strip() == ""
+
+
+async def test_cleanup_stale_worktrees_skips_active_branch(
+    tmp_path: Path, git_repo: GitFixture
+) -> None:
+    import os
+    from datetime import UTC, datetime, timedelta
+
+    root = _workspace_root(tmp_path)
+    workspace = await _prepare(root, git_repo, work_package_id=103)
+    old = (datetime.now(UTC) - timedelta(days=40)).timestamp()
+    for path in [workspace.repo_dir, *workspace.repo_dir.rglob("*")]:
+        os.utime(path, (old, old))
+
+    report = await cleanup_stale_worktrees(
+        root, older_than_days=30, active_branches=frozenset({workspace.branch})
+    )
+
+    assert report.removed_count == 0
+    assert report.kept == 1
+    assert workspace.repo_dir.is_dir()
+
+
+async def test_cleanup_stale_worktrees_dry_run_keeps_worktree(
+    tmp_path: Path, git_repo: GitFixture
+) -> None:
+    import os
+    from datetime import UTC, datetime, timedelta
+
+    root = _workspace_root(tmp_path)
+    workspace = await _prepare(root, git_repo, work_package_id=104)
+    old = (datetime.now(UTC) - timedelta(days=40)).timestamp()
+    for path in [workspace.repo_dir, *workspace.repo_dir.rglob("*")]:
+        os.utime(path, (old, old))
+
+    report = await cleanup_stale_worktrees(
+        root, older_than_days=30, dry_run=True
+    )
+
+    assert report.removed_count == 1
+    assert workspace.repo_dir.is_dir()
+    assert workspace.base_repo_dir is not None
+    assert _git(
+        ["-C", str(workspace.base_repo_dir), "branch", "--list", "op-4-104"]
+    ).strip() != ""
+    assert "would remove" in "\n".join(report.summary())
+

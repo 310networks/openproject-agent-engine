@@ -125,9 +125,10 @@ identity — has a working default. See [docs/CONFIG.md](docs/CONFIG.md) and the
 | `Rejected`, eligible | claim, `In Progress` | fix | as implement | as implement |
 
 `On Hold` is terminal: the engine ignores the ticket until a human moves it.
-Branches are `op-<project>-<wp>` (one per ticket), at most
-`MAX_RUNS_PER_AGENT` runs per agent (default 1), and every engine comment
-starts with `ENGINE:`.
+Branches are `op-<project>-<wp>` (one per ticket). Every run uses its own git
+worktree, which is removed when the run ends; at most `MAX_RUNS_PER_AGENT` runs
+per agent (default 1) share that agent's clone. Every engine comment starts
+with `ENGINE:`.
 
 ## Documentation
 

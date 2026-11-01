@@ -3,7 +3,7 @@
 What the repository contains today: it describes the implemented system, not a
 roadmap.
 
-- **Version:** `0.2.5` (`pyproject.toml`, `docker/version.json`).
+- **Version:** `0.2.6` (`pyproject.toml`, `docker/version.json`).
 - **License:** MIT (see [`LICENSE`](../LICENSE)); open source.
 - **Package:** `op_agent_engine` (Python 3.12), installed into a container image
   and published as `kookster310/op-agent-engine`.
@@ -33,7 +33,7 @@ Named volumes hold all mutable state; there are no bind mounts:
 
 | Volume | Mount | Contents |
 |---|---|---|
-| `agent-workspace` | `/home/agent/agents` | `AGENTS.md` standards, one clone per agent, per-run worktrees when enabled |
+| `agent-workspace` | `/home/agent/agents` | `AGENTS.md` standards, one clone per agent, per-run worktrees |
 | `engine-data` | `/home/agent/.local/share/op-agent-engine` | SQLite store, `runs/<id>/`, heartbeat, pause flag, engine lock |
 | `pi-agent` | `/home/agent/.pi/agent` | pi sessions, logs, model cache, downloaded tools |
 
@@ -96,11 +96,11 @@ Three independent limits apply:
 | runs per agent | `MAX_RUNS_PER_AGENT` | `1` | scheduler (and eligibility) |
 | runs in total | `MAX_CONCURRENT_RUNS` | `1` | scheduler and eligibility |
 
-With `MAX_RUNS_PER_AGENT > 1`, each run gets its own git worktree under the
-agent workspace (`worktrees/<branch>`); the agent's shared clone stays
-detached. Workspace preparation is serialized per agent, and the worktree is
-removed after the agent exits. With the default of 1, the agent's clone is
-checked out directly.
+Every run gets its own git worktree under the agent workspace
+(`worktrees/<branch>`); the agent's shared clone stays detached, so a killed
+run cannot leave uncommitted changes in the clone used by later runs. Workspace
+preparation is serialized per agent, and the worktree is removed after the
+agent exits. `cleanup` sweeps worktrees left behind by an engine crash.
 
 ## Agents and pi runner
 
@@ -192,7 +192,8 @@ wrong OpenProject token (`--reprompt-tokens`).
 
 `meta.json` records the run identity, argv, cwd, redacted env, state, outcome,
 transition, PR URL and timings. The store keeps run history after the
-artifacts are cleaned up; `cleanup` only removes old run directories.
+artifacts are cleaned up; `cleanup` removes old run directories and stale
+worktrees.
 
 Crash recovery kills leftover process groups (using PID + start-time identity
 to survive PID reuse), marks their runs interrupted, and lets the normal
@@ -233,7 +234,7 @@ All commands read the same environment; there is no `--config` option.
 | `src/op_agent_engine/scheduler.py` | slot rules, claim protocol |
 | `src/op_agent_engine/dispatcher.py` | workspace, prompt, run, verify, transition, record |
 | `src/op_agent_engine/runners/` | generic command runner and process supervision |
-| `src/op_agent_engine/workspace.py` | clone/fetch, checkout or worktree, cleanup |
+| `src/op_agent_engine/workspace.py` | clone/fetch, per-run worktree, retention |
 | `src/op_agent_engine/outcomes.py` | implementer/reviewer result verification |
 | `src/op_agent_engine/store.py` | SQLite run store and engine lock |
 | `src/op_agent_engine/recovery.py` | startup crash recovery |
@@ -249,7 +250,7 @@ All commands read the same environment; there is no `--config` option.
 ## Tests and release
 
 - `pytest` covers eligibility tables, scheduler/slot rules, the claim protocol,
-  dispatcher outcomes, workspace preparation (including per-agent worktrees),
+  dispatcher outcomes, workspace preparation (including per-run worktrees and retention),
   store/recovery/retention, the CLI, dashboard, provisioning and Docker
   packaging. The end-to-end test drives a fake agent through a full ticket
   cycle with fake OpenProject and GitHub backends.
@@ -273,6 +274,5 @@ All commands read the same environment; there is no `--config` option.
   only needs its `GIT_REPO` value set.
 - The team is fixed; adding a member is a code change, not configuration.
 - The dashboard has no authentication and no write actions.
-- Agents can run in parallel only with per-run worktrees; the default per-agent
-  limit is 1.
+- Every run uses a per-run worktree; the default per-agent limit is 1.
 - A single engine instance is assumed; the lock prevents a second one.

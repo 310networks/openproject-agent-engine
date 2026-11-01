@@ -8,10 +8,15 @@ Each agent has a workspace under ``WORKSPACE_ROOT``:
 
 Branch naming: ``op-<projectId>-<workPackageId>``.
 
-The engine keeps one clone per agent. When ``MAX_RUNS_PER_AGENT`` allows more
-than one run at a time, each run gets its own git worktree under
-``worktrees/<branch>`` instead of sharing the clone's checkout; the scheduler
-still allows only one run per work package.
+The engine keeps one clone per agent. Every run gets its own git worktree
+under ``worktrees/<branch>`` instead of sharing the clone's checkout. The
+shared clone stays detached, so a run that times out or is killed leaves its
+uncommitted work in its own worktree and cannot dirty the clone used by later
+runs. The scheduler still allows only one run per work package and enforces
+``MAX_RUNS_PER_AGENT``.
+
+The worktree is removed after every run. ``cleanup_stale_worktrees`` removes
+worktrees left behind by an engine crash or a failed removal.
 
 Checkout rules:
 
@@ -27,6 +32,7 @@ import asyncio
 import contextlib
 import shutil
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from op_agent_engine.logging import get_logger
@@ -176,7 +182,6 @@ async def prepare_workspace(
     role: str,
     gh_token: str | None = None,
     clone_url: str | None = None,
-    use_worktree: bool = False,
 ) -> Workspace:
     """Clone/fetch the repository and check out the run branch.
 
@@ -257,66 +262,42 @@ async def prepare_workspace(
     else:
         raise WorkspaceError(f"unknown agent kind {role!r}")
 
-    if use_worktree:
-        # A run may share the agent with another run. Give it its own working
-        # tree so the two checkouts (and the agents' edits) cannot collide.
-        # The shared clone stays detached so every run branch is free to use.
-        worktree_dir = workspace_dir / "worktrees" / branch
-        await run_git(["worktree", "prune"], cwd=repo_dir)
-        if worktree_dir.exists():
-            with contextlib.suppress(GitError):
-                await run_git(
-                    ["worktree", "remove", "--force", str(worktree_dir)],
-                    cwd=repo_dir,
-                )
-            if worktree_dir.exists():
-                shutil.rmtree(worktree_dir, ignore_errors=True)
-            await run_git(["worktree", "prune"], cwd=repo_dir)
-        if not await _head_is_detached(repo_dir):
-            await run_git(
-                ["checkout", "--quiet", "--detach", base],
-                cwd=repo_dir,
-            )
-        worktree_dir.parent.mkdir(parents=True, exist_ok=True)
+    # Every run gets its own working tree so checkouts (and the agents'
+    # edits) cannot collide. The shared clone stays detached so every run
+    # branch is free to use and a killed run cannot leave it dirty.
+    worktree_dir = workspace_dir / "worktrees" / branch
+    await _remove_worktree(repo_dir, worktree_dir)
+    if not await _head_is_detached(repo_dir):
         await run_git(
-            [
-                "worktree",
-                "add",
-                "--force",
-                "-B",
-                branch,
-                str(worktree_dir),
-                base,
-            ],
+            ["checkout", "--quiet", "--detach", base],
             cwd=repo_dir,
         )
-        logger.info(
-            "workspace ready: %s on branch %s (worktree of %s)",
-            worktree_dir,
+    worktree_dir.parent.mkdir(parents=True, exist_ok=True)
+    await run_git(
+        [
+            "worktree",
+            "add",
+            "--force",
+            "-B",
             branch,
-            repo_dir,
-            extra={"repo_dir": str(worktree_dir), "branch": branch},
-        )
-        return Workspace(
-            repo_dir=worktree_dir,
-            branch=branch,
-            standard_path=standard_path,
-            default_branch=resolved_default_branch,
-            base_repo_dir=repo_dir,
-        )
-
-    await run_git(["checkout", "--quiet", "-B", branch, base], cwd=repo_dir)
+            str(worktree_dir),
+            base,
+        ],
+        cwd=repo_dir,
+    )
     logger.info(
-        "workspace ready: %s on branch %s",
-        repo_dir,
+        "workspace ready: %s on branch %s (worktree of %s)",
+        worktree_dir,
         branch,
-        extra={"repo_dir": str(repo_dir), "branch": branch},
+        repo_dir,
+        extra={"repo_dir": str(worktree_dir), "branch": branch},
     )
     return Workspace(
-        repo_dir=repo_dir,
+        repo_dir=worktree_dir,
         branch=branch,
         standard_path=standard_path,
         default_branch=resolved_default_branch,
+        base_repo_dir=repo_dir,
     )
 
 
@@ -328,16 +309,231 @@ async def _head_is_detached(repo_dir: Path) -> bool:
     return False
 
 
+async def _remove_worktree(base_repo_dir: Path, worktree_dir: Path) -> None:
+    """Remove *worktree_dir* and its git metadata, if present."""
+    await run_git(["worktree", "prune"], cwd=base_repo_dir)
+    if worktree_dir.exists():
+        with contextlib.suppress(GitError):
+            await run_git(
+                ["worktree", "remove", "--force", str(worktree_dir)],
+                cwd=base_repo_dir,
+            )
+        if worktree_dir.exists():
+            shutil.rmtree(worktree_dir, ignore_errors=True)
+        await run_git(["worktree", "prune"], cwd=base_repo_dir)
+
+
 async def cleanup_workspace(workspace: Workspace) -> None:
-    """Remove a per-run worktree; a shared clone is left alone."""
+    """Remove a per-run worktree; the shared clone is left alone.
+
+    Cleanup is best-effort: a git failure must not turn a finished run into an
+    engine exception. The stale-worktree sweep retries leftovers later.
+    """
     if workspace.base_repo_dir is None:
         return
     with contextlib.suppress(GitError):
-        await run_git(
-            ["worktree", "remove", "--force", str(workspace.repo_dir)],
-            cwd=workspace.base_repo_dir,
+        await _remove_worktree(workspace.base_repo_dir, workspace.repo_dir)
+
+
+# -- stale worktree retention -------------------------------------------------
+
+
+@dataclass(frozen=True)
+class RemovedWorktree:
+    """One worktree selected (and unless dry-run, removed) by cleanup."""
+
+    path: Path
+    branch: str
+    age_seconds: float
+    size_bytes: int
+
+
+@dataclass(frozen=True)
+class WorktreeCleanupReport:
+    """Result of one stale-worktree retention pass."""
+
+    root: Path
+    older_than_days: int
+    dry_run: bool
+    removed: tuple[RemovedWorktree, ...] = ()
+    kept: int = 0
+    errors: tuple[str, ...] = ()
+
+    @property
+    def removed_count(self) -> int:
+        return len(self.removed)
+
+    @property
+    def bytes_freed(self) -> int:
+        return sum(item.size_bytes for item in self.removed)
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "root": str(self.root),
+            "older_than_days": self.older_than_days,
+            "dry_run": self.dry_run,
+            "removed_count": self.removed_count,
+            "kept": self.kept,
+            "bytes_freed": self.bytes_freed,
+            "removed": [
+                {
+                    "path": str(item.path),
+                    "branch": item.branch,
+                    "age_hours": round(item.age_seconds / 3600, 1),
+                    "size_bytes": item.size_bytes,
+                }
+                for item in self.removed
+            ],
+            "errors": list(self.errors),
+        }
+
+    def summary(self) -> list[str]:
+        verb = "would remove" if self.dry_run else "removed"
+        lines = [
+            f"worktree root: {self.root}",
+            f"older than: {self.older_than_days} day(s)",
+            f"{verb}: {self.removed_count} worktree(s), {self.bytes_freed} bytes",
+            f"kept: {self.kept}",
+        ]
+        for item in self.removed:
+            lines.append(
+                f"  - {item.branch}: {item.size_bytes} bytes, "
+                f"{item.age_seconds / 3600:.1f}h old"
+            )
+        for error in self.errors:
+            lines.append(f"  ! {error}")
+        return lines
+
+
+def _worktree_usage(path: Path) -> tuple[int, float]:
+    """Return ``(bytes, newest_mtime)`` for a worktree directory."""
+    total = 0
+    newest = path.stat().st_mtime
+    for child in path.rglob("*"):
+        try:
+            stat = child.stat()
+        except OSError:
+            continue
+        newest = max(newest, stat.st_mtime)
+        if child.is_file() and not child.is_symlink():
+            total += stat.st_size
+    return total, newest
+
+
+def _base_repo_for_worktree(worktree_dir: Path) -> Path | None:
+    """Resolve the shared clone from a linked worktree's ``.git`` file."""
+    try:
+        content = (worktree_dir / ".git").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    if not content.startswith("gitdir:"):
+        return None
+    git_dir = Path(content.split(":", 1)[1].strip())
+    # <clone>/.git/worktrees/<branch>
+    if (
+        git_dir.is_absolute()
+        and git_dir.parent.name == "worktrees"
+        and git_dir.parent.parent.name == ".git"
+    ):
+        return git_dir.parent.parent.parent
+    return None
+
+
+async def cleanup_stale_worktrees(
+    root: Path,
+    *,
+    older_than_days: int,
+    dry_run: bool = False,
+    now: datetime | None = None,
+    active_branches: frozenset[str] = frozenset(),
+) -> WorktreeCleanupReport:
+    """Remove worktrees older than *older_than_days*.
+
+    A worktree is normally removed immediately after its run. This sweep only
+    handles leftovers from an engine crash, a failed removal, or a ticket that
+    was closed while a run was still in flight. ``active_branches`` protects
+    worktrees that the store still reports as running.
+    """
+    if older_than_days < 0:
+        raise ValueError("older_than_days must not be negative")
+
+    current = now or datetime.now(UTC)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=UTC)
+    cutoff = current - timedelta(days=older_than_days)
+
+    removed: list[RemovedWorktree] = []
+    errors: list[str] = []
+    kept = 0
+
+    try:
+        agent_dirs = sorted(root.iterdir(), key=lambda item: item.name)
+    except FileNotFoundError:
+        agent_dirs = []
+    except OSError as error:
+        return WorktreeCleanupReport(
+            root=root,
+            older_than_days=older_than_days,
+            dry_run=dry_run,
+            errors=(f"cannot read {root}: {error}",),
         )
-    if workspace.repo_dir.exists():
-        shutil.rmtree(workspace.repo_dir, ignore_errors=True)
-    with contextlib.suppress(GitError):
-        await run_git(["worktree", "prune"], cwd=workspace.base_repo_dir)
+
+    for agent_dir in agent_dirs:
+        worktrees_dir = agent_dir / "worktrees"
+        try:
+            worktrees = sorted(worktrees_dir.iterdir(), key=lambda item: item.name)
+        except FileNotFoundError:
+            continue
+        except OSError as error:
+            errors.append(f"cannot read {worktrees_dir}: {error}")
+            continue
+        for worktree_dir in worktrees:
+            branch = worktree_dir.name
+            try:
+                if not worktree_dir.is_dir() or worktree_dir.is_symlink():
+                    continue
+                size_bytes, newest_mtime = _worktree_usage(worktree_dir)
+            except OSError as error:
+                errors.append(f"cannot stat {worktree_dir}: {error}")
+                continue
+            if branch in active_branches:
+                kept += 1
+                continue
+            modified = datetime.fromtimestamp(newest_mtime, tz=UTC)
+            if modified >= cutoff:
+                kept += 1
+                continue
+            age_seconds = max(0.0, (current - modified).total_seconds())
+            if not dry_run:
+                base_repo = _base_repo_for_worktree(worktree_dir)
+                if base_repo is None:
+                    errors.append(
+                        f"cannot locate the shared clone for {worktree_dir}"
+                    )
+                    continue
+                try:
+                    await _remove_worktree(base_repo, worktree_dir)
+                    # The worktree is gone; drop the local branch too. Its
+                    # remote-tracking branch and any pushed commits remain.
+                    with contextlib.suppress(GitError):
+                        await run_git(["branch", "-D", branch], cwd=base_repo)
+                except (GitError, OSError) as error:
+                    errors.append(f"cannot remove {worktree_dir}: {error}")
+                    continue
+            removed.append(
+                RemovedWorktree(
+                    path=worktree_dir,
+                    branch=branch,
+                    age_seconds=age_seconds,
+                    size_bytes=size_bytes,
+                )
+            )
+
+    return WorktreeCleanupReport(
+        root=root,
+        older_than_days=older_than_days,
+        dry_run=dry_run,
+        removed=tuple(removed),
+        kept=kept,
+        errors=tuple(errors),
+    )
