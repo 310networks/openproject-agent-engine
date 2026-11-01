@@ -272,14 +272,14 @@ class RepoConfig(BaseModel):
         return stripped or None
 
 
-# The project custom field that holds each project's GitHub repository.
+# The project attribute that holds each project's GitHub repository.
 GIT_REPO_FIELD = "GIT_REPO"
 
 
 class RepoDiscoveryConfig(BaseModel):
     """How env-based deployments find each project's repository.
 
-    The repository is read from each project's ``GIT_REPO`` custom field.
+    The repository is read from each project's ``GIT_REPO`` project attribute.
     ``dir_override`` exists for a single explicit project that wants a clone
     directory other than the repository name.
     """
@@ -314,8 +314,8 @@ class ProjectConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     identifier: str
-    # ``None`` means the repository is resolved from the project custom field
-    # at startup (or the project is a ``*`` discovery placeholder).
+    # ``None`` means the repository is resolved from the project attribute at
+    # startup (or the project is a ``*`` discovery placeholder).
     repo: RepoConfig | None = None
     enabled: bool = True
 
@@ -616,7 +616,7 @@ class WorkflowConfig(BaseModel):
             )
             lines.append(f"  - {project.identifier}: {repo} [{state}]")
         lines.append(
-            f"repo field: {GIT_REPO_FIELD} "
+            f"repo attribute: {GIT_REPO_FIELD} "
             f"(default branch: {self.repo_discovery.default_branch or 'auto'})"
         )
         lines.append(f"agents: {len(self.agents)}")
@@ -687,7 +687,7 @@ class WorkflowConfig(BaseModel):
         The team, the runners and the status defaults are baked in; the
         deployment supplies its OpenProject URL, project(s), agent CLI and one
         token per agent. Each project's repository is read from its ``GIT_REPO``
-        project custom field at startup (see :func:`expand_projects`).
+        project attribute at startup (see :func:`expand_projects`).
         """
         env = os.environ if environ is None else environ
         missing = [
@@ -846,7 +846,7 @@ class EngineSettings(BaseSettings):
     agent_timeout_seconds: int = Field(default=3600, gt=0)
 
     # Single-project clone-directory override; repositories normally come
-    # from each project's GIT_REPO custom field.
+    # from each project's GIT_REPO project attribute.
     github_repo_dir: str | None = None
     github_default_branch: str | None = None
 

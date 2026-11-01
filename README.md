@@ -83,11 +83,12 @@ The dashboard is served at `http://127.0.0.1:8765`
 | `OP_TOKEN_REVIEWER` | token of `codeReviewer` |
 | `OPENROUTER_API_KEY` (or other provider key) | one model provider key for the agent CLI |
 
-Each monitored project must have a **project** custom field named `GIT_REPO`
+Each monitored project must have a **project attribute** named `GIT_REPO`
 containing its GitHub repository
-(`owner/name` or a github.com URL). Create the field once in
-**Administration → Custom fields → Projects** and choose **For all projects**.
-One field is assigned to every project, so there is no per-project enablement —
+(`owner/name` or a github.com URL). Create it once in
+**Administration → Projects → Project attributes** and choose **For all
+projects**.
+One attribute is assigned to every project, so there is no per-project enablement —
 the same one-time step as the `AGENT` field. `docker/provision-users.sh`
 explains this during setup.
 
@@ -130,7 +131,7 @@ starts with `ENGINE:`.
 | Doc | Contents |
 |---|---|
 | [docs/DOCKER.md](docs/DOCKER.md) | image internals, volumes, releases, troubleshooting |
-| [docs/OPENPROJECT_SETUP.md](docs/OPENPROJECT_SETUP.md) | statuses, `GIT_REPO`/`AGENT` custom fields, Agent Worker role, admin engine user, tokens |
+| [docs/OPENPROJECT_SETUP.md](docs/OPENPROJECT_SETUP.md) | statuses, `GIT_REPO` project attribute, `AGENT` work-package custom field, Agent Worker role, admin engine user |
 | [docs/CONFIG.md](docs/CONFIG.md) | every environment variable, provider keys, agent team, CLI reference |
 | [docs/DASHBOARD.md](docs/DASHBOARD.md) | read-only web UI |
 | [docs/RUNBOOK.md](docs/RUNBOOK.md) | status, pause, run inspection, `On Hold` handling, recovery |

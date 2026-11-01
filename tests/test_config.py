@@ -66,7 +66,7 @@ def test_env_builds_the_whole_workflow() -> None:
     )
 
     assert [project.identifier for project in config.projects] == ["demo"]
-    # The repository is resolved from the GIT_REPO project custom field at
+    # The repository is resolved from the GIT_REPO project attribute at
     # startup.
     assert config.projects[0].repo is None
     assert set(config.agents) == {"FRONTEND", "BACKEND", "LEAD_DESIGNER", "REVIEWER"}
@@ -85,7 +85,7 @@ def test_env_summary_mentions_entities() -> None:
 
     assert "statuses: new=New" in summary
     assert "demo: <GIT_REPO> [enabled]" in summary
-    assert "repo field: GIT_REPO" in summary
+    assert "repo attribute: GIT_REPO" in summary
     assert "REVIEWER: codeReviewer (reviewer)" in summary
 
 

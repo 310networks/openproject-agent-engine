@@ -248,11 +248,12 @@ async def expand_projects(
     client: OpenProjectClient,
     config: WorkflowConfig,
 ) -> None:
-    """Fill in project repositories from each project's GIT_REPO field.
+    """Fill in project repositories from each project's GIT_REPO attribute.
 
     ``OP_PROJECT=*`` (or a comma-separated list) builds placeholder projects
-    without a repository. This resolves them from the project custom field. It
-    is a no-op for configurations that already declare a repository for every
+    without a repository. This resolves them from the project attribute (a
+    project custom field exposed on ``GET /api/v3/projects/{id}``). It is a
+    no-op for configurations that already declare a repository for every
     project (for example ``WorkflowConfig.from_mapping``).
     """
     if all(project.repo is not None for project in config.projects) and not any(
@@ -264,14 +265,7 @@ async def expand_projects(
     wildcard = any(project.identifier == "*" for project in config.projects)
     explicit = [project for project in config.projects if project.identifier != "*"]
 
-    field_id = await _resolve_project_custom_field(client, GIT_REPO_FIELD)
-    if field_id is None:
-        raise OpenProjectResolutionError(
-            f"project custom field '{GIT_REPO_FIELD}' not found in "
-            "/api/v3/projects/schema. Create it once in OpenProject "
-            "(Administration -> Custom fields -> Projects) and assign it to "
-            "all projects (For all projects)."
-        )
+    field_id = await _resolve_project_attribute_field(client, GIT_REPO_FIELD)
 
     payloads: list[dict[str, Any]] = []
     if wildcard:
@@ -300,14 +294,12 @@ async def expand_projects(
                 "OpenProject returned a project without an identifier"
             )
 
-        raw_repo = (
-            _custom_field_value(payload, field_id) if field_id is not None else None
-        )
+        raw_repo = _custom_field_value(payload, field_id)
         github = _github_repo(raw_repo) if raw_repo else None
         if raw_repo and github is None:
             raise OpenProjectResolutionError(
-                f"project '{identifier}': {GIT_REPO_FIELD} value "
-                f"{raw_repo!r} is not a GitHub repository "
+                f"project '{identifier}': project attribute {GIT_REPO_FIELD} "
+                f"value {raw_repo!r} is not a GitHub repository "
                 "(expected owner/name or a github.com URL)"
             )
         if github is None:
@@ -319,8 +311,8 @@ async def expand_projects(
                 )
                 continue
             raise OpenProjectResolutionError(
-                f"project '{identifier}' has no {GIT_REPO_FIELD} value "
-                "in OpenProject; set it in the project settings"
+                f"project '{identifier}' has no {GIT_REPO_FIELD} project "
+                "attribute value in OpenProject; set it in the project settings"
             )
 
         repo_name = github.rsplit("/", 1)[-1]
@@ -345,8 +337,8 @@ async def expand_projects(
 
     if not expanded:
         raise OpenProjectResolutionError(
-            f"no OpenProject project has a {GIT_REPO_FIELD} value; "
-            "set the field on at least one project (or set OP_PROJECT to an "
+            f"no OpenProject project has a {GIT_REPO_FIELD} project attribute "
+            "value; set it on at least one project (or set OP_PROJECT to an "
             "explicit identifier)"
         )
 
@@ -361,31 +353,87 @@ async def expand_projects(
     _validate_agent_project_scopes(config)
 
 
-async def _resolve_project_custom_field(
+def _attribute_name_key(name: str) -> str:
+    """Normalize a project attribute name for comparison.
+
+    OpenProject displays project attributes with spaces (``GIT REPO``), while
+    the engine documents them with underscores (``GIT_REPO``). Treat spaces,
+    underscores and hyphens as equivalent and compare case-insensitively.
+    """
+    return " ".join(name.replace("_", " ").replace("-", " ").split()).casefold()
+
+
+async def _resolve_project_attribute_field(
     client: OpenProjectClient, field_name: str
-) -> str | None:
-    """Return the ``customField<N>`` key for a project custom field name."""
+) -> str:
+    """Return the ``customField<N>`` key of a project attribute.
+
+    OpenProject 14+ calls project custom fields "project attributes"; the API
+    still exposes their schema via ``GET /api/v3/projects/schema`` and their
+    values on the project resource (``customField<N>``). Names are matched
+    exactly first, then case- and separator-insensitively so ``GIT_REPO`` also
+    finds a UI attribute named ``GIT REPO``.
+    """
     try:
         payload = await client.get_json("/api/v3/projects/schema")
-    except OpenProjectNotFoundError:
-        return None
-    if not isinstance(payload, dict):
-        return None
-    matches = [
-        key
-        for key, value in payload.items()
-        if isinstance(value, dict) and value.get("name") == field_name
-    ]
-    if len(matches) > 1:
+    except OpenProjectNotFoundError as error:
         raise OpenProjectResolutionError(
-            f"project custom field '{field_name}' appears more than once in "
-            "/api/v3/projects/schema"
+            f"cannot discover project attribute '{field_name}': "
+            "/api/v3/projects/schema is unavailable on this instance"
+        ) from error
+    if not isinstance(payload, dict):
+        raise OpenProjectResolutionError(
+            f"cannot discover project attribute '{field_name}': "
+            "/api/v3/projects/schema returned a non-object response"
         )
-    return matches[0] if matches else None
+
+    candidates: list[tuple[str, dict[str, Any]]] = []
+    for key, value in payload.items():
+        if (
+            isinstance(key, str)
+            and _CUSTOM_FIELD_KEY.fullmatch(key)
+            and isinstance(value, dict)
+        ):
+            candidates.append((key, value))
+    matches = [
+        (key, value) for key, value in candidates if value.get("name") == field_name
+    ]
+    if not matches:
+        target = _attribute_name_key(field_name)
+        matches = [
+            (key, value)
+            for key, value in candidates
+            if isinstance(value.get("name"), str)
+            and _attribute_name_key(value["name"]) == target
+        ]
+    if len(matches) > 1:
+        names = ", ".join(f"{value['name']!r} ({key})" for key, value in matches)
+        raise OpenProjectResolutionError(
+            f"project attribute '{field_name}' is ambiguous in "
+            f"/api/v3/projects/schema: {names}"
+        )
+    if not matches:
+        available = ", ".join(
+            f"{value['name']!r} ({key})"
+            for key, value in candidates
+            if isinstance(value.get("name"), str)
+        )
+        raise OpenProjectResolutionError(
+            f"project attribute '{field_name}' not found in "
+            f"/api/v3/projects/schema (available: {available or 'none'}). "
+            "Create it once in OpenProject under "
+            "Administration -> Projects -> Project attributes and assign it "
+            "to all projects (For all projects)."
+        )
+    return matches[0][0]
 
 
 def _custom_field_value(payload: dict[str, Any], field_id: str) -> str | None:
-    """Extract a project custom-field value from a HAL project resource."""
+    """Extract a project attribute value from a HAL project resource.
+
+    Project attributes are exposed as ``customField<N>`` (top level for text
+    fields, ``_links`` for reference fields).
+    """
     value = _raw_custom_field_value(payload.get(field_id))
     if value is not None:
         return value

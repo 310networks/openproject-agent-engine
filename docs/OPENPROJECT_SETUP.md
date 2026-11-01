@@ -40,7 +40,10 @@ is set **once per project**; there is nothing to select on each work package.
 4. In each monitored project's Overview page (openproject.example.com/projects/project-identifier), set `GIT_REPO` to its repository
    (`owner/name` or `https://github.com/owner/name`).
 
-The name is matched exactly; it must be `GIT_REPO`.
+The name is matched case- and separator-insensitively: `GIT_REPO`, `GIT REPO`,
+and `git-repo` all resolve to the same attribute. The engine finds its
+`customField<N>` id in `/api/v3/projects/schema` and reads the value from
+the project resource (`GET /api/v3/projects/{id}`).
 
 With `OP_PROJECT=*` the engine monitors every active project with a non-empty
 `GIT_REPO`; explicitly named projects must have one set.

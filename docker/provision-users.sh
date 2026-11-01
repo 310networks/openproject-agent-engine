@@ -7,13 +7,13 @@
 # once, then interviews you for one API token per account (sign in at your
 # OpenProject URL -> My account -> Access tokens).
 #
-# Before running it, create two custom fields in OpenProject (the API cannot
-# create them):
-#   * the work-package list field AGENT (or OP_AGENT_FIELD)
-#   * the project text field GIT_REPO
-# The engine reads each project's GitHub repository from GIT_REPO, so any
-# project with that field set (and the AGENT field enabled) can be monitored
-# simply by setting OP_PROJECT=*.
+# Before running it, set up two fields in OpenProject (the API cannot create
+# them):
+#   * the AGENT work-package list custom field (or OP_AGENT_FIELD)
+#   * the GIT_REPO project attribute (text)
+# The engine reads each project's GitHub repository from the GIT_REPO project
+# attribute, so any project with that value set (and the AGENT field enabled)
+# can be monitored simply by setting OP_PROJECT=*.
 #
 # Tokens are written to .env next to docker-compose.yml (mode 0600), so nothing
 # has to be hand-edited and compose picks them up on the next start.
@@ -236,10 +236,10 @@ esac
 export GITHUB_REPO_DIR
 
 say ""
-info "Repositories are read from the GIT_REPO project custom field."
-info "Create it once under Administration -> Custom fields -> Projects"
-info "(text format) and assign it to all projects."
-info "The AGENT work-package custom field is set up the same way."
+info "Repositories are read from the GIT_REPO project attribute."
+info "Create it once under Administration -> Projects -> Project attributes"
+info "(text format) and make it available for all projects."
+info "The AGENT work-package custom field is set up separately."
 
 agent=$(ask_text "Agent CLI (pi or opencode)" "$(get_env AGENT)")
 [ -n "$agent" ] || agent=pi

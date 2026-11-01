@@ -458,7 +458,7 @@ async def test_link_field_without_allowed_values_is_reported() -> None:
     assert "returned no allowedValues" in message
 
 
-# -- repository discovery (GIT_REPO project custom field) -------------------
+# -- repository discovery (GIT_REPO project attribute) ----------------------
 
 
 def project_with_repo(
@@ -495,6 +495,35 @@ async def test_git_repo_field_sets_the_repository() -> None:
     assert config.projects[0].repo.github == "acme/demo"
     assert config.projects[0].repo.dir == "demo"
     assert config.projects[0].repo.default_branch is None
+
+
+async def test_git_repo_name_matches_spaces_case_and_hyphens() -> None:
+    # OpenProject's Project attributes UI commonly stores the display name
+    # "GIT REPO", while the engine refers to GIT_REPO.
+    fake = make_fake(
+        projects=[project_with_repo("demo")],
+        project_schema={"customField5": {"type": "String", "name": "GIT REPO"}},
+    )
+    config = make_config(projects=[{"identifier": "demo"}])
+
+    await resolve(fake, config)
+
+    assert config.projects[0].repo is not None
+    assert config.projects[0].repo.github == "acme/demo"
+
+
+async def test_ambiguous_git_repo_attribute_names_are_rejected() -> None:
+    fake = make_fake(
+        projects=[project_with_repo("demo")],
+        project_schema={
+            "customField5": {"type": "String", "name": "GIT-REPO"},
+            "customField6": {"type": "String", "name": "GIT REPO"},
+        },
+    )
+    config = make_config(projects=[{"identifier": "demo"}])
+
+    with pytest.raises(OpenProjectResolutionError, match="ambiguous"):
+        await resolve(fake, config)
 
 
 async def test_git_repo_accepts_a_github_url() -> None:
@@ -536,7 +565,9 @@ async def test_wildcard_discovers_active_projects_with_a_repo() -> None:
 async def test_missing_git_repo_field_names_the_manual_setup() -> None:
     fake = make_fake(
         projects=[project_with_repo("demo")],
-        project_schema={},
+        project_schema={
+            "customField7": {"type": "String", "name": "OTHER ATTRIBUTE"}
+        },
     )
     config = make_config(projects=[{"identifier": "demo"}])
 
@@ -544,8 +575,9 @@ async def test_missing_git_repo_field_names_the_manual_setup() -> None:
         await resolve(fake, config)
 
     message = str(excinfo.value)
-    assert "GIT_REPO" in message
-    assert "Administration -> Custom fields -> Projects" in message
+    assert "project attribute 'GIT_REPO' not found" in message
+    assert "'OTHER ATTRIBUTE' (customField7)" in message
+    assert "Administration -> Projects -> Project attributes" in message
 
 
 async def test_git_repo_must_be_a_github_repository() -> None:

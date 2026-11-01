@@ -3,7 +3,7 @@
 What the repository contains today. This replaces the old `PLAN.md` design
 document: it describes the implemented system, not a roadmap.
 
-- **Version:** `0.2.2` (`pyproject.toml`, `docker/version.json`).
+- **Version:** `0.2.3` (`pyproject.toml`, `docker/version.json`).
 - **Package:** `op_agent_engine` (Python 3.12), installed into a container image
   and published as `kookster310/op-agent-engine`.
 - **Deployment:** Docker Compose only. Nothing is built or installed on the
@@ -247,9 +247,9 @@ All commands read the same environment; there is no `--config` option.
 ## Known limits
 
 - Multiple OpenProject projects per deployment, but one GitHub repository per
-  project. The `GIT_REPO` and `AGENT` custom fields are created once and
-  assigned to all projects; a newly added project only needs its `GIT_REPO`
-  value set.
+  project. The `GIT_REPO` project attribute and `AGENT` work-package custom
+  field are created once and assigned to all projects; a newly added project
+  only needs its `GIT_REPO` value set.
 - The team is fixed; adding a member is a code change, not configuration.
 - opencode is opt-in at image build time (`INSTALL_OPENCODE=true`).
 - The dashboard has no authentication and no write actions.

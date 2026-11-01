@@ -56,17 +56,19 @@ whitespace-insensitively, so `In Progress` also matches OpenProject's default
 
 ## Repositories
 
-Each project supplies its GitHub repository through a **project** custom
-field (`GIT_REPO` by default). The value may be `owner/name` or a github.com
-URL; the engine stores the short form. The field is read at startup from
-`GET /api/v3/projects/schema` and each project resource, so `OP_PROJECT=*`
-monitors every active project that has it set.
+Each project supplies its GitHub repository through the **project attribute**
+named `GIT_REPO`. The value may be `owner/name` or a github.com URL; the
+engine stores the short form. At startup the engine looks up the attribute's
+`customField<N>` id in `GET /api/v3/projects/schema` and reads its value from
+`GET /api/v3/projects/{id}`, so `OP_PROJECT=*` monitors every active project
+that has it set. Names are matched case- and separator-insensitively, so
+`GIT_REPO`, `GIT REPO`, and `git-repo` are equivalent.
 
-Create it once in OpenProject under **Administration → Custom fields →
-Projects**, choose a text format, and choose **For all projects** (the API
-cannot create custom fields). One field is assigned to every project, so there
-is no per-project enablement — the same manual step as the `AGENT`
-work-package field; see
+Create it once in OpenProject under **Administration → Projects → Project
+attributes**, choose a text format, and make it available for **all
+projects** (the API cannot create it). One attribute is assigned to every
+project, so there is no per-project enablement — the same manual step as the
+`AGENT` work-package field; see
 [OPENPROJECT_SETUP.md](OPENPROJECT_SETUP.md#3-project-attribute-git_repo).
 
 `GITHUB_REPO_DIR` is a single-project clone-directory override. For multiple
@@ -78,7 +80,7 @@ override that discovery.
 
 ### Applying project changes
 
-`GIT_REPO` and the project list are resolved when the engine starts. After
+The `GIT_REPO` project attribute and the project list are resolved when the engine starts. After
 adding a project or changing a project's `GIT_REPO` / `AGENT` settings in
 OpenProject, restart the engine process:
 
@@ -165,7 +167,7 @@ Set these in `.env` or your shell; the engine never reads them.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `OP_AGENT_ENGINE_TAG` | `latest` | image tag to run, e.g. `0.2.1` to pin a release |
+| `OP_AGENT_ENGINE_TAG` | `latest` | image tag to run, e.g. `0.2.3` to pin a release |
 | `DASHBOARD_BIND` | `127.0.0.1` | host interface that publishes `DASHBOARD_PORT`; the dashboard has no authentication |
 
 ## Dispatching rules
