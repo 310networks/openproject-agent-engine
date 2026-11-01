@@ -87,9 +87,12 @@ process groups only when the recorded process start time still matches
 
 ## Retention
 
-`cleanup` removes `DATA_DIR/runs/<id>` older than `RUN_RETENTION_DAYS`
-(`--dry-run`, `--days`, `--json`). Nothing runs it on a schedule by itself, so
-add one cron entry on the host:
+`cleanup` removes `DATA_DIR/runs/<id>` and worktrees left behind by a crashed
+run when they are older than `RUN_RETENTION_DAYS` (`--dry-run`, `--days`,
+`--json`). Normal runs remove their own worktree as soon as the agent exits, so
+this only sweeps leftovers. Worktrees whose branch still has a `running` row
+in the store are never removed. Nothing runs `cleanup` on a schedule by itself,
+so add one cron entry on the host:
 
 ```cron
 0 4 * * * cd /opt/op-agent-engine && docker compose run --rm cleanup

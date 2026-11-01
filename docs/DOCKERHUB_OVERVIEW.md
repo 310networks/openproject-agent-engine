@@ -21,7 +21,7 @@ docker pull kookster310/op-agent-engine
 | Tag | Meaning |
 |---|---|
 | `latest` | newest build from `main` |
-| `<version>`, e.g. `0.2.5` | a release, pinned and reproducible |
+| `<version>`, e.g. `0.2.6` | a release, pinned and reproducible |
 | `sha-<short>` | one commit, useful for bisecting |
 
 `linux/amd64` only. The engine itself is architecture independent, but the
@@ -83,7 +83,7 @@ push to and merge in.
 Pin a release in `.env` instead of tracking `latest`:
 
 ```
-OP_AGENT_ENGINE_TAG=0.2.5
+OP_AGENT_ENGINE_TAG=0.2.6
 ```
 
 ## Required environment variables
@@ -129,8 +129,9 @@ Fixed in the image, one OpenProject account and one token each:
 | `Rejected`, eligible | claim, `In Progress` | fix | as implement | as implement |
 
 `On Hold` is terminal until a human moves the ticket. Branches are
-`op-<project>-<wp>`, one per ticket. At most `MAX_RUNS_PER_AGENT` runs per agent
-(default 1). Every engine comment starts with `ENGINE:`.
+`op-<project>-<wp>`, one per ticket. Every run uses its own worktree, and at
+most `MAX_RUNS_PER_AGENT` runs per agent (default 1) share the agent's clone.
+Every engine comment starts with `ENGINE:`.
 
 ## Branch protection
 

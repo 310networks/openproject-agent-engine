@@ -220,13 +220,13 @@ Docker network.
 |---|---|---|
 | `POLL_INTERVAL_SECONDS` | `60` | how often OpenProject is polled |
 | `MAX_CONCURRENT_RUNS` | `1` | agent runs in parallel across all agents |
-| `MAX_RUNS_PER_AGENT` | `1` | concurrent runs per agent; the global limit still applies |
+| `MAX_RUNS_PER_AGENT` | `1` | concurrent runs per agent; each run gets its own worktree |
 | `MAX_REJECTIONS` | `3` | rejections before an agent stops retrying a work package |
 | `MAX_CRASH_RETRIES` | `2` | retries after a crashed run |
 | `RUN_TIMEOUT_SECONDS` | `3600` | hard limit per run |
 | `AGENT_TIMEOUT_SECONDS` | `3600` | hard limit per agent run (wins over the above) |
 | `STOP_GRACE_SECONDS` | `60` | shutdown budget; compose allows 90 s |
-| `RUN_RETENTION_DAYS` | `30` | `cleanup` removes older run directories |
+| `RUN_RETENTION_DAYS` | `30` | `cleanup` removes older run directories and stale worktrees |
 | `ENGINE_PAUSED` | `false` | `true` stops new runs without stopping the container |
 | `LOG_LEVEL` | `INFO` | `DEBUG` for verbose logs |
 | `WORKSPACE_ROOT` | image | agent workspaces and git clones |
