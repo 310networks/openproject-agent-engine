@@ -161,10 +161,10 @@ class StatusNames(BaseModel):
 class ProvisioningConfig(BaseModel):
     """Settings used only by ``provision`` and ``check-config`` (M8).
 
-    Roles cannot be created through the OpenProject API (docs/VERIFICATION.md
-    item 9), so the role names identify roles that an administrator creates
-    manually. The email domain is used only when ``provision`` has to create a
-    missing user; no notification is sent for memberships.
+    Roles cannot be created through the OpenProject API, so the role names
+    identify roles that an administrator creates manually. The email domain is
+    used only when ``provision`` has to create a missing user; no notification
+    is sent for memberships.
     """
 
     model_config = ConfigDict(extra="forbid")

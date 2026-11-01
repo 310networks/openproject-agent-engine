@@ -209,7 +209,7 @@ Set these in `.env` or your shell; the engine never reads them.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `OP_AGENT_ENGINE_TAG` | `latest` | image tag to run, e.g. `0.2.3` to pin a release |
+| `OP_AGENT_ENGINE_TAG` | `latest` | image tag to run, e.g. `0.2.4` to pin a release |
 | `DASHBOARD_BIND` | `127.0.0.1` | host interface that publishes `DASHBOARD_PORT`; the dashboard has no authentication |
 
 ## Dispatching rules

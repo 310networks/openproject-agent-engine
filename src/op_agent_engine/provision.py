@@ -5,7 +5,7 @@ project scopes declared in the configuration. Only users and memberships are
 written: statuses, types, workflow transitions and the ``AGENT`` custom field
 remain manual administrator setup.
 
-Verified API constraints (docs/VERIFICATION.md items 9-11):
+Verified API constraints:
 
 * ``GET /api/v3/roles`` lists roles but the roles endpoint is read-only; a
   role cannot be created through the API. ``provision`` therefore requires the

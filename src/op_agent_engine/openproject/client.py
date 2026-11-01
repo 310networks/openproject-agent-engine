@@ -1,6 +1,6 @@
 """Async OpenProject API v3 client.
 
-Verified behaviour (see ``docs/VERIFICATION.md``):
+Verified behaviour:
 
 * Auth is HTTP Basic with username ``apikey`` and the token as the password.
 * Collections expose ``_embedded.elements`` and offset pagination. OpenProject

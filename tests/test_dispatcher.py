@@ -911,7 +911,7 @@ def activity_comment(
     activity_id: int | None = None,
     author_title: str | None = None,
 ) -> dict[str, Any]:
-    """A comment activity shaped like the live API (docs/VERIFICATION.md)."""
+    """A comment activity shaped like the live API."""
     user: dict[str, Any] = {"href": f"/api/v3/users/{author_id}"}
     if author_title is not None:
         user["title"] = author_title
@@ -954,7 +954,7 @@ def reviewer_comment(
     author_id: int = REVIEWER_USER_ID,
     created_at: datetime | None = None,
 ) -> dict[str, Any]:
-    """An activity entry shaped like the live API (docs/VERIFICATION.md)."""
+    """An activity entry shaped like the live API."""
     return activity_comment(
         work_package_id,
         text,

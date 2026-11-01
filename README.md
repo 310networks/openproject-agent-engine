@@ -9,15 +9,11 @@ the engine claims work, prepares a per-agent clone, renders a prompt, runs the
 agent, verifies the outcome against GitHub and OpenProject, and performs
 **every** status transition itself. Agents never change status.
 
-## Demo
-
-![](docs/op-agent-engine-demo.gif)
-
 ## Requirements
 
 - Docker
 - OpenProject 17 (API v3) with a project, plus one-time administrator access.
-- Github repository for each project and a token that can push to it and merge pull requests.
+- GitHub repository for each project and a token that can push to it and merge pull requests.
 
 ## Quick start
 

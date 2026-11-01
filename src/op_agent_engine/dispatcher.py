@@ -1030,8 +1030,8 @@ class Dispatcher:
                     ) from None
 
     async def _post_comment(self, work_package_id: int, comment: str) -> None:
-        # Verified live (docs/VERIFICATION.md section 11): comments are created
-        # through the activities collection with a nested ``raw`` comment.
+        # Verified live: comments are created through the activities
+        # collection with a nested ``raw`` comment.
         # ``/work_packages/<id>/comments`` does not exist (HTTP 404).
         await self._client.post_json(
             f"/api/v3/work_packages/{work_package_id}/activities",
@@ -1078,8 +1078,8 @@ class Dispatcher:
         """Whether the reviewer user commented on the work package after *since*.
 
         OpenProject activities carry the comment text, the author link and the
-        creation time (verified shape, docs/VERIFICATION.md): ``comment.raw``,
-        ``_links.user`` and ``createdAt``.
+        creation time (verified shape): ``comment.raw``, ``_links.user`` and
+        ``createdAt``.
         """
         reviewer_id = self._reviewer_user_id(agent_key)
         async for activity in self._client.iter_collection(

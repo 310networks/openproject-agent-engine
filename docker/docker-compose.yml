@@ -14,7 +14,7 @@
 # container user never has to match a host UID and the whole directory can be
 # copied to another machine as-is.
 #
-#   OP_AGENT_ENGINE_TAG=0.2.3 docker compose up -d    # pin a version,
+#   OP_AGENT_ENGINE_TAG=0.2.4 docker compose up -d    # pin a version,
 #                                                    # default is `latest`
 #
 # The image itself is built and published by .github/workflows/docker.yml;
