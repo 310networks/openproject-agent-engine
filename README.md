@@ -36,8 +36,9 @@ agent, verifies the outcome against GitHub and OpenProject, and performs
    stored). The model is asked for without the provider prefix
    (`deepseek/deepseek-v4.1-flash-1017`); the script writes
    `AGENT_MODEL=openrouter/deepseek/deepseek-v4.1-flash-1017` and stores the
-   provider's key itself. If you want a different model per agent it asks for
-   those too; they all keep the one provider (`AGENT_MODEL_<AGENT>`).
+   provider's key itself. It also asks whether the agents share that model or
+   each names its own (`AGENT_MODEL_<AGENT>`); either way they stay on the one
+   provider.
 
    It creates the engine user and one account per agent, prints each generated
    password at that account's token prompt, verifies every token and writes to

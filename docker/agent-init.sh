@@ -329,6 +329,21 @@ esac
 # The model is one setting for the engine (AGENT_MODEL=<provider>/<model>), but
 # two questions here: the provider is also what selects the credential variable.
 existing_model=$(get_env AGENT_MODEL)
+if [ -z "$existing_model" ]; then
+  # A deployment that names a model per agent has no AGENT_MODEL; offer one of
+  # those as the default so switching back to a shared model is one Enter.
+  for name in \
+    AGENT_MODEL_FRONTEND \
+    AGENT_MODEL_BACKEND \
+    AGENT_MODEL_DESIGNER \
+    AGENT_MODEL_REVIEWER
+  do
+    existing_model=$(get_env "$name")
+    if [ -n "$existing_model" ]; then
+      break
+    fi
+  done
+fi
 provider_default=
 model_default=$existing_model
 case "$existing_model" in
@@ -349,26 +364,20 @@ provider=$(ask_text "Model provider" "$provider_default")
 provider=$(printf '%s' "$provider" | tr '[:upper:]' '[:lower:]')
 [ -n "$provider" ] || die "a model provider is required"
 
-say ""
-info "The model id only - the provider prefix is added for you."
-model=$(ask_text "Model (e.g. deepseek/deepseek-v4.1-flash-1017)" "$model_default")
-case "$model" in
-  "$provider"/*) model=${model#"$provider"/} ;;
-esac
-case "$model" in
-  "" ) die "a model id is required" ;;
-  *" "*|*"	"*) die "the model id must be one token (no spaces)" ;;
-esac
-agent_model="${provider}/${model}"
-
-# Per-agent overrides: one shared model unless an agent is given its own. The
-# provider is asked for once, so every override keeps it and stays on the one
+# One model for every agent, or one model per agent. The provider is asked for
+# once either way, so every model keeps it and the deployment stays on one
 # provider key.
 say ""
-info "Every agent uses $agent_model unless you give it its own model."
-different=$(ask_text "A different model per agent? (y/N)" "n")
-case "$different" in
+info "All agents can share one model, or each can name its own."
+info "Either way they stay on the provider $provider."
+separate=$(ask_text "A separate model for each agent? (y/N)" "n")
+case "$separate" in
   y|Y|yes|YES)
+    say ""
+    info "The model id only - the provider prefix is added for you."
+    info "Press Enter to leave an agent on the CLI's own default model."
+    agent_model=
+    configured=0
     for entry in \
       FRONTEND:AGENT_MODEL_FRONTEND \
       BACKEND:AGENT_MODEL_BACKEND \
@@ -380,7 +389,7 @@ case "$different" in
       existing=$(get_env "$name")
       case "$existing" in
         "$provider"/*) default=${existing#"$provider"/} ;;
-        "") default=$model ;;
+        "") default=$model_default ;;
         *) default=$existing ;;
       esac
       override=$(ask_text "$agent_name model" "$default")
@@ -390,16 +399,34 @@ case "$different" in
       case "$override" in
         *" "*|*"	"*) die "the model id for $agent_name must be one token (no spaces)" ;;
       esac
-      if [ -z "$override" ] || [ "$override" = "$model" ]; then
-        # Same as the shared model: do not store a duplicate.
-        unset_env "$name"
-      else
+      if [ -n "$override" ]; then
         set_env "$name" "${provider}/${override}"
         ok "$name: ${provider}/${override}"
+        configured=1
+      else
+        unset_env "$name"
+        warn "$agent_name: no model; the CLI's own default is used"
       fi
     done
+    [ "$configured" -eq 1 ] ||
+      die "no agent model was entered; re-run and answer n for one shared model"
+    if [ -n "$(get_env AGENT_MODEL)" ]; then
+      info "removing AGENT_MODEL; each agent names its own model"
+      unset_env AGENT_MODEL
+    fi
     ;;
   *)
+    say ""
+    info "The model id only - the provider prefix is added for you."
+    model=$(ask_text "Model (e.g. deepseek/deepseek-v4.1-flash-1017)" "$model_default")
+    case "$model" in
+      "$provider"/*) model=${model#"$provider"/} ;;
+    esac
+    case "$model" in
+      "" ) die "a model id is required" ;;
+      *" "*|*"	"*) die "the model id must be one token (no spaces)" ;;
+    esac
+    agent_model="${provider}/${model}"
     for name in \
       AGENT_MODEL_FRONTEND \
       AGENT_MODEL_BACKEND \
@@ -552,8 +579,13 @@ case "$project" in
     ;;
 esac
 set_env AGENT "$agent"
-set_env AGENT_MODEL "$AGENT_MODEL"
-ok "model: $AGENT_MODEL"
+if [ -n "$AGENT_MODEL" ]; then
+  set_env AGENT_MODEL "$AGENT_MODEL"
+  ok "model: $AGENT_MODEL"
+else
+  unset_env AGENT_MODEL
+  ok "model: one per agent, see AGENT_MODEL_*"
+fi
 set_env OP_ENGINE_TOKEN "$engine_token"
 set_env OP_TOKEN_FRONTEND "$frontend_token"
 set_env OP_TOKEN_BACKEND "$backend_token"

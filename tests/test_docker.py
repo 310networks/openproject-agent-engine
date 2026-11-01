@@ -337,9 +337,15 @@ def test_agent_init_offers_per_agent_models_from_one_provider() -> None:
     """One provider, but an agent may use another model from it."""
     script = (DOCKER_DIR / "agent-init.sh").read_text()
 
-    assert 'ask_text "A different model per agent? (y/N)"' in script
+    assert 'ask_text "A separate model for each agent? (y/N)"' in script
+    # Asked before any model prompt, so nothing is entered twice.
+    assert script.index("A separate model for each agent?") < script.index(
+        'ask_text "Model (e.g.'
+    )
     for variable in AGENT_MODEL_VARS.values():
         assert variable in script, variable
+    # Switching back to a shared model prefills from an override.
+    assert 'existing_model=$(get_env "$name")' in script
     # The provider is asked once and prefixed onto every override, so the
     # script cannot produce the mixed-provider configuration check-config
     # rejects.

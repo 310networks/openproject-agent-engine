@@ -59,9 +59,11 @@ means joining them yourself.
 
 `AGENT_MODEL_<AGENT>` overrides the shared model for one agent
 (`AGENT_MODEL_FRONTEND`, `AGENT_MODEL_BACKEND`, `AGENT_MODEL_DESIGNER`,
-`AGENT_MODEL_REVIEWER`); without one, the agent uses `AGENT_MODEL`. The
-deployment still has **one provider**, because it stores one provider key: a
-model override may name a different model but not a different provider.
+`AGENT_MODEL_REVIEWER`); without one, the agent uses `AGENT_MODEL`. A
+deployment can therefore name a model per agent and leave `AGENT_MODEL` unset
+entirely — an agent with neither uses the CLI's own default. The deployment
+still has **one provider**, because it stores one provider key: a model
+override may name a different model but not a different provider.
 `check-config` rejects a mix (`one model provider per deployment`), and
 `agent-init.sh` asks for the provider once and prefixes every model with it.
 
