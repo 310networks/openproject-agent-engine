@@ -26,6 +26,8 @@ EXAMPLE_ENV = {
     "OP_BASE_URL": "https://openproject.example.com",
     "OP_PROJECT": "example-project",
     "AGENT": "pi",
+    "AGENT_MODEL": "openrouter/deepseek/deepseek-v4.1-flash-1017",
+    "OPENROUTER_API_KEY": "sk-or-test",
     "OP_ENGINE_TOKEN": "engine-token",
     "OP_TOKEN_FRONTEND": "frontend-token",
     "OP_TOKEN_BACKEND": "backend-token",
@@ -119,6 +121,7 @@ def test_check_config_json(capsys: pytest.CaptureFixture[str]) -> None:
     assert payload["projects"][0]["github"] is None
     assert payload["repo_field"] == "GIT_REPO"
     assert payload["resolved"] is None
+    assert payload["provider_credentials"]["level"] == "ok"
 
 
 def test_check_config_reports_missing_environment_variable(
@@ -142,6 +145,38 @@ def test_check_config_reports_validation_errors(
 
     error = capsys.readouterr().err
     assert "cannot be combined with explicit project identifiers" in error
+
+
+def test_check_config_requires_the_provider_key(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("OPENROUTER_API_KEY")
+
+    assert main(["check-config", "--offline"]) == CONFIG_ERROR_EXIT
+
+    error = capsys.readouterr().err
+    assert "OPENROUTER_API_KEY" in error
+    assert "sk-or-test" not in error
+
+
+def test_check_config_rejects_mixed_model_providers(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AGENT_MODEL_REVIEWER", "anthropic/claude-sonnet-4-5")
+
+    assert main(["check-config", "--offline"]) == CONFIG_ERROR_EXIT
+
+    assert "one model provider per deployment" in capsys.readouterr().err
+
+
+def test_check_config_warns_when_no_model_is_configured(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("AGENT_MODEL")
+
+    assert main(["check-config", "--offline"]) == OK_EXIT
+
+    assert "provider credentials are not checked" in capsys.readouterr().err
 
 
 def test_check_config_requires_api_environment(

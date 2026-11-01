@@ -27,10 +27,12 @@ cycle, or back the run with a real branch/PR when testing live.
 ## Manual acceptance checklist (real instance, throwaway repo)
 
 - [ ] One-time OpenProject setup done ([OPENPROJECT_SETUP.md](OPENPROJECT_SETUP.md)).
-- [ ] `./docker/provision-users.sh` asks for the deployment values and an
-      administrator token, provisions the users, prints each generated password
-      at that account's token prompt, prompts for one token per account, verifies
-      each token, writes `docker/.env` and runs `check-config`.
+- [ ] `./agent-init.sh` asks for the deployment values, the agent CLI, the model
+      provider and its API key (and optionally one model per agent), and an
+      administrator token; provisions the users,
+      prints each generated password at that account's token prompt, prompts for
+      one token per account, verifies each token, writes `docker/.env` and runs
+      `check-config`.
 - [ ] `docker compose up -d` starts `engine` and `dashboard`; the dashboard
       answers on `http://127.0.0.1:8765`.
 - [ ] `docker compose down -v` stops the stack and deletes the volumes; the

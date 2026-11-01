@@ -26,6 +26,8 @@ from pathlib import Path
 
 import yaml
 
+from op_agent_engine.config import AGENT_MODEL_VARS
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DOCKER_DIR = REPO_ROOT / "docker"
 COMPOSE = DOCKER_DIR / "docker-compose.yml"
@@ -129,7 +131,7 @@ def test_entrypoint_validates_the_environment_and_seeds_nothing() -> None:
 
 
 def test_container_scripts_are_executable() -> None:
-    for script in ("entrypoint.sh", "provision-users.sh"):
+    for script in ("entrypoint.sh", "agent-init.sh"):
         path = DOCKER_DIR / script
         assert path.is_file()
         assert os.access(path, os.X_OK), f"{path} must be executable"
@@ -249,7 +251,7 @@ def test_every_docker_artifact_lives_under_docker() -> None:
         "Dockerfile",
         "docker-compose.yml",
         "entrypoint.sh",
-        "provision-users.sh",
+        "agent-init.sh",
         "version.json",
         ".env.example",
     ):
@@ -296,9 +298,9 @@ def test_compose_runs_the_expected_commands() -> None:
         assert _service(task)["restart"] == "no"
 
 
-def test_provision_users_script_is_interactive_and_private() -> None:
+def test_agent_init_script_is_interactive_and_private() -> None:
     """The script prompts on the host and writes a private.env."""
-    script = (REPO_ROOT / "docker" / "provision-users.sh").read_text()
+    script = (REPO_ROOT / "docker" / "agent-init.sh").read_text()
 
     # The administrator token is asked for at run time and never stored.
     assert 'ask_secret "  Administrator API token"' in script
@@ -313,12 +315,44 @@ def test_provision_users_script_is_interactive_and_private() -> None:
     assert "/config" not in script
 
 
+def test_agent_init_asks_for_the_provider_and_its_key() -> None:
+    """Setting up is the script and `docker compose up -d`; no .env editing."""
+    script = (REPO_ROOT / "docker" / "agent-init.sh").read_text()
+
+    # The provider and the model are separate questions; the script joins them.
+    assert 'ask_text "Model provider"' in script
+    assert 'ask_text "Model (e.g. deepseek/deepseek-v4.1-flash-1017)"' in script
+    assert 'agent_model="${provider}/${model}"' in script
+    # The provider's own credential variable is asked for and stored.
+    assert 'key=$(ask_secret "$primary"' in script
+    assert 'set_env "$primary" "$key"' in script
+    # Nothing tells the operator to finish the job by editing .env ...
+    assert "set the model provider key" not in script
+    # ... but the wizard does say that every answer is an editable .env line.
+    assert "Every answer from this wizard is a line in" in script
+    assert "docker compose up -d" in script
+
+
+def test_agent_init_offers_per_agent_models_from_one_provider() -> None:
+    """One provider, but an agent may use another model from it."""
+    script = (DOCKER_DIR / "agent-init.sh").read_text()
+
+    assert 'ask_text "A different model per agent? (y/N)"' in script
+    for variable in AGENT_MODEL_VARS.values():
+        assert variable in script, variable
+    # The provider is asked once and prefixed onto every override, so the
+    # script cannot produce the mixed-provider configuration check-config
+    # rejects.
+    assert 'set_env "$name" "${provider}/${override}"' in script
+    assert 'unset_env "$name"' in script
+
+
 def test_docs_explain_provisioning_instead_of_the_installer() -> None:
     readme = (REPO_ROOT / "README.md").read_text()
     docs = (REPO_ROOT / "docs" / "DOCKER.md").read_text()
 
     assert "docker/.env" in docs or ".env" in docs
-    assert "./provision-users.sh" in readme
+    assert "./agent-init.sh" in readme
     # A changed env file needs a recreate, not a restart.
     assert "docker compose up -d" in readme
     assert "keeps the old environment" in docs

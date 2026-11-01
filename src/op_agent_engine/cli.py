@@ -46,6 +46,7 @@ from op_agent_engine.engine import (
 from op_agent_engine.logging import configure_logging
 from op_agent_engine.openproject.client import OpenProjectClient, OpenProjectError
 from op_agent_engine.openproject.resolve import OpenProjectResolution, resolve_workflow
+from op_agent_engine.providers import credential_status
 from op_agent_engine.provision import (
     ProvisioningError,
     ProvisionReport,
@@ -197,7 +198,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "print only the generated passwords as login<TAB>password lines "
-            "(used by docker/provision-users.sh)"
+            "(used by docker/agent-init.sh)"
         ),
     )
 
@@ -387,6 +388,17 @@ def _check_config(*, as_json: bool, offline: bool) -> int:
         print(f"op-agent-engine: error: {error}", file=sys.stderr)
         return CONFIG_ERROR_EXIT
 
+    # The agent CLIs read their provider key from the environment, so a model
+    # whose provider has no credentials would only fail inside the first run.
+    credential_level, credential_message = credential_status(
+        settings.configured_models(), os.environ
+    )
+    if credential_level == "error":
+        print(f"op-agent-engine: error: {credential_message}", file=sys.stderr)
+        return CONFIG_ERROR_EXIT
+    if credential_level == "warn":
+        print(f"op-agent-engine: warning: {credential_message}", file=sys.stderr)
+
     resolution: OpenProjectResolution | None = None
     provision_report: ProvisionReport | None = None
     if not offline:
@@ -419,11 +431,16 @@ def _check_config(*, as_json: bool, offline: bool) -> int:
         payload["provisioning"] = (
             provision_report.as_dict() if provision_report is not None else None
         )
+        payload["provider_credentials"] = {
+            "level": credential_level,
+            "message": credential_message,
+        }
         print(json.dumps(payload, indent=2))
     else:
         print("Configuration OK (environment)")
         for line in config.summary():
             print(line)
+        print(f"model credentials: {credential_message}")
         if resolution is None:
             print("OpenProject resolution skipped (--offline).")
         else:

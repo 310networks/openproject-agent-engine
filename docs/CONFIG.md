@@ -6,7 +6,7 @@ containers) or from your shell. The agent team, the runners and the
 OpenProject object names have defaults baked into the code, so a deployment
 only supplies its URL, project(s) and tokens.
 
-`docker/provision-users.sh` writes the required variables for you; the
+`docker/agent-init.sh` writes the required variables for you; the
 commented reference is [`docker/.env.example`](../docker/.env.example). The
 [root README](../README.md) covers getting started; this page is the full
 reference.
@@ -25,7 +25,7 @@ reference.
 | `OP_TOKEN_REVIEWER` | token of `codeReviewer` |
 
 `OP_PROVISION_TOKEN` is an administrator token used only by
-`provision-users.sh` and `docker compose run --rm provision`.
+`agent-init.sh` and `docker compose run --rm provision`.
 
 ## What is baked in
 
@@ -49,6 +49,21 @@ same CLI selected by `AGENT`:
 placeholder and the flag in front of it are dropped, so the CLI's own default
 is used. The value must be one token (no spaces), in the CLI's own format —
 `provider/id` works for both.
+
+The provider is the part before the first `/`, and it selects the credential
+variable as well: `openrouter/deepseek/deepseek-v4.1-flash-1017` is the
+`openrouter` provider serving the model `deepseek/deepseek-v4.1-flash-1017`,
+authenticated by `OPENROUTER_API_KEY`. `agent-init.sh` asks for the provider
+and the model separately for exactly that reason; writing `.env` by hand
+means joining them yourself.
+
+`AGENT_MODEL_<AGENT>` overrides the shared model for one agent
+(`AGENT_MODEL_FRONTEND`, `AGENT_MODEL_BACKEND`, `AGENT_MODEL_DESIGNER`,
+`AGENT_MODEL_REVIEWER`); without one, the agent uses `AGENT_MODEL`. The
+deployment still has **one provider**, because it stores one provider key: a
+model override may name a different model but not a different provider.
+`check-config` rejects a mix (`one model provider per deployment`), and
+`agent-init.sh` asks for the provider once and prefixes every model with it.
 
 Status names come from `OP_STATUS_*` and are matched case- and
 whitespace-insensitively, so `In Progress` also matches OpenProject's default
@@ -117,8 +132,11 @@ docker compose up -d engine
 ## Provider credentials
 
 The agent CLI reads its model provider key from the environment; no
-`auth.json`, `settings.json` or opencode config is mounted. Set one of these
-in `docker/.env` (the one your `AGENT_MODEL` provider needs):
+`auth.json`, `settings.json` or opencode config is mounted. `agent-init.sh`
+asks for the key belonging to the provider in `AGENT_MODEL` and writes it to
+`docker/.env`, so it is not a manual step. If you write `.env` yourself, set
+the variable for your provider (the table below is
+[`src/op_agent_engine/providers.py`](../src/op_agent_engine/providers.py)):
 
 `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`,
 `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `AZURE_OPENAI_API_KEY`,
@@ -194,7 +212,7 @@ Run inside the container (`docker compose run --rm <task>` or
 | `status` | heartbeat age, active runs, recent runs (`--json`) |
 | `dashboard` | serve the read-only web UI |
 | `provision` | create/reconcile users and memberships (`--apply`, `--json`, `--passwords`) |
-| `verify-token` | check that `OP_VERIFY_TOKEN` authenticates as `--login` (used by `provision-users.sh`) |
+| `verify-token` | check that `OP_VERIFY_TOKEN` authenticates as `--login` (used by `agent-init.sh`) |
 | `cleanup` | remove run directories older than `RUN_RETENTION_DAYS` |
 
 `--log-level LEVEL` is accepted before or after the subcommand. `provision`

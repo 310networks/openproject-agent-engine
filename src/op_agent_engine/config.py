@@ -32,6 +32,8 @@ from pydantic import (
 )
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from op_agent_engine.providers import provider_of
+
 # ---------------------------------------------------------------------------
 # Errors
 # ---------------------------------------------------------------------------
@@ -708,6 +710,20 @@ class WorkflowConfig(BaseModel):
         assert settings.op_project is not None
         assert settings.agent is not None
 
+        providers = {
+            provider
+            for model in settings.configured_models()
+            if (provider := provider_of(model)) is not None
+        }
+        if len(providers) > 1:
+            raise ConfigError(
+                "one model provider per deployment: AGENT_MODEL and the "
+                "AGENT_MODEL_<AGENT> overrides use "
+                + ", ".join(sorted(providers))
+                + " (each agent may use a different model, but they must all "
+                "share one provider)"
+            )
+
         identifiers = _project_identifiers(settings.op_project)
         single = len(identifiers) == 1 and identifiers[0] != "*"
         if not single and settings.github_repo_dir:
@@ -725,6 +741,7 @@ class WorkflowConfig(BaseModel):
             "rejected": settings.op_status_rejected,
             "closed": settings.op_status_closed,
         }
+        per_agent_models = _agent_models(settings)
         agents: dict[str, Any] = {}
         for key, login, kind, token_var in TEAM:
             agents[key] = {
@@ -733,6 +750,7 @@ class WorkflowConfig(BaseModel):
                 "op_login": login,
                 "workspace": login,
                 "runner": settings.agent,
+                "model": per_agent_models[key],
                 "timeout_seconds": settings.agent_timeout_seconds,
                 "env": {
                     "OP_CLI_HOST": settings.op_base_url,
@@ -842,7 +860,14 @@ class EngineSettings(BaseSettings):
     op_project: str | None = None
     # Which agent CLI to run: ``pi`` or ``opencode``.
     agent: Literal["pi", "opencode"] | None = None
+    # Model for every agent as ``<provider>/<model>``; the per-agent overrides
+    # win for their agent. All of them share one provider, because the
+    # deployment stores one provider key.
     agent_model: str | None = None
+    agent_model_frontend: str | None = None
+    agent_model_backend: str | None = None
+    agent_model_designer: str | None = None
+    agent_model_reviewer: str | None = None
     agent_timeout_seconds: int = Field(default=3600, gt=0)
 
     # Single-project clone-directory override; repositories normally come
@@ -879,6 +904,19 @@ class EngineSettings(BaseSettings):
     log_level: str = "INFO"
     dashboard_host: str = "127.0.0.1"
     dashboard_port: int = Field(default=8765, ge=1, le=65535)
+
+    def configured_models(self) -> tuple[str, ...]:
+        """Every model reference in use: the shared one and the overrides."""
+        candidates = (
+            self.agent_model,
+            self.agent_model_frontend,
+            self.agent_model_backend,
+            self.agent_model_designer,
+            self.agent_model_reviewer,
+        )
+        return tuple(
+            model.strip() for model in candidates if model and model.strip()
+        )
 
     def missing_api_values(self) -> list[str]:
         """Required variables for talking to OpenProject."""
@@ -921,3 +959,23 @@ class EngineSettings(BaseSettings):
             raise ConfigError(
                 "missing required environment variables: " + ", ".join(missing)
             )
+
+#: Per-agent model overrides. ``AGENT_MODEL_<AGENT>`` wins over ``AGENT_MODEL``
+#: for that agent; the deployment still has one provider, so the override only
+#: changes the model id.
+AGENT_MODEL_VARS: dict[str, str] = {
+    "FRONTEND": "AGENT_MODEL_FRONTEND",
+    "BACKEND": "AGENT_MODEL_BACKEND",
+    "LEAD_DESIGNER": "AGENT_MODEL_DESIGNER",
+    "REVIEWER": "AGENT_MODEL_REVIEWER",
+}
+
+
+def _agent_models(settings: EngineSettings) -> dict[str, str | None]:
+    """The per-agent model override for every agent key (None: use the default)."""
+    return {
+        "FRONTEND": settings.agent_model_frontend,
+        "BACKEND": settings.agent_model_backend,
+        "LEAD_DESIGNER": settings.agent_model_designer,
+        "REVIEWER": settings.agent_model_reviewer,
+    }

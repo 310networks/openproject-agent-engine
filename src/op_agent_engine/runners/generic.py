@@ -20,6 +20,7 @@ from op_agent_engine.config import (
     RunnerConfig,
     WorkflowConfig,
 )
+from op_agent_engine.providers import EXTRA_AGENT_ENV_VARS, PROVIDER_ENV_VARS
 from op_agent_engine.runners.base import (
     RunRequest,
     RunResult,
@@ -32,47 +33,19 @@ _BASE_ENV_VARS = ("PATH", "HOME", "USER", "LOGNAME", "TZ", "LANG", "LC_ALL")
 
 #: Provider credentials and endpoints the agent CLIs read directly. The
 #: deployment supplies them as environment variables; no auth.json or
-#: settings.json is mounted. GH_TOKEN/GITHUB_TOKEN let the agents push and open
+#: settings.json is mounted. The provider table is shared with check-config and
+#: with the setup script, so a provider can never be asked for a key the runner
+#: then refuses to forward. GH_TOKEN/GITHUB_TOKEN let the agents push and open
 #: pull requests with gh.
-_AGENT_ENV_VARS = (
-    "ANTHROPIC_API_KEY",
-    "ANTHROPIC_AUTH_TOKEN",
-    "ANTHROPIC_OAUTH_TOKEN",
-    "ANTHROPIC_BASE_URL",
-    "OPENAI_API_KEY",
-    "OPENAI_BASE_URL",
-    "AZURE_OPENAI_API_KEY",
-    "AZURE_OPENAI_ENDPOINT",
-    "AZURE_OPENAI_API_VERSION",
-    "GEMINI_API_KEY",
-    "GOOGLE_API_KEY",
-    "GOOGLE_CLOUD_PROJECT",
-    "GOOGLE_CLOUD_LOCATION",
-    "GOOGLE_APPLICATION_CREDENTIALS",
-    "OPENROUTER_API_KEY",
-    "XAI_API_KEY",
-    "DEEPSEEK_API_KEY",
-    "GROQ_API_KEY",
-    "CEREBRAS_API_KEY",
-    "MISTRAL_API_KEY",
-    "TOGETHER_API_KEY",
-    "FIREWORKS_API_KEY",
-    "HF_TOKEN",
-    "NVIDIA_API_KEY",
-    "OPENCODE_API_KEY",
-    "MOONSHOT_API_KEY",
-    "KIMI_API_KEY",
-    "ZAI_API_KEY",
-    "MINIMAX_API_KEY",
-    "COPILOT_GITHUB_TOKEN",
-    "AWS_ACCESS_KEY_ID",
-    "AWS_SECRET_ACCESS_KEY",
-    "AWS_SESSION_TOKEN",
-    "AWS_REGION",
-    "AWS_PROFILE",
-    "AWS_BEARER_TOKEN_BEDROCK",
-    "GH_TOKEN",
-    "GITHUB_TOKEN",
+_AGENT_ENV_VARS = tuple(
+    dict.fromkeys(
+        [
+            name
+            for variables in PROVIDER_ENV_VARS.values()
+            for name in variables
+        ]
+        + list(EXTRA_AGENT_ENV_VARS)
+    )
 )
 
 _INHERITED_ENV_VARS = _BASE_ENV_VARS + _AGENT_ENV_VARS

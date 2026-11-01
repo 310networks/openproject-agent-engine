@@ -4,7 +4,9 @@ import pytest
 from pydantic import ValidationError
 
 from op_agent_engine.config import (
+    AGENT_MODEL_VARS,
     AGENT_TOKEN_VARS,
+    TEAM,
     ConfigError,
     EngineSettings,
     WorkflowConfig,
@@ -137,6 +139,54 @@ def test_model_is_applied_to_every_runner() -> None:
         "anthropic/claude-sonnet-4-5"
     }
     assert config.model_for("FRONTEND") == "anthropic/claude-sonnet-4-5"
+
+
+def test_per_agent_model_overrides_the_shared_model() -> None:
+    config = WorkflowConfig.from_settings(
+        deployment_settings(
+            agent_model="openrouter/deepseek/deepseek-v4.1-flash-1017",
+            agent_model_reviewer="openrouter/anthropic/claude-sonnet-4-5",
+        ),
+        environ=dict(DEPLOYMENT_ENV),
+    )
+
+    assert config.model_for("REVIEWER") == "openrouter/anthropic/claude-sonnet-4-5"
+    assert (
+        config.model_for("FRONTEND")
+        == "openrouter/deepseek/deepseek-v4.1-flash-1017"
+    )
+
+
+def test_per_agent_models_do_not_need_a_shared_default() -> None:
+    config = WorkflowConfig.from_settings(
+        deployment_settings(
+            agent_model_frontend="openrouter/deepseek/deepseek-v4.1-flash-1017",
+            agent_model_backend="openrouter/deepseek/deepseek-v4.1-chat",
+        ),
+        environ=dict(DEPLOYMENT_ENV),
+    )
+
+    assert config.model_for("FRONTEND") == "openrouter/deepseek/deepseek-v4.1-flash-1017"
+    assert config.model_for("BACKEND") == "openrouter/deepseek/deepseek-v4.1-chat"
+    # An agent without an override keeps the CLI's own default model.
+    assert config.model_for("REVIEWER") is None
+
+
+def test_models_must_share_one_provider() -> None:
+    with pytest.raises(ConfigError, match="one model provider per deployment"):
+        WorkflowConfig.from_settings(
+            deployment_settings(
+                agent_model="openrouter/deepseek/deepseek-v4.1-flash-1017",
+                agent_model_reviewer="anthropic/claude-sonnet-4-5",
+            ),
+            environ=dict(DEPLOYMENT_ENV),
+        )
+
+
+def test_agent_model_variables_cover_the_team() -> None:
+    assert set(AGENT_MODEL_VARS) == {key for key, *_ in TEAM}
+    for variable in AGENT_MODEL_VARS.values():
+        assert variable.lower() in EngineSettings.model_fields, variable
 
 
 def test_missing_required_values_are_reported() -> None:

@@ -24,7 +24,7 @@ Nothing is mounted from the host. Change `.env`, then recreate the stack:
 
 | Changed | Command |
 |---|---|
-| `.env` (tokens, limits, `AGENT`, project(s), provider key) | `docker compose up -d` — compose must recreate the container; `restart` keeps the old environment |
+| `.env` (written by `agent-init.sh`: tokens, model, provider key, limits) | `docker compose up -d` — compose must recreate the container; `restart` keeps the old environment |
 | the image tag | `docker compose pull && docker compose up -d` |
 
 ## The entrypoint

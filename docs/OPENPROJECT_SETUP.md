@@ -67,7 +67,7 @@ docker compose restart engine
 ```
 
 If you changed `docker/.env` instead, recreate the container:
-`docker compose up -d engine`. `provision-users.sh` finishes with
+`docker compose up -d engine`. `agent-init.sh` finishes with
 `check-config`, which verifies both and one option id per agent.
 
 ## 5. Roles
@@ -86,4 +86,4 @@ and no project membership. `provision` creates only the agents'
 memberships.
 
 The engine and agent accounts, their tokens and `docker/.env` are created by
-`./provision-users.sh`; see the [README quick start](../README.md#quick-start).
+`./agent-init.sh`; see the [README quick start](../README.md#quick-start).

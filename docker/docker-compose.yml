@@ -2,10 +2,10 @@
 #
 # Every Docker artifact lives in this directory, and deployment is pull-only:
 # nothing is built here. Configuration is environment variables, read from the
-# .env file next to this file (or from docker/provision-users.sh, which writes
-# it) and passed straight into the containers:
+# .env file next to this file (or from docker/agent-init.sh, which writes it)
+# and passed straight into the containers:
 #
-#   ./provision-users.sh            # creates .env, the users and the tokens
+#   ./agent-init.sh                 # creates .env: users, tokens, model, key
 #   docker compose pull && docker compose up -d
 #   docker compose logs -f engine
 #
@@ -27,7 +27,7 @@ x-engine: &engine
   # docker/version.json.
   image: kookster310/op-agent-engine:${OP_AGENT_ENGINE_TAG:-latest}
   env_file:
-    # Written by ./provision-users.sh (mode 0600). Optional so the provisioning
+    # Written by ./agent-init.sh (mode 0600). Optional so the setup script
     # script can run before it exists.
     - path: .env
       required: false
@@ -78,7 +78,7 @@ services:
     command: ["cleanup"]
 
   # Creates or reconciles the engine and agent users in OpenProject (writes
-  # enabled). ./provision-users.sh does this, and the token interview, for you.
+  # enabled). ./agent-init.sh does this, and the token interview, for you.
   #   docker compose run --rm provision
   provision:
     <<: *engine

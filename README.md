@@ -28,36 +28,33 @@ agent, verifies the outcome against GitHub and OpenProject, and performs
 2. In `docker/`, run the interactive setup:
 
    ```bash
-   git clone https://github.com/310networks/openproject-agent-engine op-agent-engine && cd op-agent-engine/docker && ./provision-users.sh
+   git clone https://github.com/310networks/openproject-agent-engine op-agent-engine && cd op-agent-engine/docker && ./agent-init.sh
    ```
 
-   It asks for the OpenProject URL and project identifier(s), as well as an
-   administrator token (used once, never stored).
+   It asks for the OpenProject URL and project identifier(s), the agent CLI, the
+   model provider and its API key, and an administrator token (used once, never
+   stored). The model is asked for without the provider prefix
+   (`deepseek/deepseek-v4.1-flash-1017`); the script writes
+   `AGENT_MODEL=openrouter/deepseek/deepseek-v4.1-flash-1017` and stores the
+   provider's key itself. If you want a different model per agent it asks for
+   those too; they all keep the one provider (`AGENT_MODEL_<AGENT>`).
 
    It creates the engine user and one account per agent, prints each generated
    password at that account's token prompt, verifies every token and writes to
    `docker/.env`. Passwords are shown once — record them; a later run cannot
    recover them, so a forgotten password must be reset under
-   **Administration → Users**. It finishes with `check-config`. Re-running is
-   safe; `--reprompt-tokens` asks for all tokens again.
+   **Administration → Users**. It finishes with `check-config`, which also
+   checks that the provider key is present. Re-running is safe;
+   `--reprompt-tokens` asks for all tokens again.
 
-4. Add the model provider key to `docker/.env`, for example:
-
-   ```bash
-   ANTHROPIC_API_KEY=sk-ant-...
-   ```
-
-   The full list of accepted provider variables is in
-   [docs/CONFIG.md](docs/CONFIG.md#provider-credentials).
-
-5. Start the stack:
+3. Start the stack:
 
    ```bash
    docker compose up -d
    docker compose logs -f engine
    ```
 
-6. Notes
+4. Notes
 
    After adding a project or changing its `GIT_REPO` / `AGENT` setup in
    OpenProject, run `docker compose restart engine`. After changing
@@ -69,7 +66,7 @@ The dashboard is served at `http://127.0.0.1:8765`
 
 ## Required environment variables
 
-`provision-users.sh` writes the first eight; you add the provider key.
+`agent-init.sh` writes every one of them, the provider key included.
 
 | Variable | Meaning |
 |---|---|
@@ -77,6 +74,8 @@ The dashboard is served at `http://127.0.0.1:8765`
 | `OP_PROJECT` | project identifier(s): one, a comma list, or `*` for every project with `GIT_REPO` |
 | `OP_ENGINE_TOKEN` | API token of the runtime user (administrator) |
 | `AGENT` | agent CLI to run: `pi` or `opencode` |
+| `AGENT_MODEL` | model for every agent as `<provider>/<model>`; the provider also selects the API-key variable |
+| `AGENT_MODEL_<AGENT>` | optional per-agent model (`AGENT_MODEL_FRONTEND`, `..._BACKEND`, `..._DESIGNER`, `..._REVIEWER`) from the same provider |
 | `OP_TOKEN_FRONTEND` | token of `frontendEngineer` |
 | `OP_TOKEN_BACKEND` | token of `backendEngineer` |
 | `OP_TOKEN_DESIGNER` | token of `leadDesigner` |
@@ -89,7 +88,7 @@ containing its GitHub repository
 **Administration → Projects → Project attributes** and choose **For all
 projects**.
 One attribute is assigned to every project, so there is no per-project enablement —
-the same one-time step as the `AGENT` field. `docker/provision-users.sh`
+the same one-time step as the `AGENT` field. `docker/agent-init.sh`
 explains this during setup.
 
 The team is fixed in the image, one OpenProject account and one token each:
@@ -101,11 +100,12 @@ The team is fixed in the image, one OpenProject account and one token each:
 | `LEAD_DESIGNER` | `leadDesigner` | implementer |
 | `REVIEWER` | `codeReviewer` | reviewer |
 
-Two optional variables are commonly changed:
+For reference, the model the script writes looks like
+`AGENT_MODEL=openrouter/deepseek/deepseek-v4.1-flash-1017`, and one more
+variable is worth setting:
 
 | Variable | Meaning |
 |---|---|
-| `AGENT_MODEL` | model for every agent, e.g. `anthropic/claude-sonnet-4-5`; one token, no spaces |
 | `GH_TOKEN` | GitHub token so the agents can push and open pull requests |
 
 Everything else — concurrency, timings, status names, paths, git identity —

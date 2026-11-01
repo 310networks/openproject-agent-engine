@@ -1,11 +1,17 @@
 #!/bin/sh
-# Create the OpenProject accounts and write the engine's .env file.
+# Set up a deployment: the OpenProject accounts, the agent configuration and
+# the engine's .env file.
 #
-# Run this before `docker compose up -d`. It is fully interactive: it asks for
-# the deployment values it needs, asks for an OpenProject administrator token,
-# creates/reconciles the engine and agent users, shows each generated password
-# once, then interviews you for one API token per account (sign in at your
-# OpenProject URL -> My account -> Access tokens).
+# Setting up is two steps:
+#   1. ./agent-init.sh        (this script, fully interactive)
+#   2. docker compose up -d
+#
+# It asks for the deployment values, the agent CLI, the model (optionally one
+# per agent) and its provider key, and an OpenProject administrator token. Then it creates/reconciles the
+# engine and agent users, shows each generated password once, interviews you for
+# one API token per account (sign in at your OpenProject URL -> My account ->
+# Access tokens), writes .env and validates the result. Nothing has to be
+# edited by hand afterwards.
 #
 # Before running it, set up two fields in OpenProject (the API cannot create
 # them):
@@ -15,11 +21,11 @@
 # attribute, so any project with that value set (and the AGENT field enabled)
 # can be monitored simply by setting OP_PROJECT=*.
 #
-# Tokens are written to .env next to docker-compose.yml (mode 0600), so nothing
-# has to be hand-edited and compose picks them up on the next start.
+# Tokens and the provider key are written to .env next to docker-compose.yml
+# (mode 0600), so compose picks them up on the next start.
 #
-#   ./provision-users.sh                      guided run
-#   ./provision-users.sh --reprompt-tokens    enter the tokens again
+#   ./agent-init.sh                      guided run
+#   ./agent-init.sh --reprompt-tokens    enter the tokens again
 #
 # Needs Docker Compose and the image (pulled if it is missing).
 set -eu
@@ -32,13 +38,13 @@ reprompt=0
 for arg in "$@"; do
   case "$arg" in
     --reprompt-tokens) reprompt=1 ;;
-    -h|--help) sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-    *) echo "provision-users: unknown option: $arg" >&2; exit 2 ;;
+    -h|--help) awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; exit 0 ;;
+    *) echo "agent-init: unknown option: $arg" >&2; exit 2 ;;
   esac
 done
 
 say() { printf '%s\n' "$*"; }
-die() { printf 'provision-users: ERROR: %s\n' "$*" >&2; exit 2; }
+die() { printf 'agent-init: ERROR: %s\n' "$*" >&2; exit 2; }
 title() { printf '\n%s\n%s\n' "$1" "$(printf '%*s' "${#1}" '' | tr ' ' '-')"; }
 info() { printf '    %s\n' "$*"; }
 ok() { printf '    ok  %s\n' "$*"; }
@@ -87,6 +93,70 @@ unset_env() {
   chmod 0600 "$env_file"
 }
 
+# --- model providers --------------------------------------------------------
+# AGENT_MODEL is <provider>/<model>, and the agent CLI authenticates with the
+# provider's own environment variables. This table mirrors PROVIDER_ENV_VARS in
+# src/op_agent_engine/providers.py (tests/test_providers.py keeps them in step);
+# it lives here as well so the prompts work before the engine runs. The first
+# variable of a provider is its API key, the rest are endpoints or alternative
+# credentials. `-` means the provider has no environment variable (interactive
+# login only), which an unattended run cannot use.
+provider_table=$(cat <<'EOF'
+amazon-bedrock AWS_BEARER_TOKEN_BEDROCK AWS_PROFILE AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_REGION
+ant-ling ANT_LING_API_KEY
+anthropic ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_OAUTH_TOKEN ANTHROPIC_BASE_URL
+azure AZURE_OPENAI_API_KEY AZURE_OPENAI_ENDPOINT AZURE_OPENAI_BASE_URL AZURE_OPENAI_RESOURCE_NAME AZURE_OPENAI_API_VERSION AZURE_OPENAI_DEPLOYMENT_NAME_MAP
+baseten BASETEN_API_KEY
+cerebras CEREBRAS_API_KEY
+cloudflare-ai-gateway CLOUDFLARE_API_KEY CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_GATEWAY_ID
+cloudflare-workers-ai CLOUDFLARE_API_KEY CLOUDFLARE_ACCOUNT_ID
+deepseek DEEPSEEK_API_KEY
+fireworks FIREWORKS_API_KEY
+github-copilot COPILOT_GITHUB_TOKEN
+google GEMINI_API_KEY GOOGLE_API_KEY
+google-vertex GOOGLE_CLOUD_API_KEY GOOGLE_CLOUD_PROJECT GOOGLE_CLOUD_LOCATION GOOGLE_APPLICATION_CREDENTIALS
+groq GROQ_API_KEY
+huggingface HF_TOKEN
+kimi-coding KIMI_API_KEY
+meta META_API_KEY
+minimax MINIMAX_API_KEY
+minimax-cn MINIMAX_CN_API_KEY
+mistral MISTRAL_API_KEY
+moonshotai MOONSHOT_API_KEY
+moonshotai-cn MOONSHOT_API_KEY
+nvidia NVIDIA_API_KEY
+openai OPENAI_API_KEY OPENAI_BASE_URL
+openai-codex -
+opencode OPENCODE_API_KEY
+opencode-go OPENCODE_API_KEY
+openrouter OPENROUTER_API_KEY
+qwen-token-plan QWEN_TOKEN_PLAN_API_KEY
+qwen-token-plan-cn QWEN_TOKEN_PLAN_CN_API_KEY
+qwen-token-plan-individual QWEN_TOKEN_PLAN_API_KEY
+radius RADIUS_API_KEY
+together TOGETHER_API_KEY
+typesafe TYPESAFE_API_KEY
+vercel-ai-gateway AI_GATEWAY_API_KEY
+xai XAI_API_KEY
+xiaomi XIAOMI_API_KEY
+xiaomi-token-plan-ams XIAOMI_TOKEN_PLAN_AMS_API_KEY
+xiaomi-token-plan-cn XIAOMI_TOKEN_PLAN_CN_API_KEY
+xiaomi-token-plan-sgp XIAOMI_TOKEN_PLAN_SGP_API_KEY
+zai ZAI_API_KEY
+zai-coding-cn ZAI_CODING_CN_API_KEY
+EOF
+)
+
+provider_vars() {
+  printf '%s\n' "$provider_table" |
+    awk -v wanted="$1" '$1 == wanted { sub(/^[^ \t]+[ \t]+/, ""); print; exit }'
+}
+
+provider_known() {
+  printf '%s\n' "$provider_table" |
+    awk -v wanted="$1" '$1 == wanted { found = 1 } END { exit(found ? 0 : 1) }'
+}
+
 # --- prompting --------------------------------------------------------------
 # Prompts go to stderr, answers to stdout, so `value=$(ask_text ...)` captures
 # only the answer.
@@ -106,7 +176,12 @@ ask_text() {
 
 ask_secret() {
   label=$1
-  printf '    %s: ' "$label" >&2
+  hint=${2:-}
+  if [ -n "$hint" ]; then
+    printf '    %s [%s]: ' "$label" "$hint" >&2
+  else
+    printf '    %s: ' "$label" >&2
+  fi
   stty -echo 2>/dev/null || true
   IFS= read -r answer || answer=""
   stty echo 2>/dev/null || true
@@ -130,8 +205,10 @@ verify_token() {
   else
     set --
   fi
+  # OP_PROJECT and AGENT are not in .env yet on a fresh deployment, so they
+  # are passed through explicitly too.
   if OP_VERIFY_TOKEN="$token" compose_run \
-      -e OP_BASE_URL -e OP_VERIFY_TOKEN \
+      -e OP_BASE_URL -e OP_PROJECT -e AGENT -e OP_VERIFY_TOKEN \
       engine verify-token --login "$login" "$@" >/dev/null 2>"$err"; then
     rm -f "$err"
     return 0
@@ -241,6 +318,7 @@ info "Create it once under Administration -> Projects -> Project attributes"
 info "(text format) and make it available for all projects."
 info "The AGENT work-package custom field is set up separately."
 
+step 2 "Agent CLI, model and provider key"
 agent=$(ask_text "Agent CLI (pi or opencode)" "$(get_env AGENT)")
 [ -n "$agent" ] || agent=pi
 case "$agent" in
@@ -248,9 +326,157 @@ case "$agent" in
   *) die "AGENT must be pi or opencode" ;;
 esac
 
-model=$(ask_text "Model for every agent (blank = the CLI's default)" "$(get_env AGENT_MODEL)")
+# The model is one setting for the engine (AGENT_MODEL=<provider>/<model>), but
+# two questions here: the provider is also what selects the credential variable.
+existing_model=$(get_env AGENT_MODEL)
+provider_default=
+model_default=$existing_model
+case "$existing_model" in
+  */*)
+    provider_default=${existing_model%%/*}
+    model_default=${existing_model#*/}
+    ;;
+esac
 
-step 2 "OpenProject administrator token"
+say ""
+info "The model is passed to the CLI as <provider>/<model>."
+info "Known providers:"
+printf '%s\n' "$provider_table" |
+  awk 'NF { printf "%s%s", sep, $1; sep = ", " } END { print "" }' |
+  fold -s -w 72 |
+  sed 's/^/    /'
+provider=$(ask_text "Model provider" "$provider_default")
+provider=$(printf '%s' "$provider" | tr '[:upper:]' '[:lower:]')
+[ -n "$provider" ] || die "a model provider is required"
+
+say ""
+info "The model id only - the provider prefix is added for you."
+model=$(ask_text "Model (e.g. deepseek/deepseek-v4.1-flash-1017)" "$model_default")
+case "$model" in
+  "$provider"/*) model=${model#"$provider"/} ;;
+esac
+case "$model" in
+  "" ) die "a model id is required" ;;
+  *" "*|*"	"*) die "the model id must be one token (no spaces)" ;;
+esac
+agent_model="${provider}/${model}"
+
+# Per-agent overrides: one shared model unless an agent is given its own. The
+# provider is asked for once, so every override keeps it and stays on the one
+# provider key.
+say ""
+info "Every agent uses $agent_model unless you give it its own model."
+different=$(ask_text "A different model per agent? (y/N)" "n")
+case "$different" in
+  y|Y|yes|YES)
+    for entry in \
+      FRONTEND:AGENT_MODEL_FRONTEND \
+      BACKEND:AGENT_MODEL_BACKEND \
+      LEAD_DESIGNER:AGENT_MODEL_DESIGNER \
+      REVIEWER:AGENT_MODEL_REVIEWER
+    do
+      agent_name=${entry%%:*}
+      name=${entry#*:}
+      existing=$(get_env "$name")
+      case "$existing" in
+        "$provider"/*) default=${existing#"$provider"/} ;;
+        "") default=$model ;;
+        *) default=$existing ;;
+      esac
+      override=$(ask_text "$agent_name model" "$default")
+      case "$override" in
+        "$provider"/*) override=${override#"$provider"/} ;;
+      esac
+      case "$override" in
+        *" "*|*"	"*) die "the model id for $agent_name must be one token (no spaces)" ;;
+      esac
+      if [ -z "$override" ] || [ "$override" = "$model" ]; then
+        # Same as the shared model: do not store a duplicate.
+        unset_env "$name"
+      else
+        set_env "$name" "${provider}/${override}"
+        ok "$name: ${provider}/${override}"
+      fi
+    done
+    ;;
+  *)
+    for name in \
+      AGENT_MODEL_FRONTEND \
+      AGENT_MODEL_BACKEND \
+      AGENT_MODEL_DESIGNER \
+      AGENT_MODEL_REVIEWER
+    do
+      if [ -n "$(get_env "$name")" ]; then
+        warn "removing $name; every agent uses $agent_model"
+        unset_env "$name"
+      fi
+    done
+    ;;
+esac
+
+# The provider's own credential variables; the CLI reads them from the
+# environment, and the engine forwards them to the agent process.
+say ""
+provider_keys=$(provider_vars "$provider")
+if provider_known "$provider"; then
+  if [ -z "$provider_keys" ] || [ "$provider_keys" = "-" ]; then
+    warn "$provider authenticates with an interactive login, which an"
+    warn "unattended run cannot use; there is no key to store."
+    provider_keys=
+  fi
+else
+  warn "$provider is not in the built-in provider list, so its credential"
+  warn "variable is asked for below (see docker/.env.example for the usual ones)."
+  provider_keys=$(ask_text "Credential variable (e.g. OPENROUTER_API_KEY)" \
+    "$(printf '%s' "$provider" | tr '[:lower:]-' '[:upper:]_')_API_KEY")
+fi
+
+if [ -n "$provider_keys" ]; then
+  # The first variable is the provider's API key, the rest are optional.
+  set -- $provider_keys
+  primary=$1
+  shift
+  existing=$(get_env "$primary")
+  if [ -n "$existing" ]; then
+    hint="stored - blank keeps it"
+  else
+    hint=
+  fi
+  key=$(ask_secret "$primary" "$hint")
+  if [ -n "$key" ]; then
+    set_env "$primary" "$key"
+  elif [ -n "$existing" ]; then
+    ok "$primary: keeping the stored value"
+  else
+    warn "$primary: no value set; check-config will reject the configuration"
+  fi
+
+  if [ "$#" -gt 0 ]; then
+    say ""
+    info "Optional settings for $provider: $*"
+    configure=$(ask_text "Set them now? (y/N)" "n")
+    case "$configure" in
+      y|Y|yes|YES)
+        for name in "$@"; do
+          existing=$(get_env "$name")
+          case "$name" in
+            *KEY*|*TOKEN*|*SECRET*|*PASSWORD*)
+              value=$(ask_secret "$name" "$existing")
+              ;;
+            *)
+              value=$(ask_text "$name" "$existing")
+              ;;
+          esac
+          if [ -n "$value" ]; then
+            set_env "$name" "$value"
+          fi
+        done
+        ;;
+    esac
+  fi
+fi
+
+step 3 "OpenProject administrator token"
 info "It is used once to create the users and is not stored."
 admin_token=$(ask_secret "  Administrator API token")
 [ -n "$admin_token" ] || die "an administrator token is required"
@@ -259,7 +485,7 @@ export OP_BASE_URL="$op_base_url" \
        OP_PROJECT="$project" \
        AGENT="$agent" \
        OP_PROVISION_TOKEN="$admin_token"
-AGENT_MODEL="$model"
+AGENT_MODEL="$agent_model"
 export AGENT_MODEL LOG_LEVEL=CRITICAL
 
 passwords_file=$(mktemp "${TMPDIR:-/tmp}/op-agent-engine-passwords.XXXXXX")
@@ -267,7 +493,7 @@ provision_err=$(mktemp "${TMPDIR:-/tmp}/op-agent-engine-provision.XXXXXX")
 cleanup() { rm -f "$passwords_file" "$provision_err"; }
 trap cleanup EXIT INT TERM
 
-step 3 "Creating OpenProject users and memberships"
+step 4 "Creating OpenProject users and memberships"
 if ! compose_run \
     -e OP_BASE_URL -e OP_PROJECT \
     -e GITHUB_REPO_DIR \
@@ -282,7 +508,7 @@ else
   ok "users already existed; no new passwords"
 fi
 
-step 4 "Create one API token per account"
+step 5 "Create one API token per account"
 info "OpenProject administrators cannot mint API tokens for other users."
 info "Sign in as each account and create a token under:"
 info "  $op_base_url/my/access_tokens"
@@ -306,7 +532,7 @@ designer_token=$TOKEN_VALUE
 prompt_token OP_TOKEN_REVIEWER codeReviewer "REVIEWER (codeReviewer)" 0
 reviewer_token=$TOKEN_VALUE
 
-step 5 "Saving .env"
+step 6 "Saving .env"
 set_env OP_BASE_URL "$op_base_url"
 set_env OP_PROJECT "$project"
 if [ -n "$(get_env OP_GIT_REPO_FIELD)" ]; then
@@ -326,11 +552,8 @@ case "$project" in
     ;;
 esac
 set_env AGENT "$agent"
-if [ -n "$AGENT_MODEL" ]; then
-  set_env AGENT_MODEL "$AGENT_MODEL"
-else
-  unset_env AGENT_MODEL
-fi
+set_env AGENT_MODEL "$AGENT_MODEL"
+ok "model: $AGENT_MODEL"
 set_env OP_ENGINE_TOKEN "$engine_token"
 set_env OP_TOKEN_FRONTEND "$frontend_token"
 set_env OP_TOKEN_BACKEND "$backend_token"
@@ -340,12 +563,16 @@ set_env OP_TOKEN_REVIEWER "$reviewer_token"
 unset_env OP_PROVISION_TOKEN
 ok "wrote $env_file (mode 0600)"
 
-step 6 "Validating the configuration"
+step 7 "Validating the configuration"
 if ! compose_run engine check-config; then
   die "check-config failed; fix the message above and re-run this script"
 fi
 
-step 7 "Next"
-info "set the model provider key in .env (e.g. ANTHROPIC_API_KEY=...)"
+step 8 "Next"
 info "start the engine: docker compose up -d"
 info "follow it with:    docker compose logs -f engine"
+say ""
+info "Every answer from this wizard is a line in $env_file: edit that file to"
+info "change any of them later (URL, project(s), agent CLI, models, provider"
+info "key, limits), then run docker compose up -d again so the container is"
+info "recreated with the new values."

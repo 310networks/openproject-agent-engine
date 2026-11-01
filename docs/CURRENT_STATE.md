@@ -118,9 +118,13 @@ The team is fixed in code and in the image (`agents/*/AGENTS.md`):
 - `pi -p --approve --no-extensions --no-context-files --no-session --model ...`
 - `opencode run --auto --model ... --file ...`
 
-`AGENT_MODEL` is optional. The runner forwards the agent's OpenProject CLI
-credentials plus a fixed allowlist of provider/GitHub environment variables
-(`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GH_TOKEN`, ...); see
+`AGENT_MODEL` is `<provider>/<model>`, and `AGENT_MODEL_<AGENT>` overrides it
+for one agent (same provider, one key); the provider selects the credential
+variable. The runner forwards the agent's OpenProject CLI credentials plus the
+provider/GitHub environment variables of
+[`providers.py`](../src/op_agent_engine/providers.py) (`ANTHROPIC_API_KEY`,
+`OPENROUTER_API_KEY`, `GH_TOKEN`, ...), and `check-config` fails when the
+provider of the configured model has no credentials; see
 [CONFIG.md](CONFIG.md#provider-credentials). The engine's own tokens are not
 forwarded.
 
@@ -130,7 +134,7 @@ templates live in `prompts/` and are rendered per run.
 
 ## Configuration
 
-Everything is an environment variable; `docker/provision-users.sh` writes the
+Everything is an environment variable; `docker/agent-init.sh` writes the
 required ones to `docker/.env` and the documented template is
 `docker/.env.example`. The full reference, including provider variables,
 object names, limits and compose-only settings, is [CONFIG.md](CONFIG.md).
@@ -150,16 +154,18 @@ values, credentials and deliberate tuning.
 
 ## Provisioning and tokens
 
-`docker/provision-users.sh` is the supported setup path:
+`docker/agent-init.sh` is the supported setup path:
 
-1. prompts for the OpenProject URL, project, repository and branch;
+1. prompts for the OpenProject URL and project(s), the agent CLI, the model
+   provider and its key;
 2. asks for an OpenProject administrator token (used once, never written);
 3. runs `provision --apply --json --passwords` in the container, which creates
    or reconciles the engine user, the four agent users and the `Agent Worker`
    role/memberships, and shows each new password;
 4. prompts for one token per account and verifies it with
    `verify-token --login ...` (the engine token is also checked for admin);
-5. writes `docker/.env` (mode `0600`) and runs `check-config`.
+5. writes `docker/.env` (mode `0600`) and runs `check-config`, which also
+   checks that the provider key is present.
 
 The engine user must be an OpenProject administrator; the agent users only get
 the project-scoped `Agent Worker` role. Re-running the script is safe and is the
