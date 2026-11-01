@@ -170,12 +170,47 @@ the variable for your provider (the table below is
 `DEEPSEEK_API_KEY`, `GROQ_API_KEY`, `CEREBRAS_API_KEY`, `MISTRAL_API_KEY`,
 `TOGETHER_API_KEY`, `FIREWORKS_API_KEY`, `HF_TOKEN`, `NVIDIA_API_KEY`,
 `OPENCODE_API_KEY`, `MOONSHOT_API_KEY`, `KIMI_API_KEY`, `ZAI_API_KEY`,
-`MINIMAX_API_KEY`, `COPILOT_GITHUB_TOKEN`, `AWS_ACCESS_KEY_ID`,
-`AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_REGION`, `AWS_PROFILE`,
+`MINIMAX_API_KEY`, `COPILOT_GITHUB_TOKEN`, `LLAMA_BASE_URL`,
+`LLAMA_API_KEY`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`,
+`AWS_SESSION_TOKEN`, `AWS_REGION`, `AWS_PROFILE`,
 `AWS_BEARER_TOKEN_BEDROCK`, `GH_TOKEN` and `GITHUB_TOKEN`.
 
 The engine forwards exactly these variables to the agent process and keeps the
 rest of its own environment (the OpenProject tokens) out of it.
+
+### llama.cpp
+
+Pi has a built-in provider for a local [llama.cpp](https://github.com/ggml-org/llama.cpp)
+router. Set the provider in the model reference and point the engine at the
+router:
+
+```dotenv
+AGENT_MODEL=llama.cpp/qwen2.5-coder-7b
+LLAMA_BASE_URL=http://192.168.1.10:8080
+# Optional: only when llama-server was started with --api-key.
+# LLAMA_API_KEY=secret
+```
+
+`LLAMA_BASE_URL` is required: it selects the server, so an API key alone is not
+enough. `LLAMA_API_KEY` is optional because Pi supplies the literal key
+`local` to an unauthenticated server. The model id is the router's model name
+(one of the ids in the router's `/models` response); start `llama-server` in
+router mode and load or preset the model. `agent-init.sh` asks for the URL as
+plain text and offers the optional API key.
+
+The engine runs Pi in print mode (`pi -p`), which does not discover a
+llama.cpp router's model list over the network. For a llama.cpp run it writes a
+per-run `models.json` into a private agent directory and points
+`PI_CODING_AGENT_DIR` at it, so the configured `AGENT_MODEL`/per-agent model is
+available without an interactive login or a shared model cache. The file
+contains the model id, the OpenAI-compatible `/v1` URL derived from
+`LLAMA_BASE_URL`, and an environment reference (`$LLAMA_API_KEY`) rather than
+the key value; an unauthenticated server gets the literal key `local`.
+
+The URL is resolved from inside the engine container, not from the host.
+`127.0.0.1` therefore means the container itself; use an address the container
+can reach, such as the host's LAN address or a llama.cpp server on the same
+Docker network.
 
 ## Runtime variables
 

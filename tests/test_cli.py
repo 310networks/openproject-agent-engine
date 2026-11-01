@@ -158,6 +158,20 @@ def test_check_config_requires_the_provider_key(
     assert "sk-or-test" not in error
 
 
+def test_check_config_accepts_llama_cpp_with_a_router_url(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AGENT_MODEL", "llama.cpp/qwen2.5-coder-7b")
+    monkeypatch.delenv("OPENROUTER_API_KEY")
+    monkeypatch.setenv("LLAMA_BASE_URL", "http://192.168.1.10:8080")
+
+    assert main(["check-config", "--offline"]) == OK_EXIT
+
+    output = capsys.readouterr().out
+    assert "LLAMA_BASE_URL" in output
+    assert "Configuration OK" in output
+
+
 def test_check_config_rejects_mixed_model_providers(
     capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:

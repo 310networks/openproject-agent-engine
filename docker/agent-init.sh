@@ -100,9 +100,11 @@ unset_env() {
 # own environment variables. This table mirrors PROVIDER_ENV_VARS in
 # src/op_agent_engine/providers.py (tests/test_providers.py keeps them in step);
 # it lives here as well so the prompts work before the engine runs. The first
-# variable of a provider is its API key, the rest are endpoints or alternative
-# credentials. `-` means the provider has no environment variable (interactive
-# login only), which an unattended run cannot use.
+# variable of a provider is normally its API key, the rest are endpoints or
+# alternative credentials. A local provider can put its endpoint first instead
+# (llama.cpp: LLAMA_BASE_URL, with an optional LLAMA_API_KEY). `-` means the
+# provider has no environment variable (interactive login only), which an
+# unattended run cannot use.
 provider_table=$(cat <<'EOF'
 amazon-bedrock AWS_BEARER_TOKEN_BEDROCK AWS_PROFILE AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_REGION
 ant-ling ANT_LING_API_KEY
@@ -120,6 +122,7 @@ google-vertex GOOGLE_CLOUD_API_KEY GOOGLE_CLOUD_PROJECT GOOGLE_CLOUD_LOCATION GO
 groq GROQ_API_KEY
 huggingface HF_TOKEN
 kimi-coding KIMI_API_KEY
+llama.cpp LLAMA_BASE_URL LLAMA_API_KEY
 meta META_API_KEY
 minimax MINIMAX_API_KEY
 minimax-cn MINIMAX_CN_API_KEY
@@ -457,6 +460,10 @@ esac
 # The provider's own credential variables; the CLI reads them from the
 # environment, and the engine forwards them to the agent process.
 say ""
+if [ "$provider" = "llama.cpp" ]; then
+  info "llama.cpp is a local server: LLAMA_BASE_URL is the router URL"
+  info "(for example http://192.168.1.10:8080) and LLAMA_API_KEY is optional."
+fi
 provider_keys=$(provider_vars "$provider")
 if provider_known "$provider"; then
   if [ -z "$provider_keys" ] || [ "$provider_keys" = "-" ]; then
@@ -472,7 +479,9 @@ else
 fi
 
 if [ -n "$provider_keys" ]; then
-  # The first variable is the provider's API key, the rest are optional.
+  # The first variable is normally the provider's API key; a local provider's
+  # endpoint (llama.cpp) is asked for as plain text instead. The rest are
+  # optional, and LLAMA_API_KEY stays optional for an unauthenticated server.
   set -- $provider_keys
   primary=$1
   shift
@@ -482,7 +491,14 @@ if [ -n "$provider_keys" ]; then
   else
     hint=
   fi
-  key=$(ask_secret "$primary" "$hint")
+  case "$primary" in
+    *_URL|*_ENDPOINT)
+      key=$(ask_text "$primary" "$existing")
+      ;;
+    *)
+      key=$(ask_secret "$primary" "$hint")
+      ;;
+  esac
   if [ -n "$key" ]; then
     set_env "$primary" "$key"
   elif [ -n "$existing" ]; then

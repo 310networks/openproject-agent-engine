@@ -71,13 +71,14 @@ included.
 | `OP_BASE_URL` | your OpenProject URL |
 | `OP_PROJECT` | project identifier(s): one, a comma list, or `*` for every project with `GIT_REPO` |
 | `OP_ENGINE_TOKEN` | API token of the runtime user (administrator) |
-| `AGENT_MODEL` | model for every agent as `<provider>/<model>`; the provider also selects the API-key variable |
+| `AGENT_MODEL` | model for every agent as `<provider>/<model>`; the provider also selects the credential or endpoint variable |
 | `AGENT_MODEL_<AGENT>` | optional per-agent model (`AGENT_MODEL_FRONTEND`, `..._BACKEND`, `..._DESIGNER`, `..._REVIEWER`) from the same provider |
 | `OP_TOKEN_FRONTEND` | token of `frontendEngineer` |
 | `OP_TOKEN_BACKEND` | token of `backendEngineer` |
 | `OP_TOKEN_DESIGNER` | token of `leadDesigner` |
 | `OP_TOKEN_REVIEWER` | token of `codeReviewer` |
 | `OPENROUTER_API_KEY` (or other provider key) | one model provider key for pi |
+| `LLAMA_BASE_URL` | llama.cpp router URL, when using the local llama.cpp provider |
 | `GH_TOKEN` | GitHub token used to clone, push and look up pull requests |
 
 For repositories with branch protection that requires the approving or merging
@@ -108,6 +109,12 @@ The team is fixed in the image, one OpenProject account and one token each:
 
 For reference, the model the script writes looks like
 `AGENT_MODEL=openrouter/deepseek/deepseek-v4.1-flash-1017`.
+
+A local [llama.cpp](https://github.com/ggml-org/llama.cpp) router is a built-in
+provider instead of a hosted key: set `AGENT_MODEL=llama.cpp/<model>` and
+`LLAMA_BASE_URL` to the router URL (plus `LLAMA_API_KEY` if the server was
+started with `--api-key`). The URL must be reachable from inside the engine
+container; see [docs/CONFIG.md](docs/CONFIG.md#llamacpp).
 
 Everything else — concurrency, timings, status names, paths and the shared git
 identity — has a working default. See [docs/CONFIG.md](docs/CONFIG.md) and the commented

@@ -1,13 +1,15 @@
 """The generic command runner: fills placeholders and executes.
 
-A runner is a pure command template: argv, cwd, env and
-optional stdin_file with ``{placeholder}`` substitution. The engine does not
-special-case pi's CLI. The only contract is the final ``RESULT:`` line on
-stdout.
+A runner is a command template: argv, cwd, env and optional stdin_file with
+``{placeholder}`` substitution. The engine does not special-case pi's CLI. The
+only contract is the final ``RESULT:`` line on stdout. The one provider-specific
+step is a per-run ``models.json`` for llama.cpp, because ``pi -p`` does not
+discover that router's model catalog itself.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from collections.abc import Callable, Mapping
@@ -20,7 +22,11 @@ from op_agent_engine.config import (
     RunnerConfig,
     WorkflowConfig,
 )
-from op_agent_engine.providers import EXTRA_AGENT_ENV_VARS, PROVIDER_ENV_VARS
+from op_agent_engine.providers import (
+    EXTRA_AGENT_ENV_VARS,
+    PROVIDER_ENV_VARS,
+    provider_of,
+)
 from op_agent_engine.runners.base import (
     RunRequest,
     RunResult,
@@ -97,6 +103,7 @@ class GenericRunner:
             self._fill(runner.cwd, values, where=f"runners.{agent.runner}.cwd")
         )
         env = self._build_env(agent_key, agent, runner, values)
+        self._configure_llama_cpp(agent_key, run_dir, env)
         stdin_file: Path | None = None
         if runner.stdin_file is not None:
             stdin_file = Path(
@@ -173,6 +180,50 @@ class GenericRunner:
             )
         return env
 
+    def _configure_llama_cpp(
+        self, agent_key: str, run_dir: Path, env: dict[str, str]
+    ) -> None:
+        """Give pi a models.json for the configured llama.cpp model.
+
+        ``pi -p`` (the engine's only mode) does not refresh the built-in
+        llama.cpp router catalog over the network. Without a model entry Pi
+        rejects ``llama.cpp/<id>`` before the request is made, even though
+        ``LLAMA_BASE_URL`` is set. A per-run agent directory with a generated
+        ``models.json`` supplies the configured model synchronously; the API
+        key stays an environment reference, never a literal in the file.
+        """
+        model = self._config.model_for(agent_key)
+        if provider_of(model) != "llama.cpp":
+            return
+        assert model is not None
+        base_url = env.get("LLAMA_BASE_URL", "").strip()
+        if not base_url:
+            raise ConfigError(
+                "LLAMA_BASE_URL is required for the llama.cpp provider"
+            )
+        model_id = model.split("/", 1)[1].strip()
+        api_key = (
+            "$LLAMA_API_KEY"
+            if env.get("LLAMA_API_KEY", "").strip()
+            else "local"
+        )
+        agent_dir = run_dir / "pi-agent"
+        agent_dir.mkdir(parents=True, exist_ok=True)
+        config = {
+            "providers": {
+                "llama.cpp": {
+                    "baseUrl": _llama_inference_url(base_url),
+                    "api": "openai-completions",
+                    "apiKey": api_key,
+                    "models": [{"id": model_id}],
+                }
+            }
+        }
+        (agent_dir / "models.json").write_text(
+            json.dumps(config, indent=2) + "\n"
+        )
+        env["PI_CODING_AGENT_DIR"] = str(agent_dir)
+
     @staticmethod
     def _fill(template: str, values: Mapping[str, str], *, where: str) -> str:
         try:
@@ -183,6 +234,14 @@ class GenericRunner:
             raise ConfigError(
                 f"{where}: unknown placeholder '{name}' (allowed: {allowed})"
             ) from error
+
+
+def _llama_inference_url(base_url: str) -> str:
+    """Normalize a llama.cpp server URL to the OpenAI-compatible API root."""
+    url = base_url.strip().rstrip("/")
+    if url.endswith("/v1"):
+        return url
+    return f"{url}/v1"
 
 
 def _is_optional_placeholder(part: str) -> bool:

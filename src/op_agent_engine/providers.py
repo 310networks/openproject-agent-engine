@@ -17,11 +17,13 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 
-#: Provider id -> credential environment variables. The first entry is the
-#: provider's primary API key; the rest are endpoints, project ids or the
-#: variables of an alternative credential source. An empty tuple means the
-#: provider authenticates interactively (``/login``), which an unattended
-#: container run cannot do.
+#: Provider id -> credential environment variables. The first entry is normally
+#: the provider's primary API key; the rest are endpoints, project ids or the
+#: variables of an alternative credential source. A local provider can make its
+#: endpoint the first entry instead (``llama.cpp``); see
+#: :data:`PROVIDER_REQUIRED_ENV_VARS`. An empty tuple means the provider
+#: authenticates interactively (``/login``), which an unattended container run
+#: cannot do.
 PROVIDER_ENV_VARS: Mapping[str, tuple[str, ...]] = {
     "amazon-bedrock": (
         "AWS_BEARER_TOKEN_BEDROCK",
@@ -67,6 +69,10 @@ PROVIDER_ENV_VARS: Mapping[str, tuple[str, ...]] = {
     "groq": ("GROQ_API_KEY",),
     "huggingface": ("HF_TOKEN",),
     "kimi-coding": ("KIMI_API_KEY",),
+    # Pi's built-in llama.cpp provider: a local (or LAN-exposed) router server.
+    # The URL selects the server and the API key is optional; Pi falls back to
+    # the literal key ``local`` for an unauthenticated server.
+    "llama.cpp": ("LLAMA_BASE_URL", "LLAMA_API_KEY"),
     "meta": ("META_API_KEY",),
     "minimax": ("MINIMAX_API_KEY",),
     "minimax-cn": ("MINIMAX_CN_API_KEY",),
@@ -95,6 +101,13 @@ PROVIDER_ENV_VARS: Mapping[str, tuple[str, ...]] = {
     "xiaomi-token-plan-sgp": ("XIAOMI_TOKEN_PLAN_SGP_API_KEY",),
     "zai": ("ZAI_API_KEY",),
     "zai-coding-cn": ("ZAI_CODING_CN_API_KEY",),
+}
+
+#: Providers whose first variable is not enough: these must be present even
+#: when another variable of the provider is set. ``llama.cpp`` is selected by
+#: its router URL, so an API key alone cannot make the provider usable.
+PROVIDER_REQUIRED_ENV_VARS: Mapping[str, tuple[str, ...]] = {
+    "llama.cpp": ("LLAMA_BASE_URL",),
 }
 
 #: Variables that are not tied to a model provider but that the agents need:
@@ -168,6 +181,18 @@ def credential_status(
             "warn",
             f"provider {provider!r} needs an interactive login, which an "
             "unattended run cannot provide; its credentials are not checked",
+        )
+
+    required = PROVIDER_REQUIRED_ENV_VARS.get(provider, ())
+    missing_required = [
+        name for name in required if not env.get(name, "").strip()
+    ]
+    if missing_required:
+        return (
+            "error",
+            f"the configured models use provider {provider!r}, which requires "
+            f"{', '.join(missing_required)}; its variables are "
+            f"{', '.join(variables)}",
         )
 
     present = [name for name in variables if env.get(name, "").strip()]

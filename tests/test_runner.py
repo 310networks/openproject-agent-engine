@@ -2,6 +2,7 @@
 
 import asyncio
 import dataclasses
+import json
 import os
 from pathlib import Path
 
@@ -154,6 +155,102 @@ def test_build_request_forwards_provider_credentials(
     assert request.env["GH_TOKEN"] == "ghp-test"
     # The engine's own OpenProject token is not forwarded to the agent.
     assert "OP_ENGINE_TOKEN" not in request.env
+
+
+def test_build_request_forwards_the_llama_cpp_server(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LLAMA_BASE_URL", "http://192.168.1.10:8080")
+    monkeypatch.setenv("LLAMA_API_KEY", "llama-secret")
+
+    runner = GenericRunner(_config())
+    request = runner.build_request(
+        "FE",
+        run_id=1,
+        work_package_id=100,
+        run_dir=tmp_path / "run",
+        repo_dir=tmp_path / "repo",
+        workspace_dir=tmp_path / "ws",
+        branch="op-4-100",
+        prompt_file=tmp_path / "prompt.txt",
+        timeout_seconds=120,
+    )
+
+    assert request.env["LLAMA_BASE_URL"] == "http://192.168.1.10:8080"
+    assert request.env["LLAMA_API_KEY"] == "llama-secret"
+
+
+def _llama_config(model: str = "llama.cpp/fake-model") -> WorkflowConfig:
+    mapping = base_mapping()
+    agents = mapping["agents"]
+    assert isinstance(agents, dict)
+    frontend = agents["FE"]
+    assert isinstance(frontend, dict)
+    frontend["model"] = model
+    return WorkflowConfig.from_mapping(mapping, environ={})
+
+
+def _build_llama_request(
+    config: WorkflowConfig, tmp_path: Path
+) -> RunRequest:
+    return GenericRunner(config).build_request(
+        "FE",
+        run_id=1,
+        work_package_id=100,
+        run_dir=tmp_path / "run",
+        repo_dir=tmp_path / "repo",
+        workspace_dir=tmp_path / "ws",
+        branch="op-4-100",
+        prompt_file=tmp_path / "prompt.txt",
+        timeout_seconds=120,
+    )
+
+
+def test_build_request_materializes_the_llama_cpp_model_without_the_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LLAMA_BASE_URL", "http://192.168.1.10:8080/")
+    monkeypatch.setenv("LLAMA_API_KEY", "llama-secret")
+
+    request = _build_llama_request(_llama_config(), tmp_path)
+
+    agent_dir = Path(request.env["PI_CODING_AGENT_DIR"])
+    text = (agent_dir / "models.json").read_text()
+    config = json.loads(text)
+    provider = config["providers"]["llama.cpp"]
+    # pi -p does not discover the router catalog itself, so the configured
+    # model is supplied in a per-run models.json.
+    assert provider["baseUrl"] == "http://192.168.1.10:8080/v1"
+    assert provider["api"] == "openai-completions"
+    assert provider["models"] == [{"id": "fake-model"}]
+    # The secret is an environment reference in the file, never its value.
+    assert provider["apiKey"] == "$LLAMA_API_KEY"
+    assert "llama-secret" not in text
+
+
+def test_build_request_uses_local_key_for_an_unauthenticated_llama_server(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LLAMA_BASE_URL", "http://llama:8080/v1")
+    monkeypatch.delenv("LLAMA_API_KEY", raising=False)
+
+    request = _build_llama_request(_llama_config(), tmp_path)
+
+    config = json.loads(
+        (Path(request.env["PI_CODING_AGENT_DIR"]) / "models.json").read_text()
+    )
+    provider = config["providers"]["llama.cpp"]
+    assert provider["baseUrl"] == "http://llama:8080/v1"
+    assert provider["apiKey"] == "local"
+
+
+def test_build_request_requires_the_llama_cpp_base_url(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("LLAMA_BASE_URL", raising=False)
+
+    with pytest.raises(ConfigError, match="LLAMA_BASE_URL is required"):
+        _build_llama_request(_llama_config(), tmp_path)
 
 
 def test_build_request_uses_a_per_agent_github_token(

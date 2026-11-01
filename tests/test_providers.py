@@ -45,6 +45,7 @@ def _script_table() -> dict[str, tuple[str, ...]]:
         ("openrouter/deepseek/deepseek-v4.1-flash-1017", "openrouter"),
         ("anthropic/claude-sonnet-4-5", "anthropic"),
         ("OpenRouter/some-model", "openrouter"),
+        ("llama.cpp/qwen2.5-coder-7b", "llama.cpp"),
         # A bare model id has no provider prefix.
         ("sonnet", None),
         # Nothing before or after the slash is not a provider reference.
@@ -90,6 +91,41 @@ def test_credential_status_only_warns_when_it_cannot_know(model: str | None) -> 
     level, _ = credential_status([model], {})
 
     assert level == "warn"
+
+
+def test_llama_cpp_needs_only_its_router_url() -> None:
+    level, message = credential_status(
+        ["llama.cpp/qwen2.5-coder-7b"],
+        {"LLAMA_BASE_URL": "http://192.168.1.10:8080"},
+    )
+
+    assert level == "ok"
+    assert "LLAMA_BASE_URL" in message
+
+
+def test_llama_cpp_accepts_the_optional_api_key() -> None:
+    level, message = credential_status(
+        ["llama.cpp/qwen2.5-coder-7b"],
+        {
+            "LLAMA_BASE_URL": "http://192.168.1.10:8080",
+            "LLAMA_API_KEY": "llama-secret",
+        },
+    )
+
+    assert level == "ok"
+    assert "LLAMA_BASE_URL" in message
+    assert "LLAMA_API_KEY" in message
+    assert "llama-secret" not in message
+
+
+def test_llama_cpp_requires_the_router_url_even_with_an_api_key() -> None:
+    level, message = credential_status(
+        ["llama.cpp/qwen2.5-coder-7b"], {"LLAMA_API_KEY": "llama-secret"}
+    )
+
+    assert level == "error"
+    assert "LLAMA_BASE_URL" in message
+    assert "llama-secret" not in message
 
 
 def test_interactive_only_providers_warn() -> None:
