@@ -1,7 +1,7 @@
 # OpenProject Agent Engine
 
 [![Docker image](https://img.shields.io/badge/Docker-kookster310%2Fop--agent--engine-2496ED?logo=docker&logoColor=white)](https://hub.docker.com/r/kookster310/op-agent-engine)
-[![Latest tag](https://img.shields.io/docker/v/kookster310/op-agent-engine?sort=semver&logo=docker&logoColor=white&label=latest%20tag)](https://hub.docker.com/r/kookster310/op-agent-engine/tags)
+[![Latest tag](https://img.shields.io/docker/v/kookster310/op-agent-engine?sort=semver&logo=docker&logoColor=white&label=latest%20tag&cacheSeconds=300)](https://hub.docker.com/r/kookster310/op-agent-engine/tags)
 
 Polls OpenProject work packages and dispatches the pi coding agent to work on
 them. OpenProject is the system of record:
