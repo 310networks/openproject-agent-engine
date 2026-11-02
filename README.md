@@ -30,7 +30,8 @@ agent, verifies the outcome against GitHub and OpenProject, and performs
    cd op-agent-engine/docker && ./agent-init.sh
    ```
 
-   Re-running is safe.
+   Re-running is safe. It pulls the current image first, so it is also the
+   upgrade step that creates any agents added by a new release.
    `--reprompt-tokens` asks for the OpenProject tokens again.
 
 3. Finish `docker/.env` before starting the stack. Add `GH_TOKEN` (and the 
