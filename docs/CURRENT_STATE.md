@@ -3,7 +3,7 @@
 What the repository contains today: it describes the implemented system, not a
 roadmap.
 
-- **Version:** `0.2.6` (`pyproject.toml`, `docker/version.json`).
+- **Version:** `0.2.7` (`pyproject.toml`, `docker/version.json`).
 - **License:** MIT (see [`LICENSE`](../LICENSE)); open source.
 - **Package:** `op_agent_engine` (Python 3.12), installed into a container image
   and published as `kookster310/op-agent-engine`.
