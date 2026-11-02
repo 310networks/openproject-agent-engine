@@ -153,8 +153,8 @@ async def test_candidate_query_filters_by_type_and_status() -> None:
             conditions[field] = spec
     # Eligible types for demo: Task=1, Feature=4, Bug=7.
     assert conditions["type"]["values"] == ["1", "4", "7"]
-    # Candidate statuses: ready_for_review=3, rejected=6, new=1.
-    assert sorted(conditions["status"]["values"]) == ["1", "3", "6"]
+    # Candidate statuses: ready_for_review=3, rejected=6, new=1, blocked=8.
+    assert sorted(conditions["status"]["values"]) == ["1", "3", "6", "8"]
     assert conditions["project"]["values"] == ["4"]
 
 
@@ -163,7 +163,7 @@ async def test_blocker_and_children_are_respected() -> None:
         wp(100, status=1, agent=11),          # eligible
         wp(104, status=1, agent=11),          # has a child -> skipped
         wp(300, status=1, parent=104, agent=11),
-        wp(105, status=1, agent=11),          # has an unfinished blocker -> skipped
+        wp(105, status=1, agent=11),          # has an unfinished blocker -> Blocked
         wp(500, status=1, agent=11),          # the blocker (New)
     ]
     relations = [
@@ -175,7 +175,60 @@ async def test_blocker_and_children_are_respected() -> None:
     assert [item.work_package.id for item in plan.items] == [100, 300, 500]
     skipped = {wp.id: reason for wp, reason in plan.skipped}
     assert skipped[104] == "has children"
-    assert skipped[105] == "has unfinished blocker(s) [500]"
+    assert 105 not in skipped
+    assert [action.work_package.id for action in plan.blocked_actions] == [105]
+    action = plan.blocked_actions[0]
+    assert action.agent_key == "IMPL"
+    assert [(blocker.id, blocker.status_key) for blocker in action.blockers] == [
+        (500, "new")
+    ]
+
+
+async def test_new_work_package_with_closed_blocker_is_dispatched() -> None:
+    work_packages = [
+        wp(105, status=1, agent=11),
+        wp(500, status=7, agent=11),  # Closed
+    ]
+    relations = [
+        {"id": 1, "type": "blocks", "_embedded": {"from": {"id": 500}, "to": {"id": 105}}},
+    ]
+    poller, _ = await make_poller(work_packages=work_packages, relations=relations)
+    plan = await poller.poll()
+
+    assert plan.blocked_actions == ()
+    assert [(item.work_package.id, item.status_key) for item in plan.items] == [
+        (105, "new")
+    ]
+
+
+async def test_blocked_work_package_unblocks_only_when_all_blockers_are_closed() -> None:
+    work_packages = [
+        wp(105, status=8, agent=11),  # Blocked
+        wp(500, status=7),            # Closed
+        wp(501, status=2),            # In Progress
+    ]
+    relations = [
+        {"id": 1, "type": "blocks", "_embedded": {"from": {"id": 500}, "to": {"id": 105}}},
+        {"id": 2, "type": "blocks", "_embedded": {"from": {"id": 501}, "to": {"id": 105}}},
+    ]
+    poller, _ = await make_poller(work_packages=work_packages, relations=relations)
+    plan = await poller.poll()
+
+    assert plan.items == ()
+    skipped = {work_package.id: reason for work_package, reason in plan.skipped}
+    assert skipped[105] == "has unfinished blocker(s) [501]"
+
+    # Closing the last blocker makes the ticket dispatchable again.
+    work_packages[2]["_links"]["status"] = {"href": "/api/v3/statuses/7"}
+    work_packages[2]["lockVersion"] = work_packages[2].get("lockVersion", 0) + 1
+    poller, _ = await make_poller(work_packages=work_packages, relations=relations)
+    plan = await poller.poll()
+
+    assert plan.blocked_actions == ()
+    assert [(item.work_package.id, item.status_key) for item in plan.items] == [
+        (105, "blocked")
+    ]
+    assert plan.items[0].agent_key == "IMPL"
 
 
 async def test_mis_scoped_agent_value_is_skipped_without_claiming() -> None:

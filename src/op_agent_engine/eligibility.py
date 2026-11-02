@@ -19,7 +19,7 @@ from op_agent_engine.openproject.workpackage import WorkPackage
 # when the work package is already assigned to the matching agent user and has
 # no active run.
 DISPATCH_STATUS_KEYS = frozenset(
-    {"new", "rejected", "ready_for_review", "in_progress", "in_testing"}
+    {"new", "rejected", "ready_for_review", "blocked", "in_progress", "in_testing"}
 )
 RECOVERY_STATUS_KEYS = frozenset({"in_progress", "in_testing"})
 
@@ -185,7 +185,7 @@ def evaluate_eligibility(
             return _reject(
                 "status 'In Testing' can only be recovered by the reviewer agent"
             )
-    elif status_key in ("new", "rejected"):
+    elif status_key in ("new", "rejected", "blocked"):
         agent_key = wp.agent_value
         if agent_key is None:
             return _reject("AGENT field is not set")

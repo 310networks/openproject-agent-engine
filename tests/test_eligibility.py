@@ -19,7 +19,7 @@ from tests.test_resolve import BASE_URL, TOKEN, make_fake, workflow_mapping
 
 # Standard resolution: project demo=4, types Task=1/Feature=4/Bug=7,
 # statuses New=1/In Progress=2/Ready for Review=3/In Testing=4/On Hold=5/
-# Rejected=6/Closed=7, agent users impl=11/reviewer=12/engine=10,
+# Rejected=6/Closed=7/Blocked=8, agent users impl=11/reviewer=12/engine=10,
 # AGENT options IMPL=11/REVIEWER=22.
 
 
@@ -164,6 +164,28 @@ CASES: list[dict[str, Any]] = [
         "wp": {"status_id": 7, "status_name": "Closed"},
         "eligible": False,
         "reason": "status 'Closed' is not dispatchable",
+    },
+    {
+        "id": "rule3_blocked_routes_to_agent",
+        "wp": {"status_id": 8, "status_name": "Blocked"},
+        "eligible": True,
+        "agent_key": "IMPL",
+        "status_key": "blocked",
+    },
+    {
+        "id": "rule3_blocked_unfinished_blocker",
+        "wp": {"status_id": 8, "status_name": "Blocked"},
+        "external": {"blocker_status_keys": [(500, "new")]},
+        "eligible": False,
+        "reason": "has unfinished blocker(s) [500]",
+    },
+    {
+        "id": "rule3_blocked_all_blockers_closed",
+        "wp": {"status_id": 8, "status_name": "Blocked"},
+        "external": {"blocker_status_keys": [(500, "closed"), (501, "closed")]},
+        "eligible": True,
+        "agent_key": "IMPL",
+        "status_key": "blocked",
     },
     # Rule 4: AGENT field routing for New/Rejected.
     {

@@ -7,7 +7,7 @@ rest is manual in the UI. The Agent Worker role name must match `OP_AGENT_ROLE`
 
 ## 1. Statuses
 
-**Administration → Work packages → Statuses** — ensure these seven exist.
+**Administration → Work packages → Statuses** — ensure these eight exist.
 Names are matched case- and whitespace-insensitively, so OpenProject's
 default sentence case (`In progress`) also matches the title case below:
 
@@ -19,6 +19,7 @@ default sentence case (`In progress`) also matches the title case below:
 | `in_testing` | `In Testing` |
 | `on_hold` | `On Hold` |
 | `rejected` | `Rejected` |
+| `blocked` | `Blocked` |
 | `closed` | `Closed` |
 
 ## 2. Types

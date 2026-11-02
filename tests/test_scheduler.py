@@ -13,7 +13,12 @@ from typing import Any
 
 from op_agent_engine.openproject.client import OpenProjectClient
 from op_agent_engine.openproject.workpackage import parse_work_package
-from op_agent_engine.poller import DispatchItem, DispatchPlan
+from op_agent_engine.poller import (
+    BlockAction,
+    Blocker,
+    DispatchItem,
+    DispatchPlan,
+)
 from op_agent_engine.scheduler import Scheduler
 from op_agent_engine.store import CANCELLED, RUNNING, Store
 from tests.fakes import non_write_requests
@@ -56,8 +61,10 @@ def make_item_from_entry(
     )
 
 
-def plan(*items: DispatchItem) -> DispatchPlan:
-    return DispatchPlan(items=tuple(items), skipped=())
+def plan(*items: DispatchItem, blocked: tuple[BlockAction, ...] = ()) -> DispatchPlan:
+    return DispatchPlan(
+        items=tuple(items), skipped=(), blocked_actions=blocked
+    )
 
 
 async def make_scheduler(
@@ -198,6 +205,91 @@ async def test_claim_rejected_work_package_fixes(tmp_path: Path) -> None:
         assert report.claimed[0].kind == "fix"
         body = fake.patches[0]["body"]
         assert body["_links"]["status"]["href"] == "/api/v3/statuses/2"
+    finally:
+        await client.aclose()
+        store.close()
+
+
+async def test_blocked_work_package_is_claimed_as_implement(tmp_path: Path) -> None:
+    entries = seed_entries(wp(100, status=8, agent=11))
+    scheduler, fake, store, client = await make_scheduler(
+        tmp_path, work_packages=entries
+    )
+    try:
+        report = await scheduler.schedule(
+            plan(make_item_from_entry(entries[0], status_key="blocked"))
+        )
+
+        assert report.claimed_count == 1
+        assert report.claimed[0].kind == "implement"
+        assert fake.patches[0]["body"]["_links"]["status"]["href"] == (
+            "/api/v3/statuses/2"
+        )
+        assert fake.patches[0]["body"]["_links"]["assignee"]["href"] == (
+            "/api/v3/users/11"
+        )
+        assert fake.work_packages[0]["_links"]["status"]["href"] == (
+            "/api/v3/statuses/2"
+        )
+    finally:
+        await client.aclose()
+        store.close()
+
+
+async def test_new_work_package_with_blocker_moves_to_blocked(
+    tmp_path: Path,
+) -> None:
+    entries = seed_entries(wp(100, status=1, agent=11))
+    scheduler, fake, store, client = await make_scheduler(
+        tmp_path, work_packages=entries
+    )
+    try:
+        action = BlockAction(
+            work_package=parse_work_package(entries[0], "customField3", OPTION_ID_TO_VALUE),
+            agent_key="IMPL",
+            blockers=(Blocker(500, "OP#500", "new"),),
+        )
+        report = await scheduler.schedule(plan(blocked=(action,)))
+
+        assert report.claimed_count == 0
+        assert report.blocked == (action,)
+        assert len(fake.patches) == 1
+        body = fake.patches[0]["body"]
+        assert body["_links"]["status"]["href"] == "/api/v3/statuses/8"
+        assert "assignee" not in body["_links"]
+        assert fake.work_packages[0]["_links"]["status"]["href"] == (
+            "/api/v3/statuses/8"
+        )
+        comments = [
+            str(comment["content"])
+            for comment in fake.comments
+            if comment.get("workPackageId") == 100
+        ]
+        assert len(comments) == 1
+        assert comments[0].startswith("ENGINE: blocked by dependency")
+        assert "OP#500" in comments[0]
+    finally:
+        await client.aclose()
+        store.close()
+
+
+async def test_dry_run_block_action_writes_nothing(tmp_path: Path) -> None:
+    entries = seed_entries(wp(100, status=1, agent=11))
+    scheduler, fake, store, client = await make_scheduler(
+        tmp_path, work_packages=entries
+    )
+    try:
+        action = BlockAction(
+            work_package=parse_work_package(entries[0], "customField3", OPTION_ID_TO_VALUE),
+            agent_key="IMPL",
+            blockers=(Blocker(500, "OP#500", "new"),),
+        )
+        report = await scheduler.schedule(plan(blocked=(action,)), dry_run=True)
+
+        assert report.blocked == (action,)
+        assert fake.patches == []
+        assert fake.comments == []
+        assert len(non_write_requests(fake.requests)) == len(fake.requests)
     finally:
         await client.aclose()
         store.close()

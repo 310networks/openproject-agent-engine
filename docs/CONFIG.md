@@ -158,6 +158,7 @@ docker compose up -d engine
 | `OP_STATUS_IN_TESTING` | `In Testing` | |
 | `OP_STATUS_ON_HOLD` | `On Hold` | |
 | `OP_STATUS_REJECTED` | `Rejected` | |
+| `OP_STATUS_BLOCKED` | `Blocked` | |
 | `OP_STATUS_CLOSED` | `Closed` | |
 
 ## Provider credentials

@@ -220,6 +220,18 @@ def blocked_comment(reason: str) -> str:
     return f"ENGINE: blocked\n\n{reason}"
 
 
+def blocked_by_relations_comment(blocker_labels: list[str]) -> str:
+    """Engine comment posted when OpenProject relations block a New ticket."""
+    blockers = ", ".join(blocker_labels)
+    return (
+        "ENGINE: blocked by dependency\n\n"
+        f"This ticket is blocked by unfinished work package(s): {blockers}.\n\n"
+        "The engine moved it to Blocked. It will move back to In Progress and "
+        "be assigned to the configured agent automatically once every blocker "
+        "is Closed."
+    )
+
+
 def rejection_cap_comment(*, rejection_number: int, max_rejections: int) -> str:
     """Engine comment posted when a rejection would exceed the cap.
 
