@@ -31,6 +31,8 @@ EXAMPLE_ENV = {
     "OP_TOKEN_FRONTEND": "frontend-token",
     "OP_TOKEN_BACKEND": "backend-token",
     "OP_TOKEN_DESIGNER": "designer-token",
+    "OP_TOKEN_VFX": "vfx-token",
+    "OP_TOKEN_AUDIO": "audio-token",
     "OP_TOKEN_REVIEWER": "reviewer-token",
     "WORKSPACE_ROOT": "/srv/agents",
 }
@@ -58,7 +60,14 @@ SAMPLE_RESOLUTION = OpenProjectResolution(
     agent_field=ResolvedAgentField(
         "AGENT",
         "customField3",
-        {"FRONTEND": 11, "BACKEND": 12, "LEAD_DESIGNER": 13, "REVIEWER": 14},
+        {
+            "FRONTEND": 11,
+            "BACKEND": 12,
+            "LEAD_DESIGNER": 13,
+            "VFX": 15,
+            "AUDIO": 16,
+            "REVIEWER": 14,
+        },
     ),
 )
 
@@ -103,7 +112,7 @@ def test_check_config_reads_the_environment(capsys: pytest.CaptureFixture[str]) 
 
     output = capsys.readouterr().out
     assert "Configuration OK" in output
-    assert "agents: 4" in output
+    assert "agents: 6" in output
     assert "runners: 1" in output
     # Secrets must never appear in check-config output.
     assert "frontend-token" not in output

@@ -1,6 +1,13 @@
 from op_agent_engine.openproject.workpackage import parse_work_package
 
-OPTIONS = {1: "FRONTEND", 2: "BACKEND", 3: "LEAD_DESIGNER", 4: "REVIEWER"}
+OPTIONS = {
+    1: "FRONTEND",
+    2: "BACKEND",
+    3: "LEAD_DESIGNER",
+    4: "VFX",
+    5: "AUDIO",
+    6: "REVIEWER",
+}
 
 
 def entry(**links: object) -> dict[str, object]:

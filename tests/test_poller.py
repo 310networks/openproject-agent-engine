@@ -27,6 +27,8 @@ def _set_agent_tokens(monkeypatch) -> None:
         "OP_TOKEN_FRONTEND",
         "OP_TOKEN_BACKEND",
         "OP_TOKEN_DESIGNER",
+        "OP_TOKEN_VFX",
+        "OP_TOKEN_AUDIO",
         "OP_TOKEN_REVIEWER",
     ):
         monkeypatch.setenv(name, "token")

@@ -18,6 +18,8 @@ DEPLOYMENT_ENV = {
     "OP_TOKEN_FRONTEND": "frontend-token",
     "OP_TOKEN_BACKEND": "backend-token",
     "OP_TOKEN_DESIGNER": "designer-token",
+    "OP_TOKEN_VFX": "vfx-token",
+    "OP_TOKEN_AUDIO": "audio-token",
     "OP_TOKEN_REVIEWER": "reviewer-token",
 }
 
@@ -69,11 +71,22 @@ def test_env_builds_the_whole_workflow() -> None:
     # The repository is resolved from the GIT_REPO project attribute at
     # startup.
     assert config.projects[0].repo is None
-    assert set(config.agents) == {"FRONTEND", "BACKEND", "LEAD_DESIGNER", "REVIEWER"}
+    assert set(config.agents) == {
+        "FRONTEND",
+        "BACKEND",
+        "LEAD_DESIGNER",
+        "VFX",
+        "AUDIO",
+        "REVIEWER",
+    }
     assert config.reviewer.name == "codeReviewer"
     assert {agent.kind for agent in config.agents.values()} == {"implementer", "reviewer"}
     assert config.agents["FRONTEND"].env["OP_CLI_TOKEN"] == "frontend-token"
     assert config.agents["FRONTEND"].env["OP_CLI_HOST"] == DEPLOYMENT_ENV["OP_BASE_URL"]
+    assert config.agents["VFX"].env["OP_CLI_TOKEN"] == "vfx-token"
+    assert config.agents["AUDIO"].env["OP_CLI_TOKEN"] == "audio-token"
+    assert config.agents["VFX"].name == "vfxArtist"
+    assert config.agents["AUDIO"].name == "audioDesigner"
     assert set(config.runners) == {"pi"}
 
 
@@ -186,6 +199,24 @@ def test_per_agent_model_overrides_the_shared_model() -> None:
     assert config.model_for("REVIEWER") == "openrouter/anthropic/claude-sonnet-4-5"
     assert (
         config.model_for("FRONTEND")
+        == "openrouter/deepseek/deepseek-v4.1-flash-1017"
+    )
+
+
+def test_vfx_and_audio_can_have_their_own_models() -> None:
+    config = WorkflowConfig.from_settings(
+        deployment_settings(
+            agent_model="openrouter/deepseek/deepseek-v4.1-flash-1017",
+            agent_model_vfx="openrouter/deepseek/deepseek-v4.1-vision",
+            agent_model_audio="openrouter/deepseek/deepseek-v4.1-chat",
+        ),
+        environ=dict(DEPLOYMENT_ENV),
+    )
+
+    assert config.model_for("VFX") == "openrouter/deepseek/deepseek-v4.1-vision"
+    assert config.model_for("AUDIO") == "openrouter/deepseek/deepseek-v4.1-chat"
+    assert (
+        config.model_for("BACKEND")
         == "openrouter/deepseek/deepseek-v4.1-flash-1017"
     )
 

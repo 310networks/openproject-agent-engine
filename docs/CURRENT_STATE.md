@@ -111,6 +111,8 @@ The team is fixed in code and in the image (`agents/*/AGENTS.md`):
 | `FRONTEND` | `frontendEngineer` | implementer | `OP_TOKEN_FRONTEND` |
 | `BACKEND` | `backendEngineer` | implementer | `OP_TOKEN_BACKEND` |
 | `LEAD_DESIGNER` | `leadDesigner` | implementer | `OP_TOKEN_DESIGNER` |
+| `VFX` | `vfxArtist` | implementer | `OP_TOKEN_VFX` |
+| `AUDIO` | `audioDesigner` | implementer | `OP_TOKEN_AUDIO` |
 | `REVIEWER` | `codeReviewer` | reviewer | `OP_TOKEN_REVIEWER` |
 
 Every agent runs pi:
@@ -145,7 +147,7 @@ added by hand. The documented template is `docker/.env.example`. The full
 reference, including provider variables, object names, limits and compose-only
 settings, is [CONFIG.md](CONFIG.md).
 
-Required values: `OP_BASE_URL`, `OP_PROJECT`, `OP_ENGINE_TOKEN`, the four
+Required values: `OP_BASE_URL`, `OP_PROJECT`, `OP_ENGINE_TOKEN`, the six
 `OP_TOKEN_*` agent tokens, one model provider key and `GH_TOKEN`. The
 `GIT_REPO` project and `AGENT` work-package custom fields are each created once and
 assigned to all projects, so each monitored project only needs its own
@@ -166,7 +168,7 @@ values, credentials and deliberate tuning.
    key (for llama.cpp, the router URL and optional API key);
 2. asks for an OpenProject administrator token (used once, never written);
 3. runs `provision --apply --json --passwords` in the container, which creates
-   or reconciles the engine user, the four agent users and the `Agent Worker`
+   or reconciles the engine user, the six agent users and the `Agent Worker`
    role/memberships, and shows each new password in its own block;
 4. prompts for one token per account and verifies it with
    `verify-token --login ...` (the engine token is also checked for admin);
