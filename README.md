@@ -1,7 +1,19 @@
-# OpenProject Agent Engine
+<p align="center">
+  <img src="docs/op-agent-engine-logo-512.png" width="160" alt="OpenProject Agent Engine logo">
+</p>
 
-[![Docker image](https://img.shields.io/badge/Docker-kookster310%2Fop--agent--engine-2496ED?logo=docker&logoColor=white)](https://hub.docker.com/r/kookster310/op-agent-engine)
-[![Latest tag](https://img.shields.io/docker/v/kookster310/op-agent-engine?sort=semver&logo=docker&logoColor=white&label=latest%20tag&cacheSeconds=300)](https://hub.docker.com/r/kookster310/op-agent-engine/tags)
+<h1 align="center">OpenProject Agent Engine</h1>
+
+<p align="center">
+  <em>Work packages in. Merged pull requests out.</em>
+</p>
+
+<p align="center">
+  <a href="https://hub.docker.com/r/kookster310/op-agent-engine"><img src="https://img.shields.io/badge/Docker-kookster310%2Fop--agent--engine-2496ED?logo=docker&logoColor=white" alt="Docker image"></a>
+  <a href="https://hub.docker.com/r/kookster310/op-agent-engine/tags"><img src="https://img.shields.io/docker/v/kookster310/op-agent-engine?sort=semver&logo=docker&logoColor=white&label=latest%20tag&cacheSeconds=300" alt="Latest tag"></a>
+</p>
+
+---
 
 Polls OpenProject work packages and dispatches the pi coding agent to work on
 them. OpenProject is the system of record:
@@ -9,7 +21,9 @@ the engine claims work, prepares a per-agent clone, renders a prompt, runs the
 agent, verifies the outcome against GitHub and OpenProject, and performs
 **every** status transition itself. Agents never change status.
 
-![](docs/op-agent-engine-demo.gif)
+<p align="center">
+  <img src="docs/op-agent-engine-demo.gif" alt="OpenProject Agent Engine demo" width="860">
+</p>
 
 ## Requirements
 

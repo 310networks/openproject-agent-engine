@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <title>OpenProject Agent Engine</title>
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0c4a6e"/>
+      <stop offset="1" stop-color="#0e7490"/>
+    </linearGradient>
+    <clipPath id="tile"><rect width="512" height="512" rx="96"/></clipPath>
+  </defs>
+  <g clip-path="url(#tile)">
+    <rect width="512" height="512" fill="url(#sky)"/>
+    <!-- rainforest hills -->
+    <path d="M0 400 C90 330 170 330 240 385 C310 320 420 330 512 395 V512 H0 Z" fill="#15803d"/>
+    <path d="M0 425 C100 375 190 385 270 420 C350 375 440 385 512 420 V512 H0 Z" fill="#166534"/>
+    <!-- ocean waves -->
+    <path d="M0 450 C60 428 100 428 160 450 S260 472 320 450 S440 428 512 450 V512 H0 Z" fill="#0ea5e9"/>
+    <path d="M0 482 C70 462 110 462 170 482 S270 502 330 482 S450 462 512 482 V512 H0 Z" fill="#0369a1"/>
+  </g>
+  <!-- hub and agent nodes -->
+  <g stroke="#86efac" stroke-width="14" stroke-linecap="round">
+    <line x1="256" y1="205" x2="150" y2="115"/>
+    <line x1="256" y1="205" x2="362" y2="115"/>
+    <line x1="256" y1="205" x2="256" y2="305"/>
+  </g>
+  <circle cx="150" cy="115" r="32" fill="#4ade80"/>
+  <circle cx="362" cy="115" r="32" fill="#4ade80"/>
+  <circle cx="256" cy="305" r="32" fill="#4ade80"/>
+  <circle cx="256" cy="205" r="58" fill="#f0fdf4"/>
+  <circle cx="256" cy="205" r="26" fill="#0c4a6e"/>
+</svg>
