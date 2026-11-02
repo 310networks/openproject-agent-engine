@@ -411,7 +411,7 @@ async def _reconcile_users(
     *,
     apply: bool,
 ) -> dict[str, dict[str, Any]]:
-    """Ensure the four agent users and the engine user exist.
+    """Ensure the configured agent users and the engine user exist.
 
     Returns a login -> user payload mapping for the users that exist (after
     applying, when requested).

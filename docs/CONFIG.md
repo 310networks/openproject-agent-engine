@@ -22,6 +22,8 @@ reference.
 | `OP_TOKEN_FRONTEND` | token of `frontendEngineer` |
 | `OP_TOKEN_BACKEND` | token of `backendEngineer` |
 | `OP_TOKEN_DESIGNER` | token of `leadDesigner` |
+| `OP_TOKEN_VFX` | token of `vfxArtist` |
+| `OP_TOKEN_AUDIO` | token of `audioDesigner` |
 | `OP_TOKEN_REVIEWER` | token of `codeReviewer` |
 | `GH_TOKEN` | GitHub token used to clone, push and look up pull requests |
 
@@ -61,6 +63,8 @@ The team is fixed, one OpenProject account and one token each:
 | `FRONTEND` | `frontendEngineer` | implementer | `OP_TOKEN_FRONTEND` |
 | `BACKEND` | `backendEngineer` | implementer | `OP_TOKEN_BACKEND` |
 | `LEAD_DESIGNER` | `leadDesigner` | implementer | `OP_TOKEN_DESIGNER` |
+| `VFX` | `vfxArtist` | implementer | `OP_TOKEN_VFX` |
+| `AUDIO` | `audioDesigner` | implementer | `OP_TOKEN_AUDIO` |
 | `REVIEWER` | `codeReviewer` | reviewer | `OP_TOKEN_REVIEWER` |
 
 Exactly one agent is the reviewer. The implementers and the reviewer all run
@@ -83,7 +87,8 @@ means joining them yourself.
 
 `AGENT_MODEL_<AGENT>` overrides the shared model for one agent
 (`AGENT_MODEL_FRONTEND`, `AGENT_MODEL_BACKEND`, `AGENT_MODEL_DESIGNER`,
-`AGENT_MODEL_REVIEWER`); without one, the agent uses `AGENT_MODEL`. A
+`AGENT_MODEL_VFX`, `AGENT_MODEL_AUDIO`, `AGENT_MODEL_REVIEWER`); without one,
+the agent uses `AGENT_MODEL`. A
 deployment can therefore name a model per agent and leave `AGENT_MODEL` unset
 entirely — an agent with neither uses pi's own default. The deployment
 still has **one provider**, because it stores one provider key: a model

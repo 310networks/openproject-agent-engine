@@ -802,6 +802,8 @@ TEAM: tuple[tuple[str, str, str, str], ...] = (
     ("FRONTEND", "frontendEngineer", "implementer", "OP_TOKEN_FRONTEND"),
     ("BACKEND", "backendEngineer", "implementer", "OP_TOKEN_BACKEND"),
     ("LEAD_DESIGNER", "leadDesigner", "implementer", "OP_TOKEN_DESIGNER"),
+    ("VFX", "vfxArtist", "implementer", "OP_TOKEN_VFX"),
+    ("AUDIO", "audioDesigner", "implementer", "OP_TOKEN_AUDIO"),
     ("REVIEWER", "codeReviewer", "reviewer", "OP_TOKEN_REVIEWER"),
 )
 
@@ -857,6 +859,8 @@ class EngineSettings(BaseSettings):
     agent_model_frontend: str | None = None
     agent_model_backend: str | None = None
     agent_model_designer: str | None = None
+    agent_model_vfx: str | None = None
+    agent_model_audio: str | None = None
     agent_model_reviewer: str | None = None
     agent_timeout_seconds: int = Field(default=3600, gt=0)
 
@@ -909,6 +913,8 @@ class EngineSettings(BaseSettings):
             self.agent_model_frontend,
             self.agent_model_backend,
             self.agent_model_designer,
+            self.agent_model_vfx,
+            self.agent_model_audio,
             self.agent_model_reviewer,
         )
         return tuple(
@@ -962,6 +968,8 @@ AGENT_MODEL_VARS: dict[str, str] = {
     "FRONTEND": "AGENT_MODEL_FRONTEND",
     "BACKEND": "AGENT_MODEL_BACKEND",
     "LEAD_DESIGNER": "AGENT_MODEL_DESIGNER",
+    "VFX": "AGENT_MODEL_VFX",
+    "AUDIO": "AGENT_MODEL_AUDIO",
     "REVIEWER": "AGENT_MODEL_REVIEWER",
 }
 
@@ -972,6 +980,8 @@ def _agent_models(settings: EngineSettings) -> dict[str, str | None]:
         "FRONTEND": settings.agent_model_frontend,
         "BACKEND": settings.agent_model_backend,
         "LEAD_DESIGNER": settings.agent_model_designer,
+        "VFX": settings.agent_model_vfx,
+        "AUDIO": settings.agent_model_audio,
         "REVIEWER": settings.agent_model_reviewer,
     }
 

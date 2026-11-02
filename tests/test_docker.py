@@ -234,6 +234,8 @@ def test_docs_list_every_environment_variable() -> None:
         "OP_TOKEN_FRONTEND",
         "OP_TOKEN_BACKEND",
         "OP_TOKEN_DESIGNER",
+        "OP_TOKEN_VFX",
+        "OP_TOKEN_AUDIO",
         "OP_TOKEN_REVIEWER",
     ):
         assert required in readme, f"{required} is required but not in README.md"

@@ -66,10 +66,12 @@ before starting the stack.
 | `OP_PROJECT` | project identifier(s): one, a comma list, or `*` for every project with `GIT_REPO` |
 | `OP_ENGINE_TOKEN` | API token of the runtime user (administrator) |
 | `AGENT_MODEL` | model for every agent as `<provider>/<model>`; the provider also selects the credential or endpoint variable |
-| `AGENT_MODEL_<AGENT>` | optional per-agent model (`AGENT_MODEL_FRONTEND`, `..._BACKEND`, `..._DESIGNER`, `..._REVIEWER`) from the same provider |
+| `AGENT_MODEL_<AGENT>` | optional per-agent model (`AGENT_MODEL_FRONTEND`, `..._BACKEND`, `..._DESIGNER`, `..._VFX`, `..._AUDIO`, `..._REVIEWER`) from the same provider |
 | `OP_TOKEN_FRONTEND` | token of `frontendEngineer` |
 | `OP_TOKEN_BACKEND` | token of `backendEngineer` |
 | `OP_TOKEN_DESIGNER` | token of `leadDesigner` |
+| `OP_TOKEN_VFX` | token of `vfxArtist` |
+| `OP_TOKEN_AUDIO` | token of `audioDesigner` |
 | `OP_TOKEN_REVIEWER` | token of `codeReviewer` |
 | `OPENROUTER_API_KEY` (or other provider key) | one model provider key for pi |
 | `LLAMA_BASE_URL` | llama.cpp router URL, when using the local llama.cpp provider |
@@ -100,6 +102,8 @@ The team is fixed in the image, one OpenProject account and one token each:
 | `FRONTEND` | `frontendEngineer` | implementer |
 | `BACKEND` | `backendEngineer` | implementer |
 | `LEAD_DESIGNER` | `leadDesigner` | implementer |
+| `VFX` | `vfxArtist` | implementer |
+| `AUDIO` | `audioDesigner` | implementer |
 | `REVIEWER` | `codeReviewer` | reviewer |
 
 For reference, the model the script writes looks like

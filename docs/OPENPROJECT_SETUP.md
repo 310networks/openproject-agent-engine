@@ -53,7 +53,7 @@ With `OP_PROJECT=*` the engine monitors every active project with a non-empty
 The routing agent is a **work-package** custom field (work-package custom
 fields are still under Custom fields): **Administration → Custom fields → Work
 packages → New custom field**, format **List** (single value), options
-`FRONTEND`, `BACKEND`, `LEAD_DESIGNER`, `REVIEWER` (case-sensitive), choose
+`FRONTEND`, `BACKEND`, `LEAD_DESIGNER`, `VFX`, `AUDIO`, `REVIEWER` (case-sensitive), choose
 **For all projects** and all types. It must be available for `Task`, `Bug`,
 `Feature`, otherwise startup fails with
 `custom field 'AGENT' not found in schema <project>-<type>`. `REVIEWER` is
@@ -75,7 +75,7 @@ If you changed `docker/.env` instead, recreate the container:
 Create one project role — **Administration → Users and permissions → Roles
 and permissions** (the API is read-only for roles):
 
-- **Agent Worker** (shared by all four agent users): *View work packages*,
+- **Agent Worker** (shared by all six agent users): *View work packages*,
   *Add comments*, *Become assignee/responsible*. No other write permissions —
   agents can never change status. Leave every workflow transition unchecked.
 

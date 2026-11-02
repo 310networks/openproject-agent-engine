@@ -51,7 +51,7 @@ push to and merge in.
    ```
 
 3. **Run the interactive setup.** It asks for the OpenProject URL and token,
-   the four agent tokens, the model and the provider key, and writes `.env`.
+   the six agent tokens, the model and the provider key, and writes `.env`.
    Re-running is safe:
 
    ```bash
@@ -94,8 +94,8 @@ OP_AGENT_ENGINE_TAG=0.2.6
 | `OP_PROJECT` | project identifier: one, a comma list, or `*` for every project that has `GIT_REPO` |
 | `OP_ENGINE_TOKEN` | API token of the runtime user (administrator) |
 | `AGENT_MODEL` | model for every agent as `<provider>/<model>`; the provider selects the credential variable |
-| `AGENT_MODEL_<AGENT>` | optional per-agent override: `AGENT_MODEL_FRONTEND`, `..._BACKEND`, `..._DESIGNER`, `..._REVIEWER` |
-| `OP_TOKEN_FRONTEND` / `_BACKEND` / `_DESIGNER` / `_REVIEWER` | one token per agent account |
+| `AGENT_MODEL_<AGENT>` | optional per-agent override: `AGENT_MODEL_FRONTEND`, `..._BACKEND`, `..._DESIGNER`, `..._VFX`, `..._AUDIO`, `..._REVIEWER` |
+| `OP_TOKEN_FRONTEND` / `_BACKEND` / `_DESIGNER` / `_VFX` / `_AUDIO` / `_REVIEWER` | one token per agent account |
 | `OPENROUTER_API_KEY` (or another provider key) | model provider credential |
 | `LLAMA_BASE_URL` | local llama.cpp router URL, instead of a hosted provider |
 | `GH_TOKEN` | GitHub token used to clone, push and look up pull requests |
@@ -117,6 +117,8 @@ Fixed in the image, one OpenProject account and one token each:
 | `FRONTEND` | `frontendEngineer` | implementer |
 | `BACKEND` | `backendEngineer` | implementer |
 | `LEAD_DESIGNER` | `leadDesigner` | implementer |
+| `VFX` | `vfxArtist` | implementer |
+| `AUDIO` | `audioDesigner` | implementer |
 | `REVIEWER` | `codeReviewer` | reviewer |
 
 ## How a ticket flows

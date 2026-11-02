@@ -40,7 +40,7 @@ cycle, or back the run with a real branch/PR when testing live.
       OpenProject accounts are removed or locked by hand in Administration.
 - [ ] `check-config` resolves every status, user, project, type, role and
       `AGENT` option.
-- [ ] `provision --apply` creates the five users and the four agent
+- [ ] `provision --apply` creates the seven users and the six agent
       memberships; a second run makes no changes.
 - [ ] `dry-run` logs a plausible plan and writes nothing.
 - [ ] A `New` ticket with `AGENT=FRONTEND`: `once` claims it

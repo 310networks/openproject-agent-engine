@@ -358,6 +358,8 @@ if [ -z "$existing_model" ]; then
     AGENT_MODEL_FRONTEND \
     AGENT_MODEL_BACKEND \
     AGENT_MODEL_DESIGNER \
+    AGENT_MODEL_VFX \
+    AGENT_MODEL_AUDIO \
     AGENT_MODEL_REVIEWER
   do
     existing_model=$(get_env "$name")
@@ -404,6 +406,8 @@ case "$separate" in
       FRONTEND:AGENT_MODEL_FRONTEND \
       BACKEND:AGENT_MODEL_BACKEND \
       LEAD_DESIGNER:AGENT_MODEL_DESIGNER \
+      VFX:AGENT_MODEL_VFX \
+      AUDIO:AGENT_MODEL_AUDIO \
       REVIEWER:AGENT_MODEL_REVIEWER
     do
       agent_name=${entry%%:*}
@@ -453,6 +457,8 @@ case "$separate" in
       AGENT_MODEL_FRONTEND \
       AGENT_MODEL_BACKEND \
       AGENT_MODEL_DESIGNER \
+      AGENT_MODEL_VFX \
+      AGENT_MODEL_AUDIO \
       AGENT_MODEL_REVIEWER
     do
       if [ -n "$(get_env "$name")" ]; then
@@ -590,6 +596,12 @@ backend_token=$TOKEN_VALUE
 prompt_token OP_TOKEN_DESIGNER leadDesigner "LEAD_DESIGNER" 0
 designer_token=$TOKEN_VALUE
 
+prompt_token OP_TOKEN_VFX vfxArtist "VFX" 0
+vfx_token=$TOKEN_VALUE
+
+prompt_token OP_TOKEN_AUDIO audioDesigner "AUDIO" 0
+audio_token=$TOKEN_VALUE
+
 prompt_token OP_TOKEN_REVIEWER codeReviewer "REVIEWER" 0
 reviewer_token=$TOKEN_VALUE
 
@@ -627,6 +639,8 @@ set_env OP_ENGINE_TOKEN "$engine_token"
 set_env OP_TOKEN_FRONTEND "$frontend_token"
 set_env OP_TOKEN_BACKEND "$backend_token"
 set_env OP_TOKEN_DESIGNER "$designer_token"
+set_env OP_TOKEN_VFX "$vfx_token"
+set_env OP_TOKEN_AUDIO "$audio_token"
 set_env OP_TOKEN_REVIEWER "$reviewer_token"
 # GitHub credentials (GH_TOKEN and optional GH_TOKEN_REVIEWER) are left for
 # the operator to fill in by hand; this wizard only sets up OpenProject.
