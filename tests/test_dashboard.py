@@ -171,14 +171,61 @@ def test_snapshot_agents(snapshot: tuple[dict[str, Any], Path]) -> None:
     assert impl["status"] == "running"
     assert impl["current_session"]["id"] == 1
     assert impl["current_session"]["subject"] == "Build the dashboard"
+    assert [session["id"] for session in impl["current_sessions"]] == [1]
     assert impl["counts"]["total"] == 1
     assert impl["counts"]["running"] == 1
 
     reviewer = agents["REVIEWER"]
     assert reviewer["status"] == "idle"
     assert reviewer["current_session"] is None
+    assert reviewer["current_sessions"] == []
     assert reviewer["counts"]["completed"] == 1
     assert reviewer["counts"]["declined"] == 1
+
+
+def test_snapshot_agent_shows_every_active_session(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    write_heartbeat(settings)
+
+    store = Store(tmp_path / "engine.db")
+    try:
+        for work_package_id, subject in (
+            (101, "First concurrent task"),
+            (102, "Second concurrent task"),
+            (103, "Third concurrent task"),
+        ):
+            store.begin_run(
+                work_package_id=work_package_id,
+                project_id=4,
+                agent="IMPL",
+                kind="implement",
+                attempt=1,
+                branch=f"op-4-{work_package_id}",
+                run_dir_template=str(store.runs_dir / "{id}"),
+                display_id=f"#{work_package_id}",
+                subject=subject,
+            )
+    finally:
+        store.close()
+
+    payload = DashboardData(_config(), settings).snapshot()
+    impl = next(agent for agent in payload["agents"] if agent["key"] == "IMPL")
+
+    assert impl["status"] == "running"
+    assert impl["counts"]["running"] == 3
+    assert [
+        session["work_package_id"] for session in impl["current_sessions"]
+    ] == [101, 102, 103]
+    assert [session["subject"] for session in impl["current_sessions"]] == [
+        "First concurrent task",
+        "Second concurrent task",
+        "Third concurrent task",
+    ]
+    # The legacy single-session field remains the latest active session.
+    assert impl["current_session"] == impl["current_sessions"][-1]
+    assert [
+        session["work_package_id"] for session in payload["active_sessions"]
+    ] == [101, 102, 103]
 
 
 def test_snapshot_sessions_and_meta(snapshot: tuple[dict[str, Any], Path]) -> None:
@@ -236,8 +283,10 @@ def test_engine_status_offline_without_store(tmp_path: Path) -> None:
 
 def test_assets_are_packaged() -> None:
     html = _asset("index.html").decode("utf-8")
+    script = _asset("app.js").decode("utf-8")
     assert "Agent Engine" in html
-    assert "/api/status" in _asset("app.js").decode("utf-8")
+    assert "/api/status" in script
+    assert "current_sessions" in script
     assert ":root" in _asset("style.css").decode("utf-8")
 
 

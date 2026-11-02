@@ -263,6 +263,11 @@ h1 { margin: 0; font-size: 21px; letter-spacing: -0.02em; }
 .agent-meta { color: var(--muted); font-size: 11.5px; }
 .agent-meta .mono { font-family: var(--mono); color: #b8c5d6; }
 
+.agent-current-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
 .agent-current, .agent-last {
   padding: 8px 10px;
   border-radius: 9px;

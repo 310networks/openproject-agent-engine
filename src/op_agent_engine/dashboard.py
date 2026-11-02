@@ -226,7 +226,9 @@ class DashboardData:
         agent_names = {
             key: agent.name for key, agent in self.config.agents.items()
         }
-        active_by_agent = {run.agent: run for run in active}
+        active_by_agent: dict[str, list[Run]] = {}
+        for run in active:
+            active_by_agent.setdefault(run.agent, []).append(run)
         total_runs = sum(state_counts.values())
         running = state_counts.get(RUNNING, 0)
         counts = _bucket_counts(
@@ -247,10 +249,11 @@ class DashboardData:
                 if not name.startswith("outcome:")
             )
             agent_running = raw_counts.get(RUNNING, 0)
-            current = active_by_agent.get(key)
+            current_sessions = active_by_agent.get(key, [])
+            current = current_sessions[-1] if current_sessions else None
             last = last_by_agent.get(key)
             scoped = self.config.projects_for_agent(agent)
-            status = "running" if current is not None else "idle"
+            status = "running" if current_sessions else "idle"
             if not scoped:
                 status = "unavailable"
             agents.append(
@@ -273,6 +276,15 @@ class DashboardData:
                         if current is not None
                         else None
                     ),
+                    "current_sessions": [
+                        _session_payload(
+                            run,
+                            now=now,
+                            settings=self.settings,
+                            agent_names=agent_names,
+                        )
+                        for run in current_sessions
+                    ],
                     "last_session": (
                         _session_payload(
                             last,

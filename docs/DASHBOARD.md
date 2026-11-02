@@ -7,7 +7,8 @@ glance:
   heartbeat is fresh, turns amber when the engine is paused, and red when the
   heartbeat is stale or missing.
 - **Which agents are available?** Every agent in the fixed team, its
-  runner/model, project scope, current session (if any) and last session.
+  runner/model, project scope, every current session (an agent can run more
+  than one ticket at once) and last session.
 - **What is running, and what ran before?** Active sessions plus the most
   recent finished sessions, with ticket id, agent, kind, duration, outcome
   and PR link.
@@ -101,5 +102,8 @@ variables or prompts.
 - Totals are computed from the SQLite run history, so they survive engine
   restarts but are lost if `engine.db` is deleted (the database is
   deliberately disposable).
+- An agent card lists every running session for that agent. The JSON API
+  exposes them as `agents[].current_sessions` (oldest first) and keeps
+  `agents[].current_session` as the latest one for compatibility.
 - The JSON API is `GET /api/status?limit=N`; `GET /healthz` returns
   `{"ok": true}` for uptime checks.
