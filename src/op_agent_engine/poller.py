@@ -24,13 +24,32 @@ from op_agent_engine.openproject.workpackage import WorkPackage, parse_work_pack
 
 logger = get_logger(__name__)
 
-# Statuses that start a fresh workflow step.
-CANDIDATE_STATUS_KEYS = ("new", "rejected", "ready_for_review")
+# Statuses that start a fresh workflow step. ``Blocked`` is a candidate so a
+# poll can move it back to In Progress once every blocker is Closed.
+CANDIDATE_STATUS_KEYS = ("new", "rejected", "ready_for_review", "blocked")
 
 # Statuses recovered after a crash or a retryable failure.
 # They are only queried when assigned to an agent user, so a work package that
 # a human put into In Progress/In Testing is never touched.
 RECOVERY_STATUS_KEYS = ("in_progress", "in_testing")
+
+
+@dataclass(frozen=True)
+class Blocker:
+    """A work package that blocks a candidate, with its current status."""
+
+    id: int
+    display_id: str
+    status_key: str
+
+
+@dataclass(frozen=True)
+class BlockAction:
+    """A New work package that must move to Blocked instead of being claimed."""
+
+    work_package: WorkPackage
+    agent_key: str
+    blockers: tuple[Blocker, ...]
 
 
 @dataclass(frozen=True)
@@ -44,6 +63,7 @@ class DispatchItem:
 class DispatchPlan:
     items: tuple[DispatchItem, ...]
     skipped: tuple[tuple[WorkPackage, str], ...]
+    blocked_actions: tuple[BlockAction, ...] = ()
 
     @property
     def work_package_ids(self) -> tuple[int, ...]:
@@ -64,6 +84,22 @@ class DispatchPlan:
             "skipped": [
                 {"work_package_id": wp.id, "display_id": wp.display_id, "reason": reason}
                 for wp, reason in self.skipped
+            ],
+            "blocked": [
+                {
+                    "work_package_id": action.work_package.id,
+                    "display_id": action.work_package.display_id,
+                    "agent": action.agent_key,
+                    "blockers": [
+                        {
+                            "work_package_id": blocker.id,
+                            "display_id": blocker.display_id,
+                            "status": blocker.status_key,
+                        }
+                        for blocker in action.blockers
+                    ],
+                }
+                for action in self.blocked_actions
             ],
         }
 
@@ -89,6 +125,7 @@ class Poller:
         candidates = await self._fetch_candidates(ctx)
         items: list[DispatchItem] = []
         skipped: list[tuple[WorkPackage, str]] = []
+        blocked_actions: list[BlockAction] = []
         for wp in candidates:
             # Pre-check with empty external data: cheap rules (1-5) first so we
             # only pay for relation/child queries when they can matter.
@@ -97,12 +134,30 @@ class Poller:
                 self._log_skipped(wp, pre.reason or "ineligible", pre.scope_violation)
                 skipped.append((wp, pre.reason or "ineligible"))
                 continue
-            blocker_status_keys = await self._fetch_blocker_status_keys(wp)
+            blockers = await self._fetch_blockers(wp)
+            unfinished = tuple(
+                blocker for blocker in blockers if blocker.status_key != "closed"
+            )
+            # A New ticket with an unfinished blocker is not merely skipped:
+            # the engine records the dependency on the ticket and parks it in
+            # Blocked. It is picked up again by the Blocked candidate rule once
+            # every blocker is Closed.
+            if pre.status_key == "new" and unfinished:
+                blocked_actions.append(
+                    BlockAction(
+                        work_package=wp,
+                        agent_key=pre.agent_key or "",
+                        blockers=unfinished,
+                    )
+                )
+                continue
             has_children = await self._fetch_has_children(wp)
             result = evaluate_eligibility(
                 wp,
                 ctx,
-                blocker_status_keys=blocker_status_keys,
+                blocker_status_keys=[
+                    (blocker.id, blocker.status_key) for blocker in blockers
+                ],
                 has_children=has_children,
             )
             if not result.eligible:
@@ -116,7 +171,11 @@ class Poller:
             )
 
         items.sort(key=lambda item: self._sort_key(item, ctx))
-        plan = DispatchPlan(items=tuple(items), skipped=tuple(skipped))
+        plan = DispatchPlan(
+            items=tuple(items),
+            skipped=tuple(skipped),
+            blocked_actions=tuple(blocked_actions),
+        )
         self._log_plan(plan)
         return plan
 
@@ -241,9 +300,7 @@ class Poller:
                 )
         return candidates
 
-    async def _fetch_blocker_status_keys(
-        self, wp: WorkPackage
-    ) -> list[tuple[int, str]]:
+    async def _fetch_blockers(self, wp: WorkPackage) -> list[Blocker]:
         relations = await self._fetch_relations_for(wp.id)
         blocker_ids: set[int] = set()
         for relation in relations:
@@ -258,7 +315,7 @@ class Poller:
         status_by_id = {
             status.id: key for key, status in self._resolution.statuses.items()
         }
-        result: list[tuple[int, str]] = []
+        result: list[Blocker] = []
         for blocker_id in sorted(blocker_ids):
             entry = await self._fetch_work_package(blocker_id)
             if entry is None:
@@ -267,7 +324,11 @@ class Poller:
                 entry, self._resolution.agent_field.field_id, {}
             )
             result.append(
-                (blocker_id, status_by_id.get(parsed.status_id, "unknown"))
+                Blocker(
+                    id=blocker_id,
+                    display_id=parsed.display_id,
+                    status_key=status_by_id.get(parsed.status_id, "unknown"),
+                )
             )
         return result
 
@@ -319,6 +380,12 @@ class Poller:
                 )
         else:
             logger.info("dispatch plan: no eligible work packages")
+        for action in plan.blocked_actions:
+            logger.info(
+                "  -> block %s pending %s",
+                action.work_package.display_id,
+                ", ".join(blocker.display_id for blocker in action.blockers),
+            )
         for wp, reason in plan.skipped:
             if "no access to project" not in reason:
                 logger.debug("skipped %s: %s", wp.display_id, reason)

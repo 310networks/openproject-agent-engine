@@ -23,6 +23,7 @@ STATUSES: list[dict[str, Any]] = [
     {"id": 5, "name": "On Hold"},
     {"id": 6, "name": "Rejected"},
     {"id": 7, "name": "Closed"},
+    {"id": 8, "name": "Blocked"},
 ]
 
 USERS: list[dict[str, Any]] = [
@@ -138,6 +139,7 @@ async def test_resolves_all_ids() -> None:
     assert resolution.statuses["new"].id == 1
     assert resolution.statuses["in_testing"].id == 4
     assert resolution.statuses["closed"].id == 7
+    assert resolution.statuses["blocked"].id == 8
     assert resolution.users["agent-engine"].id == 10
     assert resolution.engine_user.login == "agent-engine"
     assert resolution.projects["demo"].id == 4
@@ -158,7 +160,7 @@ async def test_missing_status_is_named() -> None:
     message = str(excinfo.value)
     assert "OpenProject statuses not found" in message
     assert "in_testing='In Testing'" in message
-    assert "available: Closed, In Progress" in message
+    assert "available: Blocked, Closed, In Progress" in message
 
 
 SENTENCE_STATUSES: list[dict[str, Any]] = [
@@ -169,6 +171,7 @@ SENTENCE_STATUSES: list[dict[str, Any]] = [
     {"id": 5, "name": "On hold"},
     {"id": 6, "name": "Rejected"},
     {"id": 7, "name": "Closed"},
+    {"id": 8, "name": "blocked"},
 ]
 
 
@@ -181,6 +184,7 @@ async def test_status_names_match_case_insensitively() -> None:
     assert resolution.statuses["in_progress"].name == "In progress"
     assert resolution.statuses["in_testing"].name == "In testing"
     assert resolution.statuses["on_hold"].id == 5
+    assert resolution.statuses["blocked"].id == 8
 
 
 async def test_ambiguous_status_names_are_rejected() -> None:

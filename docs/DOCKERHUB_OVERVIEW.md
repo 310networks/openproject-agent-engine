@@ -127,6 +127,8 @@ Fixed in the image, one OpenProject account and one token each:
 | Observed state | Engine action | Run | Verified outcome | Transition |
 |---|---|---|---|---|
 | `New`, eligible, `AGENT` set | claim, `In Progress` | implement | open PR / `BLOCKED` | `Ready for Review` / `On Hold` |
+| `New`, unfinished blocker(s) | block, `Blocked` + comment | — | — | `Blocked` |
+| `Blocked`, every blocker `Closed` | claim, `In Progress` | implement | open PR / `BLOCKED` | `Ready for Review` / `On Hold` |
 | `Ready for Review`, PR exists | claim, `In Testing` | review | PR merged / `REJECTED` | `Closed` / `Rejected` |
 | `Ready for Review`, no PR | — | — | — | `On Hold` + comment |
 | `Rejected`, eligible | claim, `In Progress` | fix | as implement | as implement |

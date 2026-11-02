@@ -69,6 +69,7 @@ always an explicit human decision.
 | Comment | Meaning | Human action |
 |---|---|---|
 | `ENGINE: blocked` | agent reported a blocker | remove it, move to `Rejected` or `New` |
+| `ENGINE: blocked by dependency` | unfinished OpenProject blocker relation; ticket is in `Blocked` | finish/close the blocker; the engine unblocks and assigns automatically |
 | `ENGINE: no PR found` | `Ready for Review` without a PR for `op-<project>-<wp>` | push the PR, move back to `Ready for Review` |
 | `ENGINE: escalated` | crash/timeout retry cap; comment has exit code + last 40 log lines | fix the cause, move back to `In Progress`/`New` |
 | `ENGINE: rejection cap reached` | next rejection would exceed `MAX_REJECTIONS` | review the feedback, move to `Rejected`/`New` when ready |

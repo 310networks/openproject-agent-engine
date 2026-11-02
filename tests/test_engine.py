@@ -38,6 +38,7 @@ STATUS_IN_TESTING = 4
 STATUS_ON_HOLD = 5
 STATUS_REJECTED = 6
 STATUS_CLOSED = 7
+STATUS_BLOCKED = 8
 
 # The claim assigns the work package to the target agent's user (the
 # "impl" login, user 11 in the fake), not to the engine user.
@@ -176,11 +177,13 @@ async def make_engine(
     gh: FakeGitHub | None = None,
     settings_overrides: dict[str, Any] | None = None,
     activities: list[dict[str, Any]] | None = None,
+    relations: list[dict[str, Any]] | None = None,
 ) -> tuple[Engine, FakeOpenProject, OpenProjectClient, Path]:
     fake = make_fake(
         work_packages=work_packages,
         priorities=PRIORITIES,
         activities=activities or [],
+        relations=relations or [],
     )
     config = make_config()
     settings = make_settings(tmp_path, **(settings_overrides or {}))
@@ -304,6 +307,55 @@ async def test_engine_polls_claims_and_executes(
         lock = EngineLock(engine.lock_path)
         assert lock.acquire()
         lock.release()
+    finally:
+        await client.aclose()
+
+
+async def test_engine_blocks_new_ticket_and_unblocks_it_when_dependency_closes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    blocker = wp(500, status=STATUS_ON_HOLD)
+    engine, fake, client, store_path = await make_engine(
+        tmp_path,
+        monkeypatch,
+        work_packages=[wp(100, status=STATUS_NEW, agent=11), blocker],
+        relations=[
+            {
+                "id": 1,
+                "type": "blocks",
+                "_embedded": {"from": {"id": 500}, "to": {"id": 100}},
+            }
+        ],
+        runner=FakeRunner(make_result(tmp_path)),
+        gh=FakeGitHub(pr=PR),
+    )
+    try:
+        assert await engine.run(max_polls=1) == 0
+
+        assert status_href(fake, 100) == f"/api/v3/statuses/{STATUS_BLOCKED}"
+        assert assignee_href(fake, 100) is None
+        comments = [
+            str(comment["content"])
+            for comment in fake.comments
+            if comment.get("workPackageId") == 100
+        ]
+        assert len(comments) == 1
+        assert comments[0].startswith("ENGINE: blocked by dependency")
+        assert "OP#500" in comments[0]
+        store = Store(store_path)
+        try:
+            assert runs_for(store, 100) == []
+        finally:
+            store.close()
+
+        # Closing the blocking ticket removes the block on the next poll: the
+        # ticket is assigned to the agent and starts an implement run.
+        blocker["_links"]["status"] = {"href": f"/api/v3/statuses/{STATUS_CLOSED}"}
+        blocker["lockVersion"] = blocker.get("lockVersion", 0) + 1
+        assert await engine.run(max_polls=1) == 0
+
+        assert status_href(fake, 100) == f"/api/v3/statuses/{STATUS_READY_FOR_REVIEW}"
+        assert assignee_href(fake, 100) == f"/api/v3/users/{AGENT_USER_ID}"
     finally:
         await client.aclose()
 

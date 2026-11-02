@@ -52,10 +52,11 @@ One loop iteration:
 2. **Poll** (`poller.py`): list candidate work packages by dispatch priority,
    then apply the eligibility rules. Cheap rules run first; blockers and
    children are fetched only when they can change the decision.
-3. **Schedule** (`scheduler.py`): re-check the slot rules against the store,
-   then claim work packages with an optimistic-locking `PATCH` (status,
-   assignee, `lockVersion`). A claim inserts a `runs` row first; a database
-   conflict means another claimant won.
+3. **Schedule** (`scheduler.py`): move a New ticket with unfinished blockers
+   to `Blocked` and post an engine comment, then re-check the slot rules
+   against the store and claim work packages with an optimistic-locking
+   `PATCH` (status, assignee, `lockVersion`). A claim inserts a `runs` row
+   first; a database conflict means another claimant won.
 4. **Dispatch** (`dispatcher.py`): prepare the workspace, render the prompt,
    run pi, verify the outcome externally, apply the status transition and
    engine comment, and write the run record.
@@ -63,14 +64,17 @@ One loop iteration:
    marks stale running rows interrupted on startup; `cleanup` removes run
    directories older than `RUN_RETENTION_DAYS`.
 
-The poller is read-only; only the scheduler writes claims; only the dispatcher
-writes outcomes and OpenProject transitions. Agents never change status.
+The poller is read-only; only the scheduler writes claims and `Blocked`
+transitions; only the dispatcher writes run outcomes and the remaining
+OpenProject transitions. Agents never change status.
 
 ## Ticket flow
 
 | Observed state | Engine action | Run kind | Verified outcome | Transition |
 |---|---|---|---|---|
 | `New`, eligible, `AGENT` set | claim, `In Progress` | implement | open PR | `Ready for Review` |
+| `New`, unfinished blocker(s) | block, `Blocked` + comment | — | — | `Blocked` |
+| `Blocked`, every blocker `Closed` | claim, `In Progress` | implement | open PR | `Ready for Review` |
 | implement run reports `BLOCKED` | claim, `In Progress` | implement/fix | — | `On Hold` + comment |
 | `Ready for Review`, open PR | claim, `In Testing` | review | PR merged | `Closed` |
 | `Ready for Review`, open PR | claim, `In Testing` | review | `REJECTED` + reviewer comment | `Rejected` |

@@ -1,5 +1,9 @@
 """Scheduler: enforce per-agent and global limits, then claim work.
 
+Before claims, a New work package with unfinished blockers is moved to
+``Blocked`` and an engine comment names the blockers. Once every blocker is
+Closed the poller offers the Blocked ticket here again as an implement item.
+
 For each item in the :class:`~op_agent_engine.poller.DispatchPlan` (already
 ordered by dispatch priority) the scheduler re-checks the slot rules against
 the store — the source of truth for active runs — and then claims the work
@@ -37,17 +41,20 @@ from op_agent_engine.openproject.client import (
 )
 from op_agent_engine.openproject.resolve import OpenProjectResolution
 from op_agent_engine.openproject.workpackage import WorkPackage, parse_work_package
-from op_agent_engine.poller import DispatchItem, DispatchPlan
+from op_agent_engine.outcomes import blocked_by_relations_comment
+from op_agent_engine.poller import BlockAction, DispatchItem, DispatchPlan
 from op_agent_engine.store import Store
 
 logger = get_logger(__name__)
 
 # Run kind per candidate status: implement, fix, resume or review.
-# In Progress and In Testing are the crash-recovery candidates.
+# In Progress and In Testing are the crash-recovery candidates. A Blocked
+# ticket whose blockers are all Closed is claimed as a fresh implement run.
 KIND_BY_STATUS_KEY = {
     "new": "implement",
     "rejected": "fix",
     "ready_for_review": "review",
+    "blocked": "implement",
     "in_progress": "resume",
     "in_testing": "review",
 }
@@ -83,6 +90,7 @@ class SkippedItem:
 class ScheduleReport:
     claimed: tuple[ClaimedRun, ...]
     skipped: tuple[SkippedItem, ...]
+    blocked: tuple[BlockAction, ...] = ()
 
     @property
     def claimed_count(self) -> int:
@@ -111,6 +119,14 @@ class ScheduleReport:
                     "reason": skipped.reason,
                 }
                 for skipped in self.skipped
+            ],
+            "blocked": [
+                {
+                    "work_package_id": action.work_package.id,
+                    "agent": action.agent_key,
+                    "blockers": [blocker.id for blocker in action.blockers],
+                }
+                for action in self.blocked
             ],
         }
 
@@ -143,6 +159,36 @@ class Scheduler:
         """
         claimed: list[ClaimedRun] = []
         skipped: list[SkippedItem] = []
+        blocked: list[BlockAction] = []
+        for action in plan.blocked_actions:
+            if dry_run:
+                blocked.append(action)
+                logger.info(
+                    "[dry-run] would block %s (agent %s) by %s",
+                    action.work_package.display_id,
+                    action.agent_key,
+                    ", ".join(blocker.display_id for blocker in action.blockers),
+                    extra={
+                        "work_package_id": action.work_package.id,
+                        "agent": action.agent_key,
+                        "blockers": [blocker.id for blocker in action.blockers],
+                        "dry_run": True,
+                    },
+                )
+                continue
+            try:
+                await self._block(action)
+                blocked.append(action)
+            except (ClaimError, OpenProjectError) as error:
+                logger.warning(
+                    "could not mark %s as Blocked: %s",
+                    action.work_package.display_id,
+                    error,
+                    extra={
+                        "work_package_id": action.work_package.id,
+                        "reason": str(error),
+                    },
+                )
         active_work_packages = self._store.active_work_package_ids()
         active_by_agent = self._store.active_run_counts_by_agent()
         active_count = self._store.active_run_count()
@@ -218,11 +264,14 @@ class Scheduler:
                         "reason": str(error),
                     },
                 )
-        report = ScheduleReport(claimed=tuple(claimed), skipped=tuple(skipped))
+        report = ScheduleReport(
+            claimed=tuple(claimed), skipped=tuple(skipped), blocked=tuple(blocked)
+        )
         logger.info(
-            "schedule: %d claimed, %d skipped",
+            "schedule: %d claimed, %d skipped, %d blocked",
             report.claimed_count,
             report.skipped_count,
+            len(report.blocked),
             extra={"schedule_report": report.to_dict(), "dry_run": dry_run},
         )
         return report
@@ -323,6 +372,51 @@ class Scheduler:
         )
 
 
+    async def _block(self, action: BlockAction) -> None:
+        """Move a New work package with unfinished blockers to Blocked.
+
+        The status patch uses the same optimistic-locking protocol as a claim;
+        the blocking relation is explained in an engine comment afterwards.
+        """
+        wp = action.work_package
+        lock_version = wp.lock_version
+        if lock_version is None:
+            fresh = await self._fetch_work_package(wp.id)
+            if fresh is None:
+                raise ClaimError("no longer exists")
+            if fresh.status_id != wp.status_id:
+                raise ClaimError(
+                    f"status changed from '{wp.status_id}' to "
+                    f"'{fresh.status_id}' before blocking"
+                )
+            lock_version = fresh.lock_version
+        if lock_version is None:
+            raise ClaimError("work package payload has no lockVersion")
+
+        await self._patch_status_assignee(
+            wp.id,
+            lock_version,
+            self._resolution.statuses["blocked"].id,
+            None,
+            expected_status_id=wp.status_id,
+        )
+        await self._post_comment(
+            wp.id,
+            blocked_by_relations_comment(
+                [blocker.display_id for blocker in action.blockers]
+            ),
+        )
+        logger.info(
+            "blocked %s pending %s",
+            wp.display_id,
+            ", ".join(blocker.display_id for blocker in action.blockers),
+            extra={
+                "work_package_id": wp.id,
+                "agent": action.agent_key,
+                "blockers": [blocker.id for blocker in action.blockers],
+            },
+        )
+
     def _claim_targets(self, item: DispatchItem) -> tuple[int, int]:
         """Target status id and assignee user id for a claim."""
         agent = self._config.agents[item.agent_key]
@@ -341,23 +435,22 @@ class Scheduler:
         work_package_id: int,
         lock_version: int,
         status_id: int,
-        user_id: int,
+        user_id: int | None,
         *,
         expected_status_id: int,
     ) -> None:
-        """PATCH status + assignee with optimistic locking.
+        """PATCH status (and optionally assignee) with optimistic locking.
 
         On HTTP 409 the work package is re-read: if its status is no longer
         ``expected_status_id`` the claim is aborted, otherwise the patch is
         retried once with the fresh lockVersion.
         """
-        body = {
-            "lockVersion": lock_version,
-            "_links": {
-                "status": {"href": f"/api/v3/statuses/{status_id}"},
-                "assignee": {"href": f"/api/v3/users/{user_id}"},
-            },
+        links: dict[str, Any] = {
+            "status": {"href": f"/api/v3/statuses/{status_id}"}
         }
+        if user_id is not None:
+            links["assignee"] = {"href": f"/api/v3/users/{user_id}"}
+        body = {"lockVersion": lock_version, "_links": links}
         path = f"/api/v3/work_packages/{work_package_id}"
         try:
             await self._client.patch_json(path, json_body=body)
@@ -391,6 +484,20 @@ class Scheduler:
                 f"retry of claim for work package {work_package_id} failed "
                 f"after conflict: {error}"
             ) from error
+
+    async def _post_comment(self, work_package_id: int, comment: str) -> None:
+        await self._client.post_json(
+            f"/api/v3/work_packages/{work_package_id}/activities",
+            json_body={"comment": {"raw": comment}},
+        )
+        logger.info(
+            "engine comment posted for work package %s",
+            work_package_id,
+            extra={
+                "work_package_id": work_package_id,
+                "comment_event": comment.split("\n", 1)[0],
+            },
+        )
 
     async def _fetch_work_package(self, work_package_id: int) -> WorkPackage | None:
         try:

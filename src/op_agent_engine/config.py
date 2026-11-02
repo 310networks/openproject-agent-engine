@@ -121,6 +121,7 @@ class StatusNames(BaseModel):
     in_testing: str = "In Testing"
     on_hold: str = "On Hold"
     rejected: str = "Rejected"
+    blocked: str = "Blocked"
     closed: str = "Closed"
 
     @field_validator("*")
@@ -139,6 +140,7 @@ class StatusNames(BaseModel):
             self.in_testing,
             self.on_hold,
             self.rejected,
+            self.blocked,
             self.closed,
         ]
         duplicates = sorted({name for name in names if names.count(name) > 1})
@@ -154,6 +156,7 @@ class StatusNames(BaseModel):
             "in_testing": self.in_testing,
             "on_hold": self.on_hold,
             "rejected": self.rejected,
+            "blocked": self.blocked,
             "closed": self.closed,
         }
 
@@ -744,6 +747,7 @@ class WorkflowConfig(BaseModel):
             "in_testing": settings.op_status_in_testing,
             "on_hold": settings.op_status_on_hold,
             "rejected": settings.op_status_rejected,
+            "blocked": settings.op_status_blocked,
             "closed": settings.op_status_closed,
         }
         per_agent_models = _agent_models(settings)
@@ -880,6 +884,7 @@ class EngineSettings(BaseSettings):
     op_status_in_testing: str = "In Testing"
     op_status_on_hold: str = "On Hold"
     op_status_rejected: str = "Rejected"
+    op_status_blocked: str = "Blocked"
     op_status_closed: str = "Closed"
 
     poll_interval_seconds: int = Field(default=60, gt=0)

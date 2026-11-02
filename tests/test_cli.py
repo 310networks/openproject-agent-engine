@@ -46,6 +46,7 @@ SAMPLE_RESOLUTION = OpenProjectResolution(
         "on_hold": ResolvedStatus("on_hold", "On Hold", 5),
         "rejected": ResolvedStatus("rejected", "Rejected", 6),
         "closed": ResolvedStatus("closed", "Closed", 7),
+        "blocked": ResolvedStatus("blocked", "Blocked", 8),
     },
     users={
         "agent-engine": ResolvedUser("agent-engine", 10, "Agent Engine"),
