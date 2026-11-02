@@ -52,7 +52,8 @@ push to and merge in.
 
 3. **Run the interactive setup.** It asks for the OpenProject URL and token,
    the six agent tokens, the model and the provider key, and writes `.env`.
-   Re-running is safe:
+   Re-running is safe. It pulls the current image first, so it also creates
+   the agent users added by an upgrade:
 
    ```bash
    ./agent-init.sh

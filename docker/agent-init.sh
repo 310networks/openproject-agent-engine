@@ -31,7 +31,10 @@
 #   ./agent-init.sh                      guided run
 #   ./agent-init.sh --reprompt-tokens    enter the OpenProject tokens again
 #
-# Needs Docker Compose and the image (pulled if it is missing).
+# Needs Docker Compose and the published image. The image is pulled on every
+# run, so re-running this script after an upgrade provisions users from the
+# same engine version as the script and can create agents added by that
+# version.
 set -eu
 
 deploy_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -302,7 +305,10 @@ prompt_token() {
 # --- main -------------------------------------------------------------------
 
 image=$(docker compose config --images 2>/dev/null | head -n 1 || true)
-if [ -n "${image:-}" ] && ! docker image inspect "$image" >/dev/null 2>&1; then
+if [ -n "${image:-}" ]; then
+  # Pull even when the image exists locally. An upgrade adds agents in the
+  # engine image, so provisioning must use the image this script ships with;
+  # reusing a stale local image silently skips the new agent users.
   say "pulling $image"
   docker compose pull --quiet
 fi

@@ -180,7 +180,9 @@ values, credentials and deliberate tuning.
 The engine user must be an OpenProject administrator; the agent users only get
 the project-scoped `Agent Worker` role. The script does not ask for GitHub
 credentials. Re-running the script is safe and is the supported way to fix a
-wrong OpenProject token (`--reprompt-tokens`).
+wrong OpenProject token (`--reprompt-tokens`). It pulls the configured image
+every time, so the same re-run also provisions agent users introduced by an
+upgrade instead of reusing a stale image with the old agent team.
 
 ## State and artifacts
 

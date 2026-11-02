@@ -231,6 +231,86 @@ async def test_apply_creates_five_users_and_scoped_memberships_idempotently() ->
     assert len(fake.memberships) == 5
 
 
+async def test_upgrade_creates_only_the_agents_missing_from_the_previous_release() -> None:
+    """A re-run must check every agent, not stop after the first existing one."""
+    existing_users = [
+        {
+            "id": 10,
+            "login": "agent-engine",
+            "name": "Agent Engine",
+            "firstName": "Agent",
+            "lastName": "Engine",
+            "email": "agent-engine@agent-engine.local",
+            "admin": True,
+        },
+        *[
+            {
+                "id": user_id,
+                "login": login,
+                "name": name,
+                "firstName": name.split()[0],
+                "lastName": name.split()[1],
+                "email": f"{login}@agent-engine.local",
+                "admin": False,
+            }
+            for user_id, login, name in (
+                (11, "frontendEngineer", "Frontend Engineer"),
+                (12, "backendEngineer", "Backend Engineer"),
+                (13, "leadDesigner", "Lead Designer"),
+                (14, "codeReviewer", "Code Reviewer"),
+            )
+        ],
+    ]
+
+    def agent(login: str, kind: str = "implementer") -> dict[str, Any]:
+        return {
+            "name": login,
+            "kind": kind,
+            "op_login": login,
+            "workspace": login,
+            "runner": "pi",
+            "projects": ["*"],
+            "env": {},
+        }
+
+    fake = make_fake(users=existing_users)
+    config = make_config(
+        agents={
+            "FRONTEND": agent("frontendEngineer"),
+            "BACKEND": agent("backendEngineer"),
+            "LEAD_DESIGNER": agent("leadDesigner"),
+            "VFX": agent("vfxArtist"),
+            "AUDIO": agent("audioDesigner"),
+            "REVIEWER": agent("codeReviewer", "reviewer"),
+        }
+    )
+    client = client_for(fake)
+    try:
+        report = await provision_workflow(
+            client, config, apply=True, environ={}, base_url=BASE_URL
+        )
+    finally:
+        await client.aclose()
+
+    assert report.ok
+    assert set(report.generated_passwords) == {"vfxArtist", "audioDesigner"}
+    created = {
+        action.target
+        for action in report.actions
+        if action.action == "create_user"
+    }
+    assert created == {"vfxArtist", "audioDesigner"}
+    assert {user["login"] for user in fake.users} == {
+        "agent-engine",
+        "frontendEngineer",
+        "backendEngineer",
+        "leadDesigner",
+        "codeReviewer",
+        "vfxArtist",
+        "audioDesigner",
+    }
+
+
 async def test_wildcard_expands_to_enabled_projects_only() -> None:
     fake = make_fake(users=USERS)
     config = make_config(

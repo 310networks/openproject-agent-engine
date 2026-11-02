@@ -300,6 +300,18 @@ def test_compose_runs_the_expected_commands() -> None:
         assert _service(task)["restart"] == "no"
 
 
+def test_agent_init_pulls_the_current_image_before_provisioning() -> None:
+    """Re-running is the upgrade path, so a stale local image is not reused."""
+    script = (DOCKER_DIR / "agent-init.sh").read_text()
+
+    # A local image from the previous release knows the previous agent team.
+    # Provisioning with it silently skips agents added by the new release.
+    assert 'say "pulling $image"' in script
+    assert "docker compose pull --quiet" in script
+    assert "docker image inspect" not in script
+    assert script.index("docker compose pull") < script.index("engine provision")
+
+
 def test_agent_init_script_is_interactive_and_private() -> None:
     """The script prompts on the host and writes a private.env."""
     script = (REPO_ROOT / "docker" / "agent-init.sh").read_text()
