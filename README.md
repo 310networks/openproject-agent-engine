@@ -13,6 +13,12 @@
   <a href="https://hub.docker.com/r/kookster310/op-agent-engine/tags"><img src="https://img.shields.io/docker/v/kookster310/op-agent-engine?sort=semver&logo=docker&logoColor=white&label=latest%20tag&cacheSeconds=300" alt="Latest tag"></a>
 </p>
 
+<p align="center">
+  <a href="https://launchnest.io/p/openproject-agent-engine" target="_blank">
+    <img src="https://launchnest.io/badge/openproject-agent-engine.svg?variant=featured" alt="OpenProject Agent Engine on LaunchNest" width="220" height="56" />
+  </a>
+</p>
+
 ---
 
 Polls OpenProject work packages and dispatches the pi coding agent to work on
