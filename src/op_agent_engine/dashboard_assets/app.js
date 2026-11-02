@@ -199,6 +199,8 @@ function renderAgents(snapshot) {
   }
 
   for (const agent of agents) {
+    const currentSessions = agent.current_sessions || (agent.current_session ? [agent.current_session] : []);
+    const last = agent.last_session;
     const card = make("article", `agent ${agent.status === "running" ? "running" : ""}`);
     const top = make("div", "agent-top");
     const nameBlock = make("div", "agent-name");
@@ -206,7 +208,8 @@ function renderAgents(snapshot) {
     nameBlock.append(make("span", "agent-key", agent.key));
     const state = make("div", "agent-state");
     state.append(make("span", "dot"));
-    state.append(make("span", "", agent.status === "running" ? "running" : "idle"));
+    const taskLabel = currentSessions.length > 1 ? ` · ${currentSessions.length} tasks` : "";
+    state.append(make("span", "", agent.status === "running" ? `running${taskLabel}` : "idle"));
     top.append(nameBlock, state);
 
     const badges = make("div", "badges");
@@ -221,11 +224,17 @@ function renderAgents(snapshot) {
     meta.append(document.createTextNode("login "));
     meta.append(make("span", "mono", agent.op_login));
 
-    const current = agent.current_session;
-    const last = agent.last_session;
-    const line = make("div", current ? "agent-current" : "agent-last");
-    const text = sessionLine(current, { active: true }) || (last ? `last: ${sessionLine(last)}` : "no sessions yet");
-    line.append(document.createTextNode(text));
+    const line = make("div", currentSessions.length ? "agent-current-list" : "agent-last");
+    if (currentSessions.length) {
+      for (const session of currentSessions) {
+        const item = make("div", "agent-current");
+        item.append(document.createTextNode(sessionLine(session, { active: true })));
+        line.append(item);
+      }
+    } else {
+      const text = last ? `last: ${sessionLine(last)}` : "no sessions yet";
+      line.append(document.createTextNode(text));
+    }
 
     const counts = make("div", "agent-counts");
     for (const key of ["total", "completed", "declined", "failed"]) {
