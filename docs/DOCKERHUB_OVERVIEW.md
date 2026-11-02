@@ -21,7 +21,7 @@ docker pull kookster310/op-agent-engine
 | Tag | Meaning |
 |---|---|
 | `latest` | newest build from `main` |
-| `<version>`, e.g. `0.2.6` | a release, pinned and reproducible |
+| `<version>`, e.g. `0.2.7` | a release, pinned and reproducible |
 | `sha-<short>` | one commit, useful for bisecting |
 
 `linux/amd64` only. The engine itself is architecture independent, but the
@@ -83,7 +83,7 @@ push to and merge in.
 Pin a release in `.env` instead of tracking `latest`:
 
 ```
-OP_AGENT_ENGINE_TAG=0.2.6
+OP_AGENT_ENGINE_TAG=0.2.7
 ```
 
 ## Required environment variables
