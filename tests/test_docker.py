@@ -629,18 +629,6 @@ def test_image_version_is_semver_and_matches_the_package_version() -> None:
     assert version == package["project"]["version"]
 
 
-def test_documented_version_matches_the_package_version() -> None:
-    """The version users read and pin in the docs must not drift from the tag."""
-    version = _docker_version()
-
-    current_state = (REPO_ROOT / "docs" / "CURRENT_STATE.md").read_text()
-    assert f"**Version:** `{version}`" in current_state
-
-    overview = (REPO_ROOT / "docs" / "DOCKERHUB_OVERVIEW.md").read_text()
-    assert f"e.g. `{version}`" in overview
-    assert f"OP_AGENT_ENGINE_TAG={version}" in overview
-
-
 def test_compose_defaults_to_the_published_image() -> None:
     assert _service("engine")["image"].startswith(f"{IMAGE_REPO}:")
 

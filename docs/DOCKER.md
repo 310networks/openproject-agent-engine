@@ -106,15 +106,19 @@ that image is never what a deployment runs.
 - **Optional variables:** `PI_VERSION`, `GH_VERSION`, `OP_CLI_REF` override
   the Dockerfile defaults.
 
-Releasing:
+Releasing — the docs no longer embed the version, so only these two files
+change:
 
 ```bash
 $EDITOR docker/version.json pyproject.toml     # bump both to X.Y.Z
+pytest tests/test_docker.py                   # verify before pushing
 git commit -am "chore: release X.Y.Z"
 git tag "vX.Y.Z" && git push origin main --tags
 ```
 
-The release job fails if the `v*` tag disagrees with `docker/version.json`.
+Merge the bump first, then tag the merged `main` commit so the published image
+matches a commit reachable from `main`. The release job fails if the `v*` tag
+disagrees with `docker/version.json`.
 `workflow_dispatch` rebuilds and republishes the current version from `main`
 without a new tag.
 

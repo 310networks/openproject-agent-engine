@@ -21,7 +21,7 @@ docker pull kookster310/op-agent-engine
 | Tag | Meaning |
 |---|---|
 | `latest` | newest build from `main` |
-| `<version>`, e.g. `0.2.7` | a release, pinned and reproducible |
+| `<version>` | a release, pinned and reproducible |
 | `sha-<short>` | one commit, useful for bisecting |
 
 `linux/amd64` only. The engine itself is architecture independent, but the
@@ -82,10 +82,11 @@ push to and merge in.
    OpenProject: `docker compose restart engine`. After editing `.env`:
    `docker compose up -d engine` — `restart` keeps the old environment.
 
-Pin a release in `.env` instead of tracking `latest`:
+Pin a release in `.env` instead of tracking `latest` (the current release is in
+`docker/version.json`):
 
 ```
-OP_AGENT_ENGINE_TAG=0.2.7
+OP_AGENT_ENGINE_TAG=<version>
 ```
 
 ## Required environment variables
