@@ -112,8 +112,16 @@ COPY LICENSE /opt/op-agent-engine/LICENSE
 # file is ever mounted, so it only has to be consistent with the image.
 RUN useradd --create-home --uid 10001 --user-group --shell /bin/bash agent
 
-# The engineering standard lives in the workspace volume; baking it in seeds a
-# fresh volume on first use (Docker copies image content into new volumes).
+# The engineering standards are baked in twice on purpose:
+#
+# * /opt/op-agent-engine/agents is outside every volume. The entrypoint syncs
+#   from it on every start, so an existing workspace volume receives the
+#   standards of agents added by an upgrade too. Docker only seeds a named
+#   volume when it is created; without this copy a deployment that predates
+#   VFX/Audio would never get their AGENTS.md.
+# * /home/agent/agents seeds a fresh workspace volume (Docker copies image
+#   content into a new volume), and the entrypoint keeps it in sync.
+COPY --chown=agent:agent agents/ /opt/op-agent-engine/agents/
 COPY --chown=agent:agent agents/ /home/agent/agents/
 
 COPY docker/entrypoint.sh /usr/local/bin/docker-entrypoint.sh

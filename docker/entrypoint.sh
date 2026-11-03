@@ -24,6 +24,43 @@ mkdir -p "${AGENT_DIR}" \
          "${WORKSPACE_ROOT}" \
          "${DATA_DIR}"
 
+# Keep the per-agent standards in the workspace volume in step with the image.
+# Docker seeds a named volume only when it is created, so an existing
+# deployment would otherwise keep the old agent set after an upgrade (and lack
+# the standards of agents added by the new release). Copy every regular file,
+# not just AGENTS.md, so auxiliary standards travel with the agent as well.
+temporary=
+cleanup_temporary() {
+  if [ -n "$temporary" ]; then
+    rm -f "$temporary"
+  fi
+}
+trap cleanup_temporary EXIT
+trap 'exit 1' HUP INT TERM
+
+standards_dir=${AGENT_STANDARDS_DIR:-/opt/op-agent-engine/agents}
+if [ -d "$standards_dir" ]; then
+  for source_dir in "$standards_dir"/*; do
+    [ -d "$source_dir" ] || continue
+    agent_name=${source_dir##*/}
+    target_dir="${WORKSPACE_ROOT}/${agent_name}"
+    mkdir -p "$target_dir"
+    for source_file in "$source_dir"/*; do
+      [ -f "$source_file" ] || continue
+      file_name=${source_file##*/}
+      # Engine, dashboard and one-shot containers start together and share
+      # this volume, each in its own PID namespace. A name derived from $$ is
+      # therefore not unique across them: use mktemp in the target directory
+      # so every writer gets its own file, then replace the standard
+      # atomically. The trap removes an unfinished temporary file on failure.
+      temporary=$(mktemp "${target_dir}/.${file_name}.XXXXXX")
+      cp -p "$source_file" "$temporary"
+      mv -f "$temporary" "${target_dir}/${file_name}"
+      temporary=
+    done
+  done
+fi
+
 # The agents commit from inside a run. Git reads its identity from the global
 # config, so write one on every start from environment variables. There is no
 # file to mount; the defaults name the automation account.

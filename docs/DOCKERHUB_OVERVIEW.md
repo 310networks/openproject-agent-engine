@@ -53,7 +53,8 @@ push to and merge in.
 3. **Run the interactive setup.** It asks for the OpenProject URL and token,
    the six agent tokens, the model and the provider key, and writes `.env`.
    Re-running is safe. It pulls the current image first, so it also creates
-   the agent users added by an upgrade:
+   the agent users added by an upgrade; the next start syncs their standards
+   into the existing workspace volume:
 
    ```bash
    ./agent-init.sh
@@ -156,7 +157,7 @@ can never satisfy the requirement.
 |---|---|
 | Python 3.12, `git`, `gh`, `ripgrep`, `fd`, `op` | deployment values, limits, API tokens, provider keys (environment only) |
 | Node 22 and pi | model, git identity |
-| `agents/*/AGENTS.md` (seeds the workspace volume) | — |
+| `agents/*/AGENTS.md` (synced into the workspace volume at start) | — |
 | `prompts/` | — |
 
 Runs as `uid 10001` (`agent`). Nothing is mounted from the host: settings and
@@ -165,7 +166,7 @@ Provider credentials are never written to credential files by the image.
 
 | Volume | Mount point | Holds |
 |---|---|---|
-| `agent-workspace` | `/home/agent/agents` | seeded `agents/` tree plus one clone per agent workspace |
+| `agent-workspace` | `/home/agent/agents` | synced `agents/` standards plus one clone per agent workspace |
 | `engine-data` | `/home/agent/.local/share/op-agent-engine` | SQLite store, `runs/<id>/`, heartbeat, pause flag, lock |
 | `pi-agent` | `/home/agent/.pi/agent` | pi sessions, logs, model cache, installed tools |
 

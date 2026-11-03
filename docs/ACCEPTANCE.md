@@ -36,6 +36,9 @@ cycle, or back the run with a real branch/PR when testing live.
       reviewer credentials) to `docker/.env` before starting the stack.
 - [ ] `docker compose up -d` starts `engine` and `dashboard`; the dashboard
       answers on `http://127.0.0.1:8765`.
+- [ ] Upgrading an existing deployment (same volumes, newer image) adds the
+      VFX and Audio `AGENTS.md` files to `WORKSPACE_ROOT` on start and refreshes
+      the other standards; existing clones and worktrees remain.
 - [ ] `docker compose down -v` stops the stack and deletes the volumes; the
       OpenProject accounts are removed or locked by hand in Administration.
 - [ ] `check-config` resolves every status, user, project, type, role and

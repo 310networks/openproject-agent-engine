@@ -26,7 +26,7 @@ from pathlib import Path
 
 import yaml
 
-from op_agent_engine.config import AGENT_MODEL_VARS
+from op_agent_engine.config import AGENT_MODEL_VARS, TEAM
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DOCKER_DIR = REPO_ROOT / "docker"
@@ -105,7 +105,7 @@ def test_pi_is_baked_in_without_a_selector() -> None:
     assert '"@earendil-works/pi-coding-agent@${PI_VERSION}"' in dockerfile
 
 
-def test_entrypoint_validates_the_environment_and_seeds_nothing() -> None:
+def test_entrypoint_validates_the_environment_and_seeds_no_credentials() -> None:
     entrypoint = (DOCKER_DIR / "entrypoint.sh").read_text()
 
     for required in (
@@ -117,7 +117,8 @@ def test_entrypoint_validates_the_environment_and_seeds_nothing() -> None:
         assert f': "${{{required}:?' in entrypoint, required
 
     # Settings and credentials come from environment variables; there is no
-    # /config bind mount to copy from.
+    # /config bind mount to copy from, and the only seeded files are the
+    # agent standards described below.
     for stale in ("CONFIG_DIR", "seed_file"):
         assert stale not in entrypoint, stale
 
@@ -126,6 +127,168 @@ def test_entrypoint_validates_the_environment_and_seeds_nothing() -> None:
     assert "git config --global user.name" in entrypoint
     assert "GIT_AUTHOR_NAME" in entrypoint
     assert "GIT_AUTHOR_EMAIL" in entrypoint
+
+
+def test_every_configured_agent_has_an_engineering_standard() -> None:
+    """A team entry without an AGENTS.md fails its first run in the workspace."""
+    for _, login, _, _ in TEAM:
+        standard = REPO_ROOT / "agents" / login / "AGENTS.md"
+        assert standard.is_file(), f"{login} has no AGENTS.md"
+        text = standard.read_text(encoding="utf-8")
+        assert text.startswith("# AGENTS.md"), login
+        assert "## 1. Workflow contract" in text, login
+
+
+def test_image_keeps_agent_standards_outside_the_workspace_volume() -> None:
+    """An existing volume never receives files added by a later image."""
+    dockerfile = DOCKERFILE.read_text()
+
+    # The entrypoint syncs from this copy, which the workspace volume does not
+    # hide, so an upgrade can add VFX/Audio to an existing deployment.
+    assert "COPY --chown=agent:agent agents/ /opt/op-agent-engine/agents/" in dockerfile
+    # A fresh volume is still seeded the conventional Docker way.
+    assert "COPY --chown=agent:agent agents/ /home/agent/agents/" in dockerfile
+
+
+def _entrypoint_env(tmp_path: Path, standards: Path, workspace: Path) -> dict[str, str]:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_engine = fake_bin / "op-agent-engine"
+    fake_engine.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fake_engine.chmod(0o755)
+    home = tmp_path / "home"
+    home.mkdir()
+    return {
+        **os.environ,
+        "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+        "HOME": str(home),
+        "OP_BASE_URL": "https://openproject.example.com",
+        "OP_PROJECT": "demo",
+        "WORKSPACE_ROOT": str(workspace),
+        "DATA_DIR": str(tmp_path / "data"),
+        "AGENT_STANDARDS_DIR": str(standards),
+    }
+
+
+def test_entrypoint_syncs_standards_into_an_existing_workspace(tmp_path: Path) -> None:
+    """An upgrade repairs missing agents and refreshes the existing standards."""
+    standards = tmp_path / "image-agents"
+    for agent, content in (
+        ("frontendEngineer", "new frontend standard\n"),
+        ("audioDesigner", "new audio standard\n"),
+        ("vfxArtist", "new vfx standard\n"),
+    ):
+        (standards / agent).mkdir(parents=True)
+        (standards / agent / "AGENTS.md").write_text(content, encoding="utf-8")
+
+    workspace = tmp_path / "workspace"
+    # This is an old deployment: it has the previous agents and no VFX/Audio.
+    (workspace / "frontendEngineer").mkdir(parents=True)
+    (workspace / "frontendEngineer" / "AGENTS.md").write_text(
+        "old frontend standard\n", encoding="utf-8"
+    )
+    clone = workspace / "frontendEngineer" / "repositories" / "repo"
+    clone.mkdir(parents=True)
+    (clone / "tracked.txt").write_text("keep me\n", encoding="utf-8")
+
+    subprocess.run(
+        ["sh", str(DOCKER_DIR / "entrypoint.sh")],
+        env=_entrypoint_env(tmp_path, standards, workspace),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert (workspace / "frontendEngineer" / "AGENTS.md").read_text() == (
+        "new frontend standard\n"
+    )
+    assert (workspace / "audioDesigner" / "AGENTS.md").read_text() == (
+        "new audio standard\n"
+    )
+    assert (workspace / "vfxArtist" / "AGENTS.md").read_text() == (
+        "new vfx standard\n"
+    )
+    # Syncing standards must never touch an agent's clone.
+    assert (clone / "tracked.txt").read_text() == "keep me\n"
+
+
+def test_concurrent_entrypoint_syncs_do_not_collide(tmp_path: Path) -> None:
+    """Every container must start when several sync the shared volume at once.
+
+    The engine, dashboard and one-shot services run in separate containers (and
+    therefore separate PID namespaces) but share the workspace volume. Their
+    temporary files must be unique even when the containers' PIDs are the same.
+    """
+    standards = tmp_path / "image-agents"
+    agents = {f"agent{index}": f"standard {index}\n" for index in range(10)}
+    for agent, content in agents.items():
+        (standards / agent).mkdir(parents=True)
+        (standards / agent / "AGENTS.md").write_text(content, encoding="utf-8")
+
+    workspace = tmp_path / "workspace"
+    env = _entrypoint_env(tmp_path, standards, workspace)
+    # Containers share the workspace volume but not their own home directory,
+    # so give each process its own HOME to model that.
+    environments = []
+    for index in range(2):
+        home = tmp_path / f"container-home-{index}"
+        home.mkdir()
+        environments.append({**env, "HOME": str(home)})
+    command = ["sh", str(DOCKER_DIR / "entrypoint.sh")]
+    processes = [
+        subprocess.Popen(
+            command,
+            env=container_env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        for container_env in environments
+    ]
+    results = [process.communicate(timeout=60) for process in processes]
+
+    for process, (stdout, stderr) in zip(processes, results, strict=True):
+        assert process.returncode == 0, (process.returncode, stdout, stderr)
+
+    for agent, content in agents.items():
+        assert (workspace / agent / "AGENTS.md").read_text() == content
+    # No interrupted copy may leave its temporary file behind.
+    assert not [path for path in workspace.glob("*/.AGENTS.md.*") if path.is_file()]
+
+
+def test_entrypoint_removes_temporary_file_after_a_failed_copy(tmp_path: Path) -> None:
+    """A failed copy must not leave a stray temporary file in the workspace."""
+    standards = tmp_path / "image-agents"
+    (standards / "frontendEngineer").mkdir(parents=True)
+    (standards / "frontendEngineer" / "AGENTS.md").write_text(
+        "standard\n", encoding="utf-8"
+    )
+    workspace = tmp_path / "workspace"
+    env = _entrypoint_env(tmp_path, standards, workspace)
+    # Fail the copy after mktemp has created the temporary file. PATH's first
+    # entry is the helper's fake bin directory.
+    failing_cp = Path(env["PATH"].split(os.pathsep)[0]) / "cp"
+    failing_cp.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    failing_cp.chmod(0o755)
+
+    result = subprocess.run(
+        ["sh", str(DOCKER_DIR / "entrypoint.sh")],
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert not list(workspace.glob("*/.AGENTS.md.*"))
+
+
+def test_entrypoint_uses_a_unique_temporary_file_per_sync() -> None:
+    """A PID-derived name collides across containers; mktemp does not."""
+    entrypoint = (DOCKER_DIR / "entrypoint.sh").read_text()
+
+    assert 'mktemp "${target_dir}/.${file_name}.XXXXXX"' in entrypoint
+    assert '${target_dir}/.${file_name}.$$' not in entrypoint
 
 
 def test_container_scripts_are_executable() -> None:

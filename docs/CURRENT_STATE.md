@@ -38,9 +38,12 @@ Named volumes hold all mutable state; there are no bind mounts:
 | `pi-agent` | `/home/agent/.pi/agent` | pi sessions, logs, model cache, downloaded tools |
 
 `docker/entrypoint.sh` validates the required variables, creates the state
-directories, writes the agents' git identity from `GIT_AUTHOR_NAME` /
-`GIT_AUTHOR_EMAIL`, and execs the engine. Provider credentials are environment
-variables; no credential file is seeded.
+directories, syncs the baked agent standards into `WORKSPACE_ROOT`, writes the
+agents' git identity from `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL`, and execs the
+engine. Syncing on every start adds agents introduced by an upgrade to an
+existing workspace volume and refreshes the other `AGENTS.md` files; clones and
+worktrees are untouched. Provider credentials are environment variables; no
+credential file is seeded.
 
 ## Control flow
 
@@ -108,7 +111,8 @@ agent exits. `cleanup` sweeps worktrees left behind by an engine crash.
 
 ## Agents and pi runner
 
-The team is fixed in code and in the image (`agents/*/AGENTS.md`):
+The team is fixed in code and in the image (`agents/*/AGENTS.md`, baked at
+`/opt/op-agent-engine/agents` and synced into each workspace volume at start):
 
 | `AGENT` field value | OpenProject login | Kind | Token variable |
 |---|---|---|---|
@@ -186,7 +190,10 @@ the project-scoped `Agent Worker` role. The script does not ask for GitHub
 credentials. Re-running the script is safe and is the supported way to fix a
 wrong OpenProject token (`--reprompt-tokens`). It pulls the configured image
 every time, so the same re-run also provisions agent users introduced by an
-upgrade instead of reusing a stale image with the old agent team.
+upgrade instead of reusing a stale image with the old agent team. The next
+engine start syncs the matching agent standards into the existing workspace
+volume, so a newly added agent such as VFX or Audio also gets its `AGENTS.md`
+without deleting the volume's clones.
 
 ## State and artifacts
 
