@@ -36,7 +36,8 @@ x-engine: &engine
     - pi-agent:/home/agent/.pi/agent
     # Engine state: SQLite store, run directories, heartbeat, engine lock.
     - engine-data:/home/agent/.local/share/op-agent-engine
-    # Agent workspaces: AGENTS.md (seeded from the image) plus the git clones.
+    # Agent workspaces: AGENTS.md standards (synced from the image at start)
+    # plus the git clones.
     - agent-workspace:/home/agent/agents
   restart: unless-stopped
   # STOP_GRACE_SECONDS (60) + the runner's 20 s SIGKILL grace, with margin.

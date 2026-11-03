@@ -29,6 +29,15 @@ mkdir -p "${AGENT_DIR}" \
 # deployment would otherwise keep the old agent set after an upgrade (and lack
 # the standards of agents added by the new release). Copy every regular file,
 # not just AGENTS.md, so auxiliary standards travel with the agent as well.
+temporary=
+cleanup_temporary() {
+  if [ -n "$temporary" ]; then
+    rm -f "$temporary"
+  fi
+}
+trap cleanup_temporary EXIT
+trap 'exit 1' HUP INT TERM
+
 standards_dir=${AGENT_STANDARDS_DIR:-/opt/op-agent-engine/agents}
 if [ -d "$standards_dir" ]; then
   for source_dir in "$standards_dir"/*; do
@@ -39,11 +48,15 @@ if [ -d "$standards_dir" ]; then
     for source_file in "$source_dir"/*; do
       [ -f "$source_file" ] || continue
       file_name=${source_file##*/}
-      # Engine and dashboard share the volume and start together, so replace
-      # each file atomically instead of letting two copies truncate one file.
-      temporary="${target_dir}/.${file_name}.$$"
-      cp "$source_file" "$temporary"
+      # Engine, dashboard and one-shot containers start together and share
+      # this volume, each in its own PID namespace. A name derived from $$ is
+      # therefore not unique across them: use mktemp in the target directory
+      # so every writer gets its own file, then replace the standard
+      # atomically. The trap removes an unfinished temporary file on failure.
+      temporary=$(mktemp "${target_dir}/.${file_name}.XXXXXX")
+      cp -p "$source_file" "$temporary"
       mv -f "$temporary" "${target_dir}/${file_name}"
+      temporary=
     done
   done
 fi

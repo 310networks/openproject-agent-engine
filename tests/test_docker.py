@@ -150,6 +150,26 @@ def test_image_keeps_agent_standards_outside_the_workspace_volume() -> None:
     assert "COPY --chown=agent:agent agents/ /home/agent/agents/" in dockerfile
 
 
+def _entrypoint_env(tmp_path: Path, standards: Path, workspace: Path) -> dict[str, str]:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_engine = fake_bin / "op-agent-engine"
+    fake_engine.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fake_engine.chmod(0o755)
+    home = tmp_path / "home"
+    home.mkdir()
+    return {
+        **os.environ,
+        "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+        "HOME": str(home),
+        "OP_BASE_URL": "https://openproject.example.com",
+        "OP_PROJECT": "demo",
+        "WORKSPACE_ROOT": str(workspace),
+        "DATA_DIR": str(tmp_path / "data"),
+        "AGENT_STANDARDS_DIR": str(standards),
+    }
+
+
 def test_entrypoint_syncs_standards_into_an_existing_workspace(tmp_path: Path) -> None:
     """An upgrade repairs missing agents and refreshes the existing standards."""
     standards = tmp_path / "image-agents"
@@ -171,26 +191,9 @@ def test_entrypoint_syncs_standards_into_an_existing_workspace(tmp_path: Path) -
     clone.mkdir(parents=True)
     (clone / "tracked.txt").write_text("keep me\n", encoding="utf-8")
 
-    fake_bin = tmp_path / "bin"
-    fake_bin.mkdir()
-    fake_engine = fake_bin / "op-agent-engine"
-    fake_engine.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    fake_engine.chmod(0o755)
-    home = tmp_path / "home"
-    home.mkdir()
-    env = {
-        **os.environ,
-        "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
-        "HOME": str(home),
-        "OP_BASE_URL": "https://openproject.example.com",
-        "OP_PROJECT": "demo",
-        "WORKSPACE_ROOT": str(workspace),
-        "DATA_DIR": str(tmp_path / "data"),
-        "AGENT_STANDARDS_DIR": str(standards),
-    }
     subprocess.run(
         ["sh", str(DOCKER_DIR / "entrypoint.sh")],
-        env=env,
+        env=_entrypoint_env(tmp_path, standards, workspace),
         check=True,
         capture_output=True,
         text=True,
@@ -207,6 +210,85 @@ def test_entrypoint_syncs_standards_into_an_existing_workspace(tmp_path: Path) -
     )
     # Syncing standards must never touch an agent's clone.
     assert (clone / "tracked.txt").read_text() == "keep me\n"
+
+
+def test_concurrent_entrypoint_syncs_do_not_collide(tmp_path: Path) -> None:
+    """Every container must start when several sync the shared volume at once.
+
+    The engine, dashboard and one-shot services run in separate containers (and
+    therefore separate PID namespaces) but share the workspace volume. Their
+    temporary files must be unique even when the containers' PIDs are the same.
+    """
+    standards = tmp_path / "image-agents"
+    agents = {f"agent{index}": f"standard {index}\n" for index in range(10)}
+    for agent, content in agents.items():
+        (standards / agent).mkdir(parents=True)
+        (standards / agent / "AGENTS.md").write_text(content, encoding="utf-8")
+
+    workspace = tmp_path / "workspace"
+    env = _entrypoint_env(tmp_path, standards, workspace)
+    # Containers share the workspace volume but not their own home directory,
+    # so give each process its own HOME to model that.
+    environments = []
+    for index in range(2):
+        home = tmp_path / f"container-home-{index}"
+        home.mkdir()
+        environments.append({**env, "HOME": str(home)})
+    command = ["sh", str(DOCKER_DIR / "entrypoint.sh")]
+    processes = [
+        subprocess.Popen(
+            command,
+            env=container_env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        for container_env in environments
+    ]
+    results = [process.communicate(timeout=60) for process in processes]
+
+    for process, (stdout, stderr) in zip(processes, results, strict=True):
+        assert process.returncode == 0, (process.returncode, stdout, stderr)
+
+    for agent, content in agents.items():
+        assert (workspace / agent / "AGENTS.md").read_text() == content
+    # No interrupted copy may leave its temporary file behind.
+    assert not [path for path in workspace.glob("*/.AGENTS.md.*") if path.is_file()]
+
+
+def test_entrypoint_removes_temporary_file_after_a_failed_copy(tmp_path: Path) -> None:
+    """A failed copy must not leave a stray temporary file in the workspace."""
+    standards = tmp_path / "image-agents"
+    (standards / "frontendEngineer").mkdir(parents=True)
+    (standards / "frontendEngineer" / "AGENTS.md").write_text(
+        "standard\n", encoding="utf-8"
+    )
+    workspace = tmp_path / "workspace"
+    env = _entrypoint_env(tmp_path, standards, workspace)
+    # Fail the copy after mktemp has created the temporary file. PATH's first
+    # entry is the helper's fake bin directory.
+    failing_cp = Path(env["PATH"].split(os.pathsep)[0]) / "cp"
+    failing_cp.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    failing_cp.chmod(0o755)
+
+    result = subprocess.run(
+        ["sh", str(DOCKER_DIR / "entrypoint.sh")],
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert not list(workspace.glob("*/.AGENTS.md.*"))
+
+
+def test_entrypoint_uses_a_unique_temporary_file_per_sync() -> None:
+    """A PID-derived name collides across containers; mktemp does not."""
+    entrypoint = (DOCKER_DIR / "entrypoint.sh").read_text()
+
+    assert 'mktemp "${target_dir}/.${file_name}.XXXXXX"' in entrypoint
+    assert '${target_dir}/.${file_name}.$$' not in entrypoint
 
 
 def test_container_scripts_are_executable() -> None:
