@@ -17,7 +17,7 @@ directory, which is `docker/` when you are looking at the repository.
 |---|---|---|
 | Python 3.12, `git`, `gh`, `ripgrep`, `fd`, `op` | deployment values, limits, API tokens, provider keys | `/home/agent/.pi/agent` (pi state, model cache, tools) |
 | Node 22 and pi (`PI_VERSION`) | model, git identity | `/home/agent/.local/share/op-agent-engine` (`DATA_DIR`) |
-| `agents/*/AGENTS.md` (seeds the workspace volume) | — | `/home/agent/agents` (`WORKSPACE_ROOT`) |
+| `agents/*/AGENTS.md` (at `/opt/op-agent-engine/agents`, synced into the workspace volume) | — | `/home/agent/agents` (`WORKSPACE_ROOT`) |
 | `prompts/` (`PROMPTS_DIR`) | — | — |
 | `LICENSE` (MIT, at `/opt/op-agent-engine/LICENSE`) | — | — |
 
@@ -37,7 +37,10 @@ op-agent-engine "$@"`:
    `DATA_DIR`, so a deployment that forgot one fails immediately with the
    variable named rather than inside a run;
 2. creates the writable state directories in the volumes;
-3. writes the agents' git identity from `GIT_AUTHOR_NAME`/`GIT_AUTHOR_EMAIL`
+3. syncs the baked agent standards from `/opt/op-agent-engine/agents` into
+   `$WORKSPACE_ROOT`, creating any missing agent workspace and replacing an
+   old `AGENTS.md` with the image's version;
+4. writes the agents' git identity from `GIT_AUTHOR_NAME`/`GIT_AUTHOR_EMAIL`
    (defaults: `OP_ENGINE_USER` and `OP_ENGINE_USER@OP_EMAIL_DOMAIN`).
 
 Provider credentials and model settings are environment variables in `.env`;
@@ -47,7 +50,7 @@ the entrypoint seeds no credential files.
 
 | Volume | Mount point | Holds |
 |---|---|---|
-| `agent-workspace` | `/home/agent/agents` | the seeded `agents/` tree and one clone per agent workspace |
+| `agent-workspace` | `/home/agent/agents` | the synced `agents/` standards and one clone per agent workspace |
 | `engine-data` | `/home/agent/.local/share/op-agent-engine` | SQLite store, `runs/<id>/`, heartbeat, pause flag, lock |
 | `pi-agent` | `/home/agent/.pi/agent` | pi sessions, logs, model cache, installed tools |
 
@@ -55,6 +58,15 @@ Every mount point exists in the image. That matters: Docker creates a fresh
 named volume with the *image's* ownership for that path, so a mount point
 missing from the image (or owned by root) makes the container unusable with
 `Permission denied`.
+
+Docker only seeds a named volume when it is created. An existing
+`agent-workspace` therefore never receives files added by a later image, which
+is why the entrypoint syncs the standards from `/opt/op-agent-engine/agents` on
+every start. Pulling a new image and recreating the container is enough to add
+the VFX/Audio standards to an old deployment and to refresh the others; the
+clones and worktrees in the same volume are left alone. `AGENT_STANDARDS_DIR`
+overrides the source directory (the default is the baked copy; it is not needed
+in a normal `.env`).
 
 ## The dashboard
 
