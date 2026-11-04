@@ -261,6 +261,16 @@ h1 { margin: 0; font-size: 21px; letter-spacing: -0.02em; }
 .pill.runner { font-family: var(--mono); font-weight: 500; }
 
 .agent-meta { color: var(--muted); font-size: 11.5px; }
+.agent-message {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 11.5px;
+  font-style: italic;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.agent-message-label { font-style: normal; opacity: 0.75; }
+.agent-message.empty-message { opacity: 0.6; }
 .agent-meta .mono { font-family: var(--mono); color: #b8c5d6; }
 
 .agent-current-list {

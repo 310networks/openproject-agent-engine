@@ -17,6 +17,7 @@ from op_agent_engine.dashboard import (
     DashboardData,
     DashboardHTTPServer,
     _asset,
+    _truncate_message,
 )
 from op_agent_engine.engine import write_heartbeat
 from op_agent_engine.store import FAILED, SUCCEEDED, Store
@@ -456,3 +457,88 @@ def test_cli_dashboard_rejects_invalid_port(
 
     assert cli.main(["dashboard", "--port", "70000"]) == cli.CONFIG_ERROR_EXIT
     assert called is False
+
+
+# -- the agent's last message (WP 356) ---------------------------------------
+
+
+def test_truncate_message_keeps_the_last_two_sentences() -> None:
+    text = "One. Two. Three. Four."
+    assert _truncate_message(text) == "… Three. Four."
+
+
+def test_truncate_message_keeps_up_to_two_sentences_whole() -> None:
+    assert _truncate_message("Only this sentence") == "Only this sentence"
+    # Two sentences are the budget, so nothing is dropped and no ellipsis.
+    assert _truncate_message("First one. Second one.") == "First one. Second one."
+
+
+def test_truncate_message_collapses_whitespace() -> None:
+    assert _truncate_message("a\n\n  b\t c") == "a b c"
+
+
+def test_truncate_message_caps_the_length() -> None:
+    text = ("word " * 200).strip() + "."
+    truncated = _truncate_message(text, max_chars=50)
+    assert len(truncated) <= 52  # the ellipsis prefix and suffix
+    assert truncated.endswith(".")
+
+
+def test_truncate_message_handles_empty_and_dotted_tokens() -> None:
+    assert _truncate_message("   ") == ""
+    # A dot inside a version or file name does not end a sentence.
+    assert _truncate_message("Upgraded to 3.12 and edited a.py") == (
+        "Upgraded to 3.12 and edited a.py"
+    )
+
+
+def test_snapshot_exposes_the_last_message(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    store = Store(tmp_path / "engine.db")
+    try:
+        run_id = store.begin_run(
+            work_package_id=81,
+            project_id=4,
+            agent="IMPL",
+            kind="implement",
+            attempt=1,
+            branch="op-4-81",
+            run_dir_template=str(store.runs_dir / "{id}"),
+        )
+        run_dir = store.runs_dir / str(run_id)
+        run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / "last_message.txt").write_text(
+            "Checking the build. Waiting for CI. Still waiting.", encoding="utf-8"
+        )
+
+        payload = DashboardData(config=_config(), settings=settings).snapshot()
+        session = next(
+            item for item in payload["active_sessions"] if item["id"] == run_id
+        )
+        assert session["last_message"] == "… Waiting for CI. Still waiting."
+    finally:
+        store.close()
+
+
+def test_snapshot_omits_the_last_message_when_the_runner_wrote_none(
+    tmp_path: Path,
+) -> None:
+    settings = _settings(tmp_path)
+    store = Store(tmp_path / "engine.db")
+    try:
+        run_id = store.begin_run(
+            work_package_id=82,
+            project_id=4,
+            agent="IMPL",
+            kind="implement",
+            attempt=1,
+            branch="op-4-82",
+            run_dir_template=str(store.runs_dir / "{id}"),
+        )
+        payload = DashboardData(config=_config(), settings=settings).snapshot()
+        session = next(
+            item for item in payload["active_sessions"] if item["id"] == run_id
+        )
+        assert session["last_message"] is None
+    finally:
+        store.close()
