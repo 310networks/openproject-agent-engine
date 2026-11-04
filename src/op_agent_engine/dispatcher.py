@@ -72,6 +72,8 @@ from op_agent_engine.openproject.client import (
 from op_agent_engine.openproject.resolve import OpenProjectResolution
 from op_agent_engine.openproject.workpackage import WorkPackage, parse_work_package
 from op_agent_engine.outcomes import (
+    NO_RESULT_LINE,
+    NO_RESULT_LINE_NOTE,
     OutcomeDecision,
     already_open_pr_comment,
     decide_implementer_outcome,
@@ -486,6 +488,7 @@ class Dispatcher:
             timed_out=result.timed_out,
             result_line=result.result_line,
             pr_found=pr is not None,
+            silent=result.is_silent(),
         )
         archive = await self._finish_workspace(
             claimed, workspace, run_dir, decision=decision
@@ -651,6 +654,7 @@ class Dispatcher:
                         if archive is not None and archive.artefact is not None
                         else None
                     ),
+                    note=NO_RESULT_LINE_NOTE if outcome == NO_RESULT_LINE else None,
                 )
                 transition = "on_hold"
                 logger.warning(

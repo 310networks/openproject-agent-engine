@@ -610,3 +610,50 @@ def test_blank_model_is_treated_as_unset() -> None:
     config = WorkflowConfig.from_mapping(_model_mapping(agent_model="   "), environ={})
 
     assert config.model_for("FE") is None
+
+
+# -- RunResult.is_silent (WP 366) --------------------------------------------
+
+
+def test_is_silent_when_both_logs_are_empty(tmp_path: Path) -> None:
+    stdout = tmp_path / "stdout.log"
+    stderr = tmp_path / "stderr.log"
+    stdout.write_bytes(b"")
+    stderr.write_bytes(b"")
+    result = RunResult(
+        exit_code=0,
+        timed_out=False,
+        duration_seconds=1.0,
+        stdout_path=stdout,
+        stderr_path=stderr,
+        result_line=None,
+    )
+    assert result.is_silent() is True
+
+
+def test_is_not_silent_when_either_log_has_bytes(tmp_path: Path) -> None:
+    stdout = tmp_path / "stdout.log"
+    stderr = tmp_path / "stderr.log"
+    stdout.write_bytes(b"")
+    stderr.write_bytes(b"warning\n")
+    result = RunResult(
+        exit_code=0,
+        timed_out=False,
+        duration_seconds=1.0,
+        stdout_path=stdout,
+        stderr_path=stderr,
+        result_line=None,
+    )
+    assert result.is_silent() is False
+
+
+def test_a_missing_log_counts_as_empty(tmp_path: Path) -> None:
+    result = RunResult(
+        exit_code=0,
+        timed_out=False,
+        duration_seconds=1.0,
+        stdout_path=tmp_path / "gone-out.log",
+        stderr_path=tmp_path / "gone-err.log",
+        result_line=None,
+    )
+    assert result.is_silent() is True

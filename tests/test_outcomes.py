@@ -3,6 +3,7 @@
 from pathlib import Path
 
 from op_agent_engine.outcomes import (
+    NO_RESULT_LINE_NOTE,
     already_open_pr_comment,
     blocked_comment,
     blocked_reason,
@@ -326,3 +327,69 @@ def test_already_open_pr_comment_names_branch_and_pr() -> None:
     assert comment.startswith("ENGINE: resume skipped (PR already open)")
     assert "`op-4-100`" in comment
     assert "https://github.com/o/r/pull/7" in comment
+
+
+# -- a silent run is its own outcome (WP 366) --------------------------------
+
+
+def test_silent_run_without_pr_is_no_result_line() -> None:
+    decision = decide_implementer_outcome(
+        exit_code=0,
+        timed_out=False,
+        result_line=None,
+        pr_found=False,
+        silent=True,
+    )
+    assert decision.run_state == FAILED
+    assert decision.outcome == "no_result_line"
+    assert decision.crash_retry is True
+    # The comment only lands at the cap; the decision itself stays quiet.
+    assert decision.comment is None
+
+
+def test_silent_run_with_a_pr_is_still_delivered() -> None:
+    decision = decide_implementer_outcome(
+        exit_code=0,
+        timed_out=False,
+        result_line=None,
+        pr_found=True,
+        silent=True,
+    )
+    assert decision.outcome == "ready_for_review"
+
+
+def test_silent_timeout_and_nonzero_exit_keep_their_outcomes() -> None:
+    """"Silent" only renames the exit-0/no-PR case, nothing else."""
+    timed_out = decide_implementer_outcome(
+        exit_code=-15, timed_out=True, result_line=None, pr_found=False, silent=True
+    )
+    assert timed_out.outcome == "timeout"
+    nonzero = decide_implementer_outcome(
+        exit_code=1, timed_out=False, result_line=None, pr_found=False, silent=True
+    )
+    assert nonzero.outcome == "nonzero_exit"
+
+
+def test_a_run_with_output_is_still_no_pr() -> None:
+    decision = decide_implementer_outcome(
+        exit_code=0,
+        timed_out=False,
+        result_line=None,
+        pr_found=False,
+        silent=False,
+    )
+    assert decision.outcome == "no_pr"
+
+
+def test_escalation_comment_carries_an_optional_note() -> None:
+    comment = escalation_comment(
+        outcome="no_result_line",
+        exit_code=0,
+        tail_lines=[],
+        note=NO_RESULT_LINE_NOTE,
+    )
+    assert "(no_result_line)" in comment
+    assert NO_RESULT_LINE_NOTE in comment
+    assert "(run log is empty)" in comment
+    without = escalation_comment(outcome="no_pr", exit_code=0, tail_lines=[])
+    assert "wrote nothing" not in without

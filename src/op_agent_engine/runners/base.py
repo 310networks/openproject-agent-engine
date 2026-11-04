@@ -75,6 +75,23 @@ class RunResult:
     stderr_path: Path
     result_line: str | None
 
+    def is_silent(self) -> bool:
+        """True when the process wrote nothing at all to stdout and stderr.
+
+        The agent CLI is a known offender: pi's print mode only writes the
+        final assistant message and exits 0 when the last message carries no
+        text, so a whole run can leave two empty logs (runs 258 and 304). That
+        is not the same failure as "ran, found no PR".
+        """
+        return self._size(self.stdout_path) == 0 and self._size(self.stderr_path) == 0
+
+    @staticmethod
+    def _size(path: Path) -> int:
+        try:
+            return path.stat().st_size
+        except OSError:
+            return 0
+
 
 def extract_result_line(tail: Sequence[str]) -> str | None:
     """Return the last line of *tail* that starts with ``RESULT:`` (stripped)."""

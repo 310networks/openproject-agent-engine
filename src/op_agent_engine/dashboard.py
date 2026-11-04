@@ -56,7 +56,9 @@ COMPLETED_OUTCOMES = frozenset(
 #: Outcomes that mean the reviewer turned the work down.
 DECLINED_OUTCOMES = frozenset({"rejected"})
 #: Outcomes that need a human (the ticket is On Hold or should be).
-BLOCKED_OUTCOMES = frozenset({"blocked", "rejection_cap_reached", "no_pr_for_branch"})
+BLOCKED_OUTCOMES = frozenset(
+    {"blocked", "rejection_cap_reached", "no_pr_for_branch", "no_result_line"}
+)
 #: Terminal states that are not a delivered result.
 FAILED_STATES = frozenset({FAILED, TIMEOUT, INTERRUPTED, CANCELLED})
 

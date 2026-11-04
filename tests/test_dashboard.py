@@ -17,6 +17,7 @@ from op_agent_engine.dashboard import (
     DashboardData,
     DashboardHTTPServer,
     _asset,
+    _bucket_counts,
 )
 from op_agent_engine.engine import write_heartbeat
 from op_agent_engine.store import FAILED, SUCCEEDED, Store
@@ -456,3 +457,15 @@ def test_cli_dashboard_rejects_invalid_port(
 
     assert cli.main(["dashboard", "--port", "70000"]) == cli.CONFIG_ERROR_EXIT
     assert called is False
+
+
+def test_bucket_counts_puts_no_result_line_under_blocked() -> None:
+    """A silent run needs a human, so it lands in the blocked bucket."""
+    counts = _bucket_counts(
+        total=3,
+        running=0,
+        outcomes={"no_result_line": 2, "approved": 1},
+    )
+    assert counts["blocked"] == 2
+    assert counts["completed"] == 1
+    assert counts["failed"] == 0
