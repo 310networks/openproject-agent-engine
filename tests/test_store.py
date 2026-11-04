@@ -545,3 +545,16 @@ def test_read_only_store_requires_an_existing_file(tmp_path: Path) -> None:
 
     with pytest.raises(sqlite3.OperationalError):
         Store(tmp_path / "missing.db", read_only=True)
+
+
+# -- crash counter reset ----------------------------------------------------
+
+
+def test_reset_crash_count_returns_the_previous_value(store: Store) -> None:
+    store.increment_crash_count(100)
+    store.increment_crash_count(100)
+
+    assert store.reset_crash_count(100) == 2
+    assert store.crash_count(100) == 0
+    # Idempotent: a second reset has nothing to delete.
+    assert store.reset_crash_count(100) == 0

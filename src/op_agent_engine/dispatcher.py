@@ -59,6 +59,7 @@ from op_agent_engine.openproject.activities import (
 )
 from op_agent_engine.openproject.activities import (
     count_status_changes,
+    unheld,
 )
 from op_agent_engine.openproject.activities import (
     created_at as activity_created_at,
@@ -267,6 +268,8 @@ class Dispatcher:
                         claimed, run_id, open_pr, started_at
                     )
                     return
+
+        await self._reset_crash_count_if_unheld(wp)
 
         workspace = await self._prepare_workspace(claimed, run_id)
         if workspace is None:
@@ -1180,6 +1183,43 @@ class Dispatcher:
         """The full activity history of a work package (oldest first)."""
         return await self._client.get_collection(
             f"/api/v3/work_packages/{work_package_id}/activities"
+        )
+
+    def _on_hold_status_name(self) -> str:
+        return self._resolution.statuses["on_hold"].name
+
+    async def _reset_crash_count_if_unheld(self, wp: WorkPackage) -> None:
+        """Restore the crash retry budget when a human moved the ticket off hold.
+
+        The counter only ever incremented, so an escalation used up the whole
+        budget for good: WP 144 had to be requeued with a hand-written
+        ``DELETE``. The engine itself only ever moves tickets *to* On Hold, so
+        the newest status change leaving On Hold is a human saying the cause
+        was addressed. Only tickets that have a counter cost an API call.
+        """
+        previous = self._store.crash_count(wp.id)
+        if previous == 0:
+            return
+        try:
+            activities = await self._fetch_activities(wp.id)
+        except OpenProjectError as error:
+            logger.warning(
+                "could not read the history of %s to decide whether to reset "
+                "the crash counter (left at %d): %s",
+                wp.display_id,
+                previous,
+                error,
+                extra={"work_package_id": wp.id},
+            )
+            return
+        if not unheld(activities, self._on_hold_status_name()):
+            return
+        self._store.reset_crash_count(wp.id)
+        logger.info(
+            "reset the crash counter for %s (was %d): the ticket left On Hold",
+            wp.display_id,
+            previous,
+            extra={"work_package_id": wp.id, "previous_crash_count": previous},
         )
 
     def _rejected_status_name(self) -> str:
