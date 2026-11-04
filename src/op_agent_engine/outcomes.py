@@ -253,8 +253,14 @@ def escalation_comment(
     exit_code: int | None = None,
     tail_lines: list[str] | None = None,
     detail: str | None = None,
+    artefact_path: str | None = None,
 ) -> str:
-    """Engine comment posted when the crash retry cap is reached."""
+    """Engine comment posted when the crash retry cap is reached.
+
+    ``artefact_path`` names the captured state of the failed run's worktree
+    (``runs/<runId>/worktree``), so a human can find what the agent wrote even
+    when it never committed or opened a PR.
+    """
     lines = [
         "ENGINE: escalated",
         "",
@@ -265,6 +271,15 @@ def escalation_comment(
         lines.extend(["", f"Failure detail: {detail}"])
     if exit_code is not None:
         lines.extend(["", f"Exit code: {exit_code}"])
+    if artefact_path:
+        lines.extend(
+            [
+                "",
+                f"The failed run's worktree state was captured in: {artefact_path}",
+                "It holds `git status`, the unstaged/staged patches, the "
+                "unpushed commits and the untracked files.",
+            ]
+        )
     if tail_lines is not None:
         lines.extend(["", f"Last {len(tail_lines)} lines of the run log:"])
         lines.extend(tail_lines if tail_lines else ["(run log is empty)"])

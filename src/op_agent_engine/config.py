@@ -895,6 +895,13 @@ class EngineSettings(BaseSettings):
     run_timeout_seconds: int = Field(default=3600, gt=0)
     stop_grace_seconds: int = Field(default=60, ge=0)
     run_retention_days: int = Field(default=30, ge=0)
+    # Failed-run post-mortem: a failed run's worktree is kept on disk (its
+    # state is always captured under the run directory first) until `cleanup`
+    # expires it, so a silent failure can be inspected. Set
+    # KEEP_FAILED_WORKTREES=false to remove it immediately, and lower
+    # FAILED_WORKTREE_MAX_MB to cap what the kept worktrees may use.
+    keep_failed_worktrees: bool = True
+    failed_worktree_max_mb: int = Field(default=2048, ge=0)
     data_dir: Path = Field(default_factory=lambda: Path(DEFAULT_DATA_DIR).expanduser())
     workspace_root: Path | None = None
     prompts_dir: Path | None = None

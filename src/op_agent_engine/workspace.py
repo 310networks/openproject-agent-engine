@@ -15,8 +15,18 @@ uncommitted work in its own worktree and cannot dirty the clone used by later
 runs. The scheduler still allows only one run per work package and enforces
 ``MAX_RUNS_PER_AGENT``.
 
-The worktree is removed after every run. ``cleanup_stale_worktrees`` removes
-worktrees left behind by an engine crash or a failed removal.
+A successful run's worktree is removed as soon as the run is verified. A
+failed run's worktree is first recorded under its run directory
+(``runs/<runId>/worktree``: ``git status``, the diffs, unpushed commits and
+the untracked files) and then kept on disk until the retention window expires,
+unless ``KEEP_FAILED_WORKTREES`` is false or the worktree is larger than
+``FAILED_WORKTREE_MAX_MB``. ``cleanup_stale_worktrees`` removes worktrees left
+behind by an engine crash, a failed removal or the retention window of such a
+kept worktree.
+
+A worktree that is still dirty when a new run for the same branch starts is
+moved aside (``<branch>.kept-<utc>``) instead of being deleted, so the state a
+failed run left behind survives the resume run that follows it.
 
 Checkout rules:
 
@@ -41,6 +51,21 @@ logger = get_logger(__name__)
 
 #: Timeout for a single git command (clone of a large repo included).
 GIT_TIMEOUT_SECONDS = 300.0
+
+#: Directory under a run directory that holds a failed run's worktree state.
+WORKTREE_ARTEFACT_DIR_NAME = "worktree"
+
+#: Largest untracked file copied into an artefact; bigger ones are only listed
+#: in ``MANIFEST.txt`` (1 MiB).
+CAPTURE_MAX_FILE_BYTES = 1024 * 1024
+
+#: Total size of the untracked files copied into one artefact (20 MiB).
+CAPTURE_MAX_TOTAL_BYTES = 20 * 1024 * 1024
+
+#: Largest worktree kept on disk for a failed run (2 GiB). Anything bigger is
+#: removed after its state has been captured, so installed toolchains cannot
+#: fill the volume.
+DEFAULT_FAILED_WORKTREE_MAX_BYTES = 2 * 1024 * 1024 * 1024
 
 
 class WorkspaceError(Exception):
@@ -88,13 +113,18 @@ async def run_git(
     cwd: Path | None = None,
 ) -> str:
     """Run one git command and return its stdout; raise :class:`GitError`."""
-    process = await asyncio.create_subprocess_exec(
-        "git",
-        *args,
-        cwd=str(cwd) if cwd is not None else None,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
+    try:
+        process = await asyncio.create_subprocess_exec(
+            "git",
+            *args,
+            cwd=str(cwd) if cwd is not None else None,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except OSError as error:
+        # e.g. a missing working directory: report it like any git failure so
+        # callers only have to handle GitError.
+        raise GitError(args, -1, str(error)) from error
     try:
         _stdout, stderr = await asyncio.wait_for(
             process.communicate(), timeout=GIT_TIMEOUT_SECONDS
@@ -182,6 +212,7 @@ async def prepare_workspace(
     role: str,
     gh_token: str | None = None,
     clone_url: str | None = None,
+    max_kept_worktree_bytes: int = DEFAULT_FAILED_WORKTREE_MAX_BYTES,
 ) -> Workspace:
     """Clone/fetch the repository and check out the run branch.
 
@@ -266,7 +297,9 @@ async def prepare_workspace(
     # edits) cannot collide. The shared clone stays detached so every run
     # branch is free to use and a killed run cannot leave it dirty.
     worktree_dir = workspace_dir / "worktrees" / branch
-    await _remove_worktree(repo_dir, worktree_dir)
+    await _reclaim_worktree(
+        repo_dir, worktree_dir, max_keep_bytes=max_kept_worktree_bytes
+    )
     if not await _head_is_detached(repo_dir):
         await run_git(
             ["checkout", "--quiet", "--detach", base],
@@ -309,6 +342,98 @@ async def _head_is_detached(repo_dir: Path) -> bool:
     return False
 
 
+async def _worktree_is_dirty(worktree_dir: Path) -> bool:
+    """Whether *worktree_dir* has changes (or cannot be inspected).
+
+    An unreadable worktree is treated as dirty: keeping it is harmless, while
+    deleting state that cannot be inspected loses the evidence.
+    """
+    try:
+        status = await run_git(
+            ["status", "--porcelain=v1", "-uall"], cwd=worktree_dir
+        )
+    except GitError:
+        return True
+    return bool(status.strip())
+
+
+def _preserved_path(worktree_dir: Path) -> Path:
+    """A free sibling path that keeps a worktree's name recognisable."""
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    candidate = worktree_dir.parent / f"{worktree_dir.name}.kept-{stamp}"
+    counter = 1
+    while candidate.exists():
+        candidate = worktree_dir.parent / f"{worktree_dir.name}.kept-{stamp}-{counter}"
+        counter += 1
+    return candidate
+
+
+async def _reclaim_worktree(
+    base_repo_dir: Path,
+    worktree_dir: Path,
+    *,
+    max_keep_bytes: int,
+) -> Path | None:
+    """Clear *worktree_dir* before a new run, preserving a dirty one.
+
+    A worktree that still has changes belongs to a run that failed without
+    committing; it is moved aside (``<branch>.kept-<utc>``) so its state
+    survives the resume run, and the retention sweep removes it later. A clean
+    worktree, or one larger than *max_keep_bytes*, is removed as before.
+    Returns the path the dirty worktree was preserved at, if any.
+    """
+    await run_git(["worktree", "prune"], cwd=base_repo_dir)
+    if not worktree_dir.exists():
+        return None
+
+    preserved: Path | None = None
+    if await _worktree_is_dirty(worktree_dir):
+        size_bytes = worktree_size_bytes(worktree_dir)
+        if max_keep_bytes > 0 and size_bytes <= max_keep_bytes:
+            target = _preserved_path(worktree_dir)
+            # Detach first: the branch is needed by the new run's worktree, and
+            # git refuses to force it while it is checked out elsewhere.
+            with contextlib.suppress(GitError):
+                await run_git(
+                    ["checkout", "--quiet", "--detach"], cwd=worktree_dir
+                )
+            try:
+                await run_git(
+                    ["worktree", "move", str(worktree_dir), str(target)],
+                    cwd=base_repo_dir,
+                )
+            except GitError as error:
+                logger.warning(
+                    "could not preserve the dirty worktree %s: %s",
+                    worktree_dir,
+                    error,
+                    extra={"repo_dir": str(worktree_dir)},
+                )
+            else:
+                preserved = target
+                logger.warning(
+                    "the worktree %s still had changes; kept it as %s "
+                    "(%d bytes) for post-mortem",
+                    worktree_dir,
+                    target,
+                    size_bytes,
+                    extra={"repo_dir": str(target), "size_bytes": size_bytes},
+                )
+        else:
+            logger.warning(
+                "the worktree %s still had changes but is %d bytes (cap %d); "
+                "removing it",
+                worktree_dir,
+                size_bytes,
+                max_keep_bytes,
+                extra={"repo_dir": str(worktree_dir), "size_bytes": size_bytes},
+            )
+
+    if preserved is None or worktree_dir.exists():
+        await _remove_worktree(base_repo_dir, worktree_dir)
+    return preserved
+
+
 async def _remove_worktree(base_repo_dir: Path, worktree_dir: Path) -> None:
     """Remove *worktree_dir* and its git metadata, if present."""
     await run_git(["worktree", "prune"], cwd=base_repo_dir)
@@ -333,6 +458,333 @@ async def cleanup_workspace(workspace: Workspace) -> None:
         return
     with contextlib.suppress(GitError):
         await _remove_worktree(workspace.base_repo_dir, workspace.repo_dir)
+
+
+# -- failed-run worktree capture ----------------------------------------------
+
+
+def worktree_size_bytes(path: Path) -> int:
+    """Bytes used by a worktree directory (0 when it cannot be measured)."""
+    try:
+        return _worktree_usage(path)[0]
+    except OSError:
+        return 0
+
+
+@dataclass(frozen=True)
+class WorktreeCapture:
+    """The files written for a failed run's worktree state.
+
+    ``path`` is ``None`` when the artefact directory itself could not be
+    created; ``errors`` then explains why. Capture never raises: a failed
+    capture must not turn a failed run into an engine exception.
+    """
+
+    path: Path | None
+    size_bytes: int = 0
+    copied_files: int = 0
+    skipped_files: tuple[str, ...] = ()
+    errors: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class WorktreeArchive:
+    """What the engine recorded for a failed run and whether it kept the tree."""
+
+    artefact: Path | None
+    kept: bool
+    size_bytes: int = 0
+    copied_files: int = 0
+    skipped_files: tuple[str, ...] = ()
+    errors: tuple[str, ...] = ()
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "artefact": str(self.artefact) if self.artefact is not None else None,
+            "kept": self.kept,
+            "size_bytes": self.size_bytes,
+            "copied_files": self.copied_files,
+            "skipped_files": list(self.skipped_files),
+            "errors": list(self.errors),
+        }
+
+
+async def _ref_exists(repo_dir: Path, ref: str) -> bool:
+    try:
+        await run_git(["rev-parse", "--verify", "--quiet", ref], cwd=repo_dir)
+    except GitError:
+        return False
+    return True
+
+
+async def _capture_base_ref(
+    repo_dir: Path, branch: str, default_branch: str | None
+) -> str | None:
+    """The commit the branch started from (for the unpushed-commit dump)."""
+    candidates = [f"origin/{branch}"]
+    if default_branch is not None:
+        candidates.append(f"origin/{default_branch}")
+    for candidate in candidates:
+        if await _ref_exists(repo_dir, candidate):
+            return candidate
+    return None
+
+
+async def capture_worktree_state(
+    workspace: Workspace,
+    dest_dir: Path,
+    *,
+    max_file_bytes: int = CAPTURE_MAX_FILE_BYTES,
+    max_total_bytes: int = CAPTURE_MAX_TOTAL_BYTES,
+) -> WorktreeCapture:
+    """Write the state of a failed run's worktree into *dest_dir*.
+
+    The artefact is a plain directory a human can read with shell tools:
+
+    ``status.txt``
+        ``git status --porcelain=v1 -uall`` (untracked files included).
+    ``diff.patch``
+        ``git diff --binary``: unstaged changes, binary ones included.
+    ``diff_cached.patch``
+        ``git diff --binary --cached``: staged changes.
+    ``commits.txt`` / ``commits.patch``
+        Commits that exist only locally (never pushed), which no diff of the
+        working tree would show.
+    ``head.txt``
+        The branch and the HEAD commit of the captured worktree.
+    ``untracked/``
+        Untracked files copied verbatim, because a patch cannot express them.
+        Files above the size caps are listed in ``MANIFEST.txt`` instead.
+    ``MANIFEST.txt``
+        Index of everything above, with the files that were skipped and why.
+
+    Capture is best effort: every git failure is recorded in ``errors`` and
+    the remaining files are still written.
+    """
+    dest = Path(dest_dir)
+    try:
+        dest.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        return WorktreeCapture(
+            path=None, errors=(f"cannot create {dest}: {error}",)
+        )
+
+    repo_dir = workspace.repo_dir
+    errors: list[str] = []
+    written: list[tuple[str, int]] = []
+    skipped: list[str] = []
+
+    def save(name: str, text: str) -> None:
+        try:
+            (dest / name).write_text(text, encoding="utf-8")
+        except OSError as error:
+            errors.append(f"cannot write {name}: {error}")
+            return
+        written.append((name, len(text.encode("utf-8"))))
+
+    async def capture(name: str, args: list[str]) -> str | None:
+        try:
+            return await run_git(args, cwd=repo_dir)
+        except (GitError, OSError) as error:
+            errors.append(f"{name}: {error}")
+            return None
+
+    status = await capture("status", ["status", "--porcelain=v1", "-uall"])
+    if status is not None:
+        save("status.txt", status)
+
+    unstaged = await capture("diff", ["diff", "--binary", "--no-color"])
+    if unstaged is not None:
+        save("diff.patch", unstaged)
+
+    staged = await capture(
+        "diff --cached", ["diff", "--binary", "--no-color", "--cached"]
+    )
+    if staged is not None:
+        save("diff_cached.patch", staged)
+
+    head = await capture("rev-parse HEAD", ["rev-parse", "HEAD"])
+    base = await _capture_base_ref(repo_dir, workspace.branch, workspace.default_branch)
+    head_lines = [
+        f"branch: {workspace.branch}",
+        f"worktree: {repo_dir}",
+        f"HEAD: {head.strip() if head is not None else 'unknown'}",
+        f"base: {base or 'unknown (no origin ref)'}",
+    ]
+    save("head.txt", "\n".join(head_lines) + "\n")
+
+    if base is not None:
+        local_commits = await capture(
+            "log", ["log", "--oneline", "--no-decorate", f"{base}..HEAD"]
+        )
+        if local_commits is not None:
+            save(
+                "commits.txt",
+                local_commits or f"(no commits on {workspace.branch} beyond {base})\n",
+            )
+        commit_diff = await capture(
+            "commit diff",
+            ["diff", "--binary", "--no-color", f"{base}..HEAD"],
+        )
+        if commit_diff:
+            save("commits.patch", commit_diff)
+
+    untracked_raw = await capture(
+        "ls-files", ["ls-files", "--others", "--exclude-standard", "-z"]
+    )
+    copied_files = 0
+    copied_bytes = 0
+    for rel in (untracked_raw or "").split("\0"):
+        if not rel:
+            continue
+        source = repo_dir / rel
+        try:
+            if source.is_symlink():
+                skipped.append(f"{rel} (symlink)")
+                continue
+            size = source.stat().st_size
+        except OSError as error:
+            skipped.append(f"{rel} (unreadable: {error})")
+            continue
+        if size > max_file_bytes:
+            skipped.append(
+                f"{rel} ({size} bytes exceeds the {max_file_bytes} byte "
+                "per-file cap)"
+            )
+            continue
+        if copied_bytes + size > max_total_bytes:
+            skipped.append(
+                f"{rel} ({max_total_bytes} byte artefact cap reached)"
+            )
+            continue
+        target = dest / "untracked" / rel
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, target)
+        except OSError as error:
+            skipped.append(f"{rel} (copy failed: {error})")
+            continue
+        copied_files += 1
+        copied_bytes += size
+        written.append((f"untracked/{rel}", size))
+
+    manifest = [
+        "op-agent-engine: state of a failed run's worktree",
+        "",
+        *head_lines,
+        "",
+        "status.txt           git status --porcelain=v1 -uall",
+        "diff.patch           git diff --binary (unstaged changes)",
+        "diff_cached.patch    git diff --binary --cached (staged changes)",
+        "commits.txt          local commits that were never pushed",
+        "commits.patch        diff of those commits against the base",
+        "untracked/           untracked files copied verbatim",
+        "",
+        f"files written: {len(written)}",
+    ]
+    manifest.extend(f"  {name}: {size} bytes" for name, size in written)
+    if skipped:
+        manifest.extend(["", f"not copied: {len(skipped)}"])
+        manifest.extend(f"  {item}" for item in skipped)
+    if errors:
+        manifest.extend(["", f"capture errors: {len(errors)}"])
+        manifest.extend(f"  {item}" for item in errors)
+    manifest_text = "\n".join(manifest) + "\n"
+    try:
+        (dest / "MANIFEST.txt").write_text(manifest_text, encoding="utf-8")
+    except OSError as error:
+        errors.append(f"cannot write MANIFEST.txt: {error}")
+
+    total_bytes = sum(size for _name, size in written) + len(
+        manifest_text.encode("utf-8")
+    )
+    return WorktreeCapture(
+        path=dest,
+        size_bytes=total_bytes,
+        copied_files=copied_files,
+        skipped_files=tuple(skipped),
+        errors=tuple(errors),
+    )
+
+
+async def archive_failed_worktree(
+    workspace: Workspace,
+    *,
+    run_dir: Path,
+    keep: bool = True,
+    max_keep_bytes: int = DEFAULT_FAILED_WORKTREE_MAX_BYTES,
+) -> WorktreeArchive:
+    """Record a failed run's worktree state, then keep or remove the worktree.
+
+    The artefact is always written (``<run_dir>/worktree``) before the worktree
+    is touched. The worktree itself is then kept on disk so a human can inspect
+    the real checkout, unless ``keep`` is false or it is larger than
+    *max_keep_bytes*; ``cleanup_stale_worktrees`` removes kept worktrees once
+    they are older than ``RUN_RETENTION_DAYS``.
+    """
+    capture = await capture_worktree_state(
+        workspace, run_dir / WORKTREE_ARTEFACT_DIR_NAME
+    )
+    size_bytes = worktree_size_bytes(workspace.repo_dir)
+
+    if workspace.base_repo_dir is None:
+        # Not a linked worktree (tests, or a workspace prepared elsewhere):
+        # there is no clone to unregister it from, so it stays where it is.
+        return WorktreeArchive(
+            artefact=capture.path,
+            kept=False,
+            size_bytes=size_bytes,
+            copied_files=capture.copied_files,
+            skipped_files=capture.skipped_files,
+            errors=capture.errors,
+        )
+
+    log_extra = {"repo_dir": str(workspace.repo_dir), "size_bytes": size_bytes}
+    keep_it = False
+    if not keep:
+        logger.info(
+            "KEEP_FAILED_WORKTREES is false; removing the failed run's worktree "
+            "%s after capturing it",
+            workspace.repo_dir,
+            extra=log_extra,
+        )
+    elif max_keep_bytes <= 0:
+        logger.warning(
+            "FAILED_WORKTREE_MAX_MB is 0; removing the failed run's worktree %s "
+            "after capturing it",
+            workspace.repo_dir,
+            extra=log_extra,
+        )
+    elif size_bytes > max_keep_bytes:
+        logger.warning(
+            "the failed run's worktree %s is %d bytes, above the %d byte cap; "
+            "removing it (the artefact under the run directory is kept)",
+            workspace.repo_dir,
+            size_bytes,
+            max_keep_bytes,
+            extra=log_extra,
+        )
+    else:
+        keep_it = True
+        logger.warning(
+            "kept the failed run's worktree %s (%d bytes) for post-mortem; "
+            "cleanup removes it after the retention window",
+            workspace.repo_dir,
+            size_bytes,
+            extra=log_extra,
+        )
+
+    if not keep_it:
+        await cleanup_workspace(workspace)
+
+    return WorktreeArchive(
+        artefact=capture.path,
+        kept=keep_it,
+        size_bytes=size_bytes,
+        copied_files=capture.copied_files,
+        skipped_files=capture.skipped_files,
+        errors=capture.errors,
+    )
 
 
 # -- stale worktree retention -------------------------------------------------
@@ -449,10 +901,12 @@ async def cleanup_stale_worktrees(
 ) -> WorktreeCleanupReport:
     """Remove worktrees older than *older_than_days*.
 
-    A worktree is normally removed immediately after its run. This sweep only
-    handles leftovers from an engine crash, a failed removal, or a ticket that
-    was closed while a run was still in flight. ``active_branches`` protects
-    worktrees that the store still reports as running.
+    A successful run removes its worktree immediately. This sweep handles the
+    worktrees a failed run keeps for post-mortem (they expire here with the
+    same ``RUN_RETENTION_DAYS`` window as its run directory), the worktrees
+    preserved by :func:`_reclaim_worktree` when a dirty branch is reused, and
+    the leftovers of an engine crash or a failed removal. ``active_branches``
+    protects worktrees that the store still reports as running.
     """
     if older_than_days < 0:
         raise ValueError("older_than_days must not be negative")

@@ -233,6 +233,8 @@ Docker network.
 | `AGENT_TIMEOUT_SECONDS` | `3600` | hard limit per agent run (wins over the above) |
 | `STOP_GRACE_SECONDS` | `60` | shutdown budget; compose allows 90 s |
 | `RUN_RETENTION_DAYS` | `30` | `cleanup` removes older run directories and stale worktrees |
+| `KEEP_FAILED_WORKTREES` | `true` | keep a failed run's worktree until `cleanup` expires it; `false` removes it right after its state is captured under the run directory |
+| `FAILED_WORKTREE_MAX_MB` | `2048` | size cap for a kept failed-run worktree (MiB); a bigger one is removed after capture, `0` disables keeping |
 | `ENGINE_PAUSED` | `false` | `true` stops new runs without stopping the container |
 | `LOG_LEVEL` | `INFO` | `DEBUG` for verbose logs |
 | `WORKSPACE_ROOT` | image | agent workspaces and git clones |
@@ -245,6 +247,14 @@ Docker network.
 
 The image sets the container paths and the dashboard bind address, so `.env`
 normally only holds the deployment values, the provider key and the limits.
+
+Failed-run post-mortem: every failed run's worktree state is written to
+`DATA_DIR/runs/<runId>/worktree` (bounded to 20 MiB of untracked files, 1 MiB
+per file). The worktree itself stays on disk up to `FAILED_WORKTREE_MAX_MB` per
+run and is expired by `cleanup` with `RUN_RETENTION_DAYS`. Worst case is that
+cap per failing run inside the window; with the default settings and one run
+per agent that is small, and lowering `RUN_RETENTION_DAYS` or the cap bounds it
+further. See [RUNBOOK.md](RUNBOOK.md#after-a-silent-failure).
 
 ## Compose-only
 

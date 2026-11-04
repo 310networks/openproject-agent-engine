@@ -8,6 +8,8 @@ fake GitHub and a stubbed workspace preparation (no real git).
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -1736,6 +1738,316 @@ async def test_timeout_after_the_pr_was_opened_moves_to_ready_for_review(
         assert run.outcome == "ready_for_review"
         assert store.crash_count(100) == 0
         assert status_href(fake, 100) == f"/api/v3/statuses/{STATUS_READY_FOR_REVIEW}"
+    finally:
+        await client.aclose()
+        store.close()
+
+
+# -- failed-run worktree post-mortem ------------------------------------------
+#
+# These tests use a real clone plus a linked worktree (real git) so the
+# capture and the keep/remove decision are exercised end to end.
+
+
+def _git(args: list[str], cwd: Path | None = None) -> str:
+    result = subprocess.run(
+        ["git", *args],
+        cwd=str(cwd) if cwd is not None else None,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout
+
+
+def make_real_workspace(tmp_path: Path) -> Workspace:
+    """A real clone plus a linked worktree at the paths make_dispatcher uses."""
+    agent_dir = tmp_path / "ws" / "impl"
+    clone = agent_dir / "repositories" / "demo"
+    shutil.rmtree(clone, ignore_errors=True)
+    clone.mkdir(parents=True)
+    _git(["init", "--quiet", str(clone)])
+    _git(["-C", str(clone), "config", "user.name", "t"])
+    _git(["-C", str(clone), "config", "user.email", "t@example.com"])
+    (clone / "README.md").write_text("hello\n", encoding="utf-8")
+    _git(["-C", str(clone), "add", "README.md"])
+    _git(["-C", str(clone), "commit", "--no-gpg-sign", "--quiet", "-m", "initial"])
+    worktree = agent_dir / "worktrees" / "op-4-100"
+    worktree.parent.mkdir(parents=True, exist_ok=True)
+    _git(
+        [
+            "-C",
+            str(clone),
+            "worktree",
+            "add",
+            "--quiet",
+            "-B",
+            "op-4-100",
+            str(worktree),
+        ]
+    )
+    return Workspace(
+        repo_dir=worktree,
+        branch="op-4-100",
+        standard_path=agent_dir / "AGENTS.md",
+        default_branch="main",
+        base_repo_dir=clone,
+    )
+
+
+def use_workspace(monkeypatch: pytest.MonkeyPatch, workspace: Workspace) -> None:
+    async def fake_prepare_workspace(**kwargs: Any) -> Workspace:
+        return workspace
+
+    monkeypatch.setattr(
+        "op_agent_engine.dispatcher.prepare_workspace", fake_prepare_workspace
+    )
+
+
+async def test_failed_run_captures_worktree_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    holder: dict[str, Workspace] = {}
+
+    def edit() -> None:
+        workspace = holder["ws"]
+        (workspace.repo_dir / "README.md").write_text(
+            "hello\nedited\n", encoding="utf-8"
+        )
+        (workspace.repo_dir / "notes.md").write_text("agent notes\n", encoding="utf-8")
+
+    runner = FakeRunner(make_result(tmp_path), on_run=edit)
+    dispatcher, _fake, store, client, _ = await make_dispatcher(
+        tmp_path, monkeypatch, runner=runner, gh=FakeGitHub(pr=None)
+    )
+    try:
+        workspace = make_real_workspace(tmp_path)
+        holder["ws"] = workspace
+        use_workspace(monkeypatch, workspace)
+
+        await dispatcher.execute(claim(store, make_item(100)))
+
+        run = store.get_run(1)
+        assert run is not None
+        assert run.state == FAILED
+        assert run.outcome == "no_pr"
+
+        # The artefact is written before anything is removed.
+        artefact = store.runs_dir / "1" / "worktree"
+        status = (artefact / "status.txt").read_text()
+        assert "README.md" in status
+        assert "notes.md" in status
+        assert "edited" in (artefact / "diff.patch").read_text()
+        assert (artefact / "untracked" / "notes.md").read_text() == "agent notes\n"
+        assert (artefact / "MANIFEST.txt").is_file()
+
+        meta = json.loads((store.runs_dir / "1" / "meta.json").read_text())
+        assert meta["worktree_artefact"] == str(artefact)
+        assert meta["worktree_kept"] is True
+        assert meta["worktree"]["artefact"] == str(artefact)
+        assert meta["worktree"]["kept"] is True
+        assert meta["worktree"]["copied_files"] == 1
+        assert meta["worktree"]["errors"] == []
+
+        # The worktree itself is kept for post-mortem.
+        assert workspace.repo_dir.is_dir()
+        assert (workspace.repo_dir / "notes.md").is_file()
+    finally:
+        await client.aclose()
+        store.close()
+
+
+async def test_successful_run_removes_the_worktree_and_captures_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    holder: dict[str, Workspace] = {}
+
+    def edit() -> None:
+        workspace = holder["ws"]
+        (workspace.repo_dir / "notes.md").write_text("agent notes\n", encoding="utf-8")
+
+    runner = FakeRunner(make_result(tmp_path), on_run=edit)
+    dispatcher, _fake, store, client, _ = await make_dispatcher(
+        tmp_path, monkeypatch, runner=runner, gh=FakeGitHub(pr=PR)
+    )
+    try:
+        workspace = make_real_workspace(tmp_path)
+        holder["ws"] = workspace
+        use_workspace(monkeypatch, workspace)
+
+        await dispatcher.execute(claim(store, make_item(100)))
+
+        run = store.get_run(1)
+        assert run is not None
+        assert run.state == SUCCEEDED
+        # A successful run still cleans up: no worktree, no artefact.
+        assert not workspace.repo_dir.exists()
+        assert not (store.runs_dir / "1" / "worktree").exists()
+        meta = json.loads((store.runs_dir / "1" / "meta.json").read_text())
+        assert meta["worktree_artefact"] is None
+        assert meta["worktree_kept"] is False
+    finally:
+        await client.aclose()
+        store.close()
+
+
+async def test_timeout_run_captures_worktree_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    holder: dict[str, Workspace] = {}
+
+    def edit() -> None:
+        (holder["ws"].repo_dir / "notes.md").write_text(
+            "agent notes\n", encoding="utf-8"
+        )
+
+    runner = FakeRunner(
+        make_result(tmp_path, exit_code=-15, timed_out=True), on_run=edit
+    )
+    dispatcher, _fake, store, client, _ = await make_dispatcher(
+        tmp_path, monkeypatch, runner=runner, gh=FakeGitHub(pr=None)
+    )
+    try:
+        workspace = make_real_workspace(tmp_path)
+        holder["ws"] = workspace
+        use_workspace(monkeypatch, workspace)
+
+        await dispatcher.execute(claim(store, make_item(100)))
+
+        run = store.get_run(1)
+        assert run is not None
+        assert run.state == TIMEOUT
+        assert (store.runs_dir / "1" / "worktree" / "untracked" / "notes.md").is_file()
+        assert workspace.repo_dir.is_dir()
+    finally:
+        await client.aclose()
+        store.close()
+
+
+async def test_escalation_comment_names_the_worktree_artefact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    holder: dict[str, Workspace] = {}
+
+    def edit() -> None:
+        (holder["ws"].repo_dir / "notes.md").write_text(
+            "agent notes\n", encoding="utf-8"
+        )
+
+    runner = FakeRunner(make_result(tmp_path), on_run=edit)
+    dispatcher, fake, store, client, _ = await make_dispatcher(
+        tmp_path, monkeypatch, runner=runner, gh=FakeGitHub(pr=None),
+        max_crash_retries=0,
+    )
+    try:
+        workspace = make_real_workspace(tmp_path)
+        holder["ws"] = workspace
+        use_workspace(monkeypatch, workspace)
+
+        await dispatcher.execute(claim(store, make_item(100)))
+
+        assert status_href(fake, 100) == f"/api/v3/statuses/{STATUS_ON_HOLD}"
+        comments = posted_comments(fake, 100)
+        assert len(comments) == 1
+        assert comments[0].startswith("ENGINE: escalated")
+        assert str(store.runs_dir / "1" / "worktree") in comments[0]
+    finally:
+        await client.aclose()
+        store.close()
+
+
+async def test_pr_verification_error_captures_worktree_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    holder: dict[str, Workspace] = {}
+
+    def edit() -> None:
+        (holder["ws"].repo_dir / "notes.md").write_text(
+            "agent notes\n", encoding="utf-8"
+        )
+
+    runner = FakeRunner(make_result(tmp_path), on_run=edit)
+    gh = FakeGitHub(error=GitHubError("gh timed out"))
+    dispatcher, _fake, store, client, _ = await make_dispatcher(
+        tmp_path, monkeypatch, runner=runner, gh=gh
+    )
+    try:
+        workspace = make_real_workspace(tmp_path)
+        holder["ws"] = workspace
+        use_workspace(monkeypatch, workspace)
+
+        await dispatcher.execute(claim(store, make_item(100)))
+
+        run = store.get_run(1)
+        assert run is not None
+        assert run.outcome == "pr_verification_error"
+        meta = json.loads((store.runs_dir / "1" / "meta.json").read_text())
+        assert meta["worktree_artefact"] == str(store.runs_dir / "1" / "worktree")
+        assert (store.runs_dir / "1" / "worktree" / "status.txt").is_file()
+    finally:
+        await client.aclose()
+        store.close()
+
+
+async def test_keep_failed_worktrees_false_removes_the_worktree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    holder: dict[str, Workspace] = {}
+
+    def edit() -> None:
+        (holder["ws"].repo_dir / "notes.md").write_text(
+            "agent notes\n", encoding="utf-8"
+        )
+
+    runner = FakeRunner(make_result(tmp_path), on_run=edit)
+    dispatcher, _fake, store, client, settings = await make_dispatcher(
+        tmp_path, monkeypatch, runner=runner, gh=FakeGitHub(pr=None)
+    )
+    settings.keep_failed_worktrees = False
+    try:
+        workspace = make_real_workspace(tmp_path)
+        holder["ws"] = workspace
+        use_workspace(monkeypatch, workspace)
+
+        await dispatcher.execute(claim(store, make_item(100)))
+
+        # The artefact is still captured; the worktree is removed.
+        assert (store.runs_dir / "1" / "worktree" / "status.txt").is_file()
+        assert not workspace.repo_dir.exists()
+        meta = json.loads((store.runs_dir / "1" / "meta.json").read_text())
+        assert meta["worktree_kept"] is False
+        assert meta["worktree_artefact"] is not None
+    finally:
+        await client.aclose()
+        store.close()
+
+
+async def test_failed_worktree_size_cap_removes_the_worktree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    holder: dict[str, Workspace] = {}
+
+    def edit() -> None:
+        (holder["ws"].repo_dir / "notes.md").write_text(
+            "agent notes\n", encoding="utf-8"
+        )
+
+    runner = FakeRunner(make_result(tmp_path), on_run=edit)
+    dispatcher, _fake, store, client, settings = await make_dispatcher(
+        tmp_path, monkeypatch, runner=runner, gh=FakeGitHub(pr=None)
+    )
+    settings.failed_worktree_max_mb = 0
+    try:
+        workspace = make_real_workspace(tmp_path)
+        holder["ws"] = workspace
+        use_workspace(monkeypatch, workspace)
+
+        await dispatcher.execute(claim(store, make_item(100)))
+
+        assert not workspace.repo_dir.exists()
+        assert (store.runs_dir / "1" / "worktree" / "status.txt").is_file()
+        meta = json.loads((store.runs_dir / "1" / "meta.json").read_text())
+        assert meta["worktree_kept"] is False
     finally:
         await client.aclose()
         store.close()
