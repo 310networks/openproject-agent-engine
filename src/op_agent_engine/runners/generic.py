@@ -3,7 +3,7 @@
 A runner is a command template: argv, cwd, env and optional stdin_file with
 ``{placeholder}`` substitution. The engine does not special-case pi's CLI. The
 only contract is the final ``RESULT:`` line on stdout. The one provider-specific
-step is a per-run ``models.json`` for llama.cpp, because ``pi -p`` does not
+step is a per-run ``models.json`` for llama.cpp, because ``pi`` does not
 discover that router's model catalog itself.
 """
 
@@ -123,6 +123,7 @@ class GenericRunner:
             run_id=run_id,
             work_package_id=work_package_id,
             agent=agent_key,
+            json_events=runner.event_format == "jsonl",
         )
 
     async def run(
@@ -185,7 +186,7 @@ class GenericRunner:
     ) -> None:
         """Give pi a models.json for the configured llama.cpp model.
 
-        ``pi -p`` (the engine's only mode) does not refresh the built-in
+        ``pi`` in JSON mode does not refresh the built-in
         llama.cpp router catalog over the network. Without a model entry Pi
         rejects ``llama.cpp/<id>`` before the request is made, even though
         ``LLAMA_BASE_URL`` is set. A per-run agent directory with a generated

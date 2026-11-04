@@ -657,3 +657,75 @@ def test_a_missing_log_counts_as_empty(tmp_path: Path) -> None:
         result_line=None,
     )
     assert result.is_silent() is True
+
+
+# -- JSON mode (WP 356) -------------------------------------------------------
+
+
+async def test_json_mode_stores_the_last_message_and_result(tmp_path: Path) -> None:
+    """The stream is parsed while it is written, so the dashboard can follow."""
+    events = [
+        {"type": "agent_start"},
+        {"type": "message_start", "message": {"role": "assistant", "content": []}},
+        {
+            "type": "message_update",
+            "assistantMessageEvent": {
+                "type": "text_delta",
+                "contentIndex": 0,
+                "delta": "working",
+            },
+        },
+        {
+            "type": "message_end",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Opened the PR.\nRESULT: PR opened"}],
+            },
+        },
+    ]
+    # printf, not echo: dash's echo interprets backslash escapes and would
+    # split the JSON record on the newline inside the message text.
+    script = "; ".join(
+        f"printf '%s\\n' '{json.dumps(item)}'" for item in events
+    )
+    request = _request(tmp_path, ("sh", "-c", script))
+    request = dataclasses.replace(request, json_events=True)
+
+    result = await run_command(request)
+
+    assert result.exit_code == 0
+    # The RESULT line is wrapped in JSON, so the text-mode tail cannot see it.
+    assert result.result_line == "RESULT: PR opened"
+    assert (tmp_path / "run" / "last_message.txt").read_text() == (
+        "Opened the PR.\nRESULT: PR opened"
+    )
+
+
+async def test_json_mode_without_messages_writes_no_message_file(
+    tmp_path: Path,
+) -> None:
+    request = _request(tmp_path, ("sh", "-c", "echo '{\"type\": \"agent_start\"}'"))
+    request = dataclasses.replace(request, json_events=True)
+
+    result = await run_command(request)
+
+    assert result.result_line is None
+    assert not (tmp_path / "run" / "last_message.txt").exists()
+
+
+async def test_text_mode_does_not_parse_events(tmp_path: Path) -> None:
+    request = _request(tmp_path, ("sh", "-c", "echo 'RESULT: ok'"))
+    result = await run_command(request)
+    assert result.result_line == "RESULT: ok"
+    assert not (tmp_path / "run" / "last_message.txt").exists()
+
+
+def test_the_default_pi_runner_uses_json_mode() -> None:
+    """The shipped pi runner must stream events, not one final message."""
+    from op_agent_engine.config import _runner_mapping
+
+    runner = _runner_mapping("some/model")["pi"]
+    assert runner["event_format"] == "jsonl"
+    assert "--mode" in runner["argv"]
+    assert "json" in runner["argv"]
+    assert "-p" not in runner["argv"]

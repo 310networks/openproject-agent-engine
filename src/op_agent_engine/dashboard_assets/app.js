@@ -187,6 +187,19 @@ function sessionLine(session, { active = false } = {}) {
   return bits.join(" · ");
 }
 
+function lastMessageLine(session) {
+  if (!session) return null;
+  const text = (session.last_message || "").trim();
+  const line = make("div", "agent-message");
+  line.append(make("span", "agent-message-label", "last message: "));
+  // Text only, never innerHTML: the message comes from the agent.
+  line.append(
+    document.createTextNode(text || "no message yet"),
+  );
+  if (!text) line.classList.add("empty-message");
+  return line;
+}
+
 function renderAgents(snapshot) {
   clear(els.agents);
   const agents = snapshot.agents || [];
@@ -229,11 +242,16 @@ function renderAgents(snapshot) {
       for (const session of currentSessions) {
         const item = make("div", "agent-current");
         item.append(document.createTextNode(sessionLine(session, { active: true })));
+        item.append(lastMessageLine(session));
         line.append(item);
       }
     } else {
       const text = last ? `last: ${sessionLine(last)}` : "no sessions yet";
       line.append(document.createTextNode(text));
+      if (last) {
+        const message = lastMessageLine(last);
+        if (message) line.append(message);
+      }
     }
 
     const counts = make("div", "agent-counts");

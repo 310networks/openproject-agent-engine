@@ -148,6 +148,65 @@ def _engine_status(
     return ("paused" if paused else "active"), stale_after
 
 
+#: How much of the agent's last message the dashboard shows. The card stays
+#: compact; the run directory keeps the full (bounded) message.
+LAST_MESSAGE_MAX_CHARS = 300
+LAST_MESSAGE_SENTENCES = 2
+#: The runner bounds the file itself; this only guards a hand-edited one.
+LAST_MESSAGE_FILE_BYTES = 8192
+
+
+def _truncate_message(text: str, *, max_chars: int = LAST_MESSAGE_MAX_CHARS) -> str:
+    """Reduce *text* to its last two sentences, capped at ``max_chars``.
+
+    A message with fewer than two sentences is shown whole. Whitespace is
+    collapsed first so a multi-line message stays readable in one line.
+    """
+    collapsed = " ".join(text.split())
+    if not collapsed:
+        return ""
+    sentences = _split_sentences(collapsed)
+    picked = sentences[-LAST_MESSAGE_SENTENCES:] if len(sentences) > 1 else sentences
+    body = " ".join(picked)
+    prefix = "… " if len(picked) < len(sentences) else ""
+    if len(body) > max_chars:
+        return prefix + "…" + body[-max_chars:]
+    return prefix + body
+
+
+def _split_sentences(text: str) -> list[str]:
+    """Split on sentence-ending punctuation, keeping the punctuation."""
+    sentences: list[str] = []
+    current: list[str] = []
+    for index, char in enumerate(text):
+        current.append(char)
+        if char not in ".!?":
+            continue
+        # Do not split after a dot inside a number or a file name (3.12, a.py).
+        following = text[index + 1 : index + 2]
+        if char == "." and following and (following.isalnum() or following in "._/"):
+            continue
+        sentence = "".join(current).strip()
+        if sentence:
+            sentences.append(sentence)
+        current = []
+    tail = "".join(current).strip()
+    if tail:
+        sentences.append(tail)
+    return sentences
+
+
+def _read_last_message(run: Run) -> str | None:
+    """The last assistant message the run produced, if the runner stored one."""
+    path = Path(run.run_dir) / "last_message.txt"
+    try:
+        raw = path.read_bytes()[-LAST_MESSAGE_FILE_BYTES:]
+    except OSError:
+        return None
+    text = raw.decode("utf-8", errors="replace").strip()
+    return text or None
+
+
 def _session_payload(
     run: Run,
     *,
@@ -161,6 +220,8 @@ def _session_payload(
     meta_duration = meta.get("duration_seconds")
     if isinstance(meta_duration, (int, float)):
         duration = float(meta_duration)
+    raw_message = _read_last_message(run)
+    last_message = _truncate_message(raw_message) if raw_message else None
     display_id = run.display_id or f"#{run.work_package_id}"
     work_package_url = (
         f"{base_url}/work_packages/{run.work_package_id}" if base_url else None
@@ -184,6 +245,7 @@ def _session_payload(
         "transition": meta.get("transition"),
         "exit_code": meta.get("exit_code", run.exit_code),
         "result_line": run.result_line,
+        "last_message": last_message,
         "started_at": run.started_at,
         "finished_at": run.finished_at,
         "duration_seconds": round(duration, 1) if duration is not None else None,
