@@ -90,6 +90,8 @@ from op_agent_engine.store import FAILED, SUCCEEDED, Store
 from op_agent_engine.workspace import (
     Workspace,
     WorkspaceError,
+    WorktreeArchive,
+    archive_failed_worktree,
     cleanup_workspace,
     prepare_workspace,
 )
@@ -283,6 +285,7 @@ class Dispatcher:
                     claimed,
                     detail=f"cannot read work package activities: {error}",
                     outcome="fix_context_error",
+                    workspace=workspace,
                 )
                 return
             attempt = max(
@@ -305,6 +308,7 @@ class Dispatcher:
                         "comment for the fix pass"
                     ),
                     outcome="fix_feedback_missing",
+                    workspace=workspace,
                 )
                 return
 
@@ -318,7 +322,6 @@ class Dispatcher:
             ),
         )
         result = await self._run(request, run_id)
-        await cleanup_workspace(workspace)
 
         # External check: open PR for the branch?
         try:
@@ -326,13 +329,26 @@ class Dispatcher:
                 self._repo_github(wp.project_id), workspace.branch
             )
         except GitHubError as error:
+            archive = await self._archive_workspace(
+                workspace, run_dir, failed=True
+            )
             await self._fail_after_run(
                 run_id, claimed, request, result,
                 detail=f"PR verification failed: {error}",
+                archive=archive,
             )
             return
 
-        await self._finish_run(run_id, claimed, request, result, pr, started_at)
+        await self._finish_run(
+            run_id,
+            claimed,
+            request,
+            result,
+            pr,
+            started_at,
+            workspace=workspace,
+            run_dir=run_dir,
+        )
 
     # -- review runs (M5) ---------------------------------------------------
 
@@ -397,15 +413,18 @@ class Dispatcher:
             self._render_prompt(claimed, workspace, pr=pr),
         )
         result = await self._run(request, run_id)
-        await cleanup_workspace(workspace)
 
         # Approved? A merged PR is authoritative.
         try:
             merged = await self._gh.find_pr(repo, workspace.branch, state="merged")
         except GitHubError as error:
+            archive = await self._archive_workspace(
+                workspace, run_dir, failed=True
+            )
             await self._fail_after_run(
                 run_id, claimed, request, result,
                 detail=f"merged PR verification failed: {error}",
+                archive=archive,
             )
             return
 
@@ -418,9 +437,13 @@ class Dispatcher:
                     wp.id, claimed.item.agent_key, started_at
                 )
             except OpenProjectError as error:
+                archive = await self._archive_workspace(
+                    workspace, run_dir, failed=True
+                )
                 self._write_meta(
                     claimed, request, result, state="running", outcome="error",
                     transition=None, pr=None, started_at=started_at,
+                    archive=archive,
                 )
                 logger.error(
                     "could not read the reviewer comments for work package %s; "
@@ -440,6 +463,8 @@ class Dispatcher:
             merged,
             rejection_comment_found=rejection_comment_found,
             started_at=started_at,
+            workspace=workspace,
+            run_dir=run_dir,
         )
 
     # -- outcome handling ----------------------------------------------------
@@ -452,6 +477,9 @@ class Dispatcher:
         result: RunResult,
         pr: PullRequest | None,
         started_at: datetime,
+        *,
+        workspace: Workspace | None = None,
+        run_dir: Path | None = None,
     ) -> None:
         decision = decide_implementer_outcome(
             exit_code=result.exit_code,
@@ -459,8 +487,12 @@ class Dispatcher:
             result_line=result.result_line,
             pr_found=pr is not None,
         )
+        archive = await self._finish_workspace(
+            claimed, workspace, run_dir, decision=decision
+        )
         await self._apply_decision(
-            run_id, claimed, request, result, decision, pr=pr, started_at=started_at
+            run_id, claimed, request, result, decision, pr=pr,
+            started_at=started_at, archive=archive,
         )
 
     async def _finish_review_run(
@@ -473,6 +505,8 @@ class Dispatcher:
         *,
         rejection_comment_found: bool,
         started_at: datetime,
+        workspace: Workspace | None = None,
+        run_dir: Path | None = None,
     ) -> None:
         decision = decide_reviewer_outcome(
             exit_code=result.exit_code,
@@ -481,9 +515,12 @@ class Dispatcher:
             pr_merged=merged is not None,
             rejection_comment_found=rejection_comment_found,
         )
+        archive = await self._finish_workspace(
+            claimed, workspace, run_dir, decision=decision
+        )
         if decision.transition == "rejected":
             decision = await self._apply_rejection_cap(
-                claimed, run_id, decision, started_at=started_at
+                claimed, run_id, decision, started_at=started_at, archive=archive
             )
         await self._apply_decision(
             run_id,
@@ -493,6 +530,7 @@ class Dispatcher:
             decision,
             pr=merged,
             started_at=started_at,
+            archive=archive,
         )
 
     async def _apply_rejection_cap(
@@ -502,6 +540,7 @@ class Dispatcher:
         decision: OutcomeDecision,
         *,
         started_at: datetime,
+        archive: WorktreeArchive | None = None,
     ) -> OutcomeDecision:
         """Escalate to On Hold when the next rejection exceeds the cap.
 
@@ -518,6 +557,7 @@ class Dispatcher:
             self._write_meta(
                 claimed, None, None, state="running", outcome="error",
                 transition=None, pr=None, started_at=started_at,
+                archive=archive,
             )
             logger.error(
                 "could not read the work package history for rejection "
@@ -577,6 +617,7 @@ class Dispatcher:
         *,
         pr: PullRequest | None,
         started_at: datetime,
+        archive: WorktreeArchive | None = None,
     ) -> None:
         wp = claimed.item.work_package
         expected_status_key = EXPECTED_STATUS_KEY_BY_KIND[claimed.kind]
@@ -605,6 +646,11 @@ class Dispatcher:
                     outcome=outcome,
                     exit_code=result.exit_code,
                     tail_lines=tail,
+                    artefact_path=(
+                        str(archive.artefact)
+                        if archive is not None and archive.artefact is not None
+                        else None
+                    ),
                 )
                 transition = "on_hold"
                 logger.warning(
@@ -648,6 +694,7 @@ class Dispatcher:
             self._write_meta(
                 claimed, request, result, state="running", outcome="error",
                 transition=transition, pr=pr, started_at=started_at,
+                archive=archive,
             )
             logger.error(
                 "OpenProject error after run %d finished; run left active: %s",
@@ -667,6 +714,7 @@ class Dispatcher:
         self._write_meta(
             claimed, request, result, state=state, outcome=outcome,
             transition=transition, pr=pr, started_at=started_at,
+            archive=archive,
         )
         logger.info(
             "run finished: state=%s outcome=%s transition=%s",
@@ -861,8 +909,15 @@ class Dispatcher:
         detail: str,
         *,
         outcome: str = "workspace_error",
+        workspace: Workspace | None = None,
     ) -> None:
-        """A workspace or prompt-context failure before the process started."""
+        """A workspace or prompt-context failure before the process started.
+
+        A workspace that was already prepared but never handed to an agent is
+        removed: it is pristine, so there is nothing to preserve.
+        """
+        if workspace is not None:
+            await cleanup_workspace(workspace)
         wp = claimed.item.work_package
         await self._crash_escalate(
             wp.id,
@@ -887,6 +942,7 @@ class Dispatcher:
         result: RunResult | None,
         *,
         detail: str,
+        archive: WorktreeArchive | None = None,
     ) -> None:
         """A failure after the process ran (e.g. PR verification error)."""
         wp = claimed.item.work_package
@@ -901,6 +957,11 @@ class Dispatcher:
             tail_lines=tail,
             run_id=run_id,
             expected_status_key=EXPECTED_STATUS_KEY_BY_KIND[claimed.kind],
+            artefact_path=(
+                str(archive.artefact)
+                if archive is not None and archive.artefact is not None
+                else None
+            ),
         )
         self._store.finish_run(
             run_id,
@@ -912,7 +973,7 @@ class Dispatcher:
         self._write_meta(
             claimed, request, result, state=FAILED,
             outcome="pr_verification_error", transition=None, pr=None,
-            started_at=datetime.now(UTC),
+            started_at=datetime.now(UTC), archive=archive,
         )
 
     async def _crash_escalate(
@@ -925,6 +986,7 @@ class Dispatcher:
         tail_lines: list[str] | None,
         run_id: int,
         expected_status_key: str,
+        artefact_path: str | None = None,
     ) -> None:
         """Increment the crash counter; escalate to On Hold at the cap."""
         crash_count = self._store.increment_crash_count(work_package_id)
@@ -948,6 +1010,7 @@ class Dispatcher:
             exit_code=exit_code,
             tail_lines=tail_lines,
             detail=detail,
+            artefact_path=artefact_path,
         )
         await self._transition(
             work_package_id, "on_hold", expected_status_key=expected_status_key
@@ -1156,12 +1219,58 @@ class Dispatcher:
                     work_package_id=wp.id,
                     role=agent.kind,
                     gh_token=self._gh_token(claimed.item.agent_key),
+                    max_kept_worktree_bytes=self._max_kept_worktree_bytes(),
                 )
         except WorkspaceError as error:
             await self._fail_before_run(
                 run_id, claimed, f"workspace preparation failed: {error}"
             )
             return None
+
+    async def _archive_workspace(
+        self,
+        workspace: Workspace,
+        run_dir: Path,
+        *,
+        failed: bool,
+    ) -> WorktreeArchive | None:
+        """Release a run's worktree, preserving the state of a failed one.
+
+        A successful run's worktree is removed as before. A failed run's state
+        is written to ``runs/<id>/worktree`` first (status, diffs, unpushed
+        commits and untracked files) and the worktree itself is kept for the
+        retention window, unless ``KEEP_FAILED_WORKTREES`` is false or it is
+        larger than ``FAILED_WORKTREE_MAX_MB``.
+        """
+        if not failed:
+            await cleanup_workspace(workspace)
+            return None
+        return await archive_failed_worktree(
+            workspace,
+            run_dir=run_dir,
+            keep=self._settings.keep_failed_worktrees,
+            max_keep_bytes=self._max_kept_worktree_bytes(),
+        )
+
+    async def _finish_workspace(
+        self,
+        claimed: ClaimedRun,
+        workspace: Workspace | None,
+        run_dir: Path | None,
+        *,
+        decision: OutcomeDecision,
+    ) -> WorktreeArchive | None:
+        """Capture the worktree when the decided outcome is a failure."""
+        if workspace is None:
+            return None
+        return await self._archive_workspace(
+            workspace,
+            run_dir or self._store.runs_dir / str(claimed.run_id or 0),
+            failed=decision.run_state != SUCCEEDED,
+        )
+
+    def _max_kept_worktree_bytes(self) -> int:
+        return self._settings.failed_worktree_max_mb * 1024 * 1024
 
     def _build_request(
         self,
@@ -1271,6 +1380,7 @@ class Dispatcher:
         transition: str | None,
         pr: PullRequest | None,
         started_at: datetime | None,
+        archive: WorktreeArchive | None = None,
     ) -> None:
         run_dir = claimed.run_dir or (self._store.runs_dir / str(claimed.run_id or 0))
         run_dir.mkdir(parents=True, exist_ok=True)
@@ -1291,7 +1401,17 @@ class Dispatcher:
             "argv": list(request.argv) if request is not None else None,
             "cwd": str(request.cwd) if request is not None else None,
             "env": redact_mapping(request.env) if request is not None else {},
+            # Post-mortem artefact of a failed run: the worktree's status,
+            # diffs, unpushed commits and untracked files.
+            "worktree_artefact": (
+                str(archive.artefact)
+                if archive is not None and archive.artefact is not None
+                else None
+            ),
+            "worktree_kept": bool(archive.kept) if archive is not None else False,
         }
+        if archive is not None:
+            meta["worktree"] = archive.as_dict()
         if result is not None:
             meta["exit_code"] = result.exit_code
             meta["timed_out"] = result.timed_out

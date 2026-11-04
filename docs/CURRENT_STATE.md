@@ -108,8 +108,13 @@ Three independent limits apply:
 Every run gets its own git worktree under the agent workspace
 (`worktrees/<branch>`); the agent's shared clone stays detached, so a killed
 run cannot leave uncommitted changes in the clone used by later runs. Workspace
-preparation is serialized per agent, and the worktree is removed after the
-agent exits. `cleanup` sweeps worktrees left behind by an engine crash.
+preparation is serialized per agent. A verified, successful run removes its
+worktree; a failed run's state is captured into `runs/<runId>/worktree`
+(status, diffs, unpushed commits, untracked files) and the worktree itself is
+kept until `cleanup` expires it (`KEEP_FAILED_WORKTREES`,
+`FAILED_WORKTREE_MAX_MB`). A dirty worktree on a reused branch is moved aside
+as `<branch>.kept-<utc>`. `cleanup` also sweeps worktrees left behind by an
+engine crash.
 
 ## Agents and pi runner
 
