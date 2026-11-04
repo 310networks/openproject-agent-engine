@@ -112,6 +112,23 @@ COPY src /app/src
 RUN pip install --no-cache-dir . \
  && rm -rf /app
 
+# Audio QA toolchain for the AUDIO role (music-as-code: LUFS/true-peak
+# measurement, loop and stem-sum nulls, sub checks). Same argument as git-lfs:
+# a run must not install its own tools. A per-run `pip install --user` into
+# `$HOME/.local` is unpinned, lands outside every volume (so it is lost on the
+# next image recreate) and burns minutes of the run budget on downloads -- the
+# first audio QA run spent 10.5 of its 14.6 minutes on it and then stopped
+# without committing (WP 144, run 304).
+#
+# Pinned to majors, installed system-wide as root so the runtime user inherits
+# it. `soundfile` bundles libsndfile in its wheel (verified: 1.2.2), so no apt
+# package for it.
+RUN pip install --no-cache-dir \
+      "numpy>=2,<3" \
+      "scipy>=1.14,<2" \
+      "soundfile>=0.13,<1" \
+      "pyloudnorm>=0.2,<1"
+
 COPY prompts /opt/op-agent-engine/prompts
 COPY LICENSE /opt/op-agent-engine/LICENSE
 
