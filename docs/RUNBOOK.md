@@ -134,10 +134,22 @@ always an explicit human decision.
 | `ENGINE: blocked by dependency` | unfinished OpenProject blocker relation; ticket is in `Blocked` | finish/close the blocker; the engine unblocks and assigns automatically |
 | `ENGINE: no PR found` | `Ready for Review` without a PR for `op-<project>-<wp>` | push the PR, move back to `Ready for Review` |
 | `ENGINE: escalated` | crash/timeout retry cap; comment has exit code + last 40 log lines | fix the cause, move back to `In Progress`/`New` |
+| `ENGINE: escalated` with `(no_result_line)` | the run exited 0 and wrote nothing at all, so there is no RESULT line and no evidence | read `runs/<id>/meta.json`; the worktree is gone (#365), so re-run with a narrower scope |
 | `ENGINE: rejection cap reached` | next rejection would exceed `MAX_REJECTIONS` | review the feedback, move to `Rejected`/`New` when ready |
 
-Crash counters persist in `engine.db`; after fixing a failure, delete the
-ticket's row from `crash_counts` to restore the full retry budget.
+Crash counters persist in `engine.db` and only ever incremented, so an
+escalation used to consume the retry budget for good. The engine now restores
+it by itself: when a ticket that has a counter is claimed and its newest status
+change left `On Hold`, the counter is deleted before the run starts and the run
+log records `reset the crash counter for <wp> (was N)`. The engine only ever
+moves tickets *to* `On Hold`, so a move off it is a human saying the cause was
+addressed; an engine escalation never resets itself.
+
+The check runs at claim time, not while polling, so un-holding a ticket while
+the engine was down works too. The manual `DELETE FROM crash_counts WHERE
+work_package_id = <id>` is only needed when the history cannot be read (the
+engine logs a warning and leaves the counter alone) or when the counter has to
+be cleared without moving the ticket.
 
 ## Recovery and shutdown
 
@@ -147,6 +159,14 @@ process groups only when the recorded process start time still matches
 (PID-reuse safe), and recovers `In Progress`/`In Testing` tickets as
 `resume`/re-review runs. A clean `SIGTERM` stops polling, waits
 `STOP_GRACE_SECONDS`, then terminates the remaining groups.
+
+A resume run normally finishes without starting the agent when the branch
+already has an open PR: the interrupted run had delivered its work. The
+exception is an unanswered rejection. When the last review run rejected
+*after* the last successful implement/fix run (a fix run was killed before it
+pushed anything), the open PR predates the verdict, so the resume starts the
+agent and the run log says so (`resuming <id> despite an open PR`). Rejection
+timestamps come from `runs.finished_at`, not from comment text.
 
 ## Retention
 

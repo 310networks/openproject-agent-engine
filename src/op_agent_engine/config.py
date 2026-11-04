@@ -401,6 +401,10 @@ class RunnerConfig(BaseModel):
     #: ``model`` wins. Substituted into argv as ``{model}`` and omitted from
     #: argv entirely when neither is set.
     model: str | None = None
+    #: ``text``: argv writes a plain transcript to stdout. ``jsonl``: argv
+    #: emits one JSON event per line (pi ``--mode json``), which the runner
+    #: parses into ``last_message.txt`` so a long run shows progress.
+    event_format: Literal["text", "jsonl"] = "text"
 
     @field_validator("model")
     @classmethod
@@ -816,7 +820,8 @@ AGENT_TOKEN_VARS: tuple[str, ...] = tuple(entry[3] for entry in TEAM)
 
 _PI_ARGV = [
     "pi",
-    "-p",
+    "--mode",
+    "json",
     "--approve",
     "--no-extensions",
     "--no-context-files",
@@ -835,6 +840,7 @@ def _runner_mapping(model: str | None) -> dict[str, Any]:
             "model": model,
             "cwd": "{repo_dir}",
             "inject_standard": True,
+            "event_format": "jsonl",
         },
     }
 

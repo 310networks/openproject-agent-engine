@@ -26,6 +26,7 @@ from typing import IO
 
 from op_agent_engine.logging import get_logger
 from op_agent_engine.recovery import process_start_identity
+from op_agent_engine.runners.events import LAST_MESSAGE_FILE, AssistantStream
 
 logger = get_logger(__name__)
 
@@ -62,6 +63,9 @@ class RunRequest:
     run_id: int
     work_package_id: int
     agent: str
+    #: Parse stdout as the agent's JSONL event stream (``--mode json``), so the
+    #: last assistant message can be shown while the run is still active.
+    json_events: bool = False
 
 
 @dataclass(frozen=True)
@@ -75,6 +79,23 @@ class RunResult:
     stderr_path: Path
     result_line: str | None
 
+    def is_silent(self) -> bool:
+        """True when the process wrote nothing at all to stdout and stderr.
+
+        The agent CLI is a known offender: pi's print mode only writes the
+        final assistant message and exits 0 when the last message carries no
+        text, so a whole run can leave two empty logs (runs 258 and 304). That
+        is not the same failure as "ran, found no PR".
+        """
+        return self._size(self.stdout_path) == 0 and self._size(self.stderr_path) == 0
+
+    @staticmethod
+    def _size(path: Path) -> int:
+        try:
+            return path.stat().st_size
+        except OSError:
+            return 0
+
 
 def extract_result_line(tail: Sequence[str]) -> str | None:
     """Return the last line of *tail* that starts with ``RESULT:`` (stripped)."""
@@ -86,9 +107,16 @@ def extract_result_line(tail: Sequence[str]) -> str | None:
 
 
 async def _pump(
-    reader: asyncio.StreamReader, path: Path, tail: collections.deque[str]
+    reader: asyncio.StreamReader,
+    path: Path,
+    tail: collections.deque[str],
+    on_line: Callable[[bytes], object] | None = None,
 ) -> None:
-    """Stream a pipe into *path*, feeding complete lines into *tail*."""
+    """Stream a pipe into *path*, feeding complete lines into *tail*.
+
+    ``on_line`` sees every complete line (raw bytes, before decoding) so the
+    JSONL parser can follow the stream while it is written to disk.
+    """
     buffer = b""
     with path.open("wb") as handle:
         while True:
@@ -100,8 +128,12 @@ async def _pump(
             while b"\n" in buffer:
                 line, buffer = buffer.split(b"\n", 1)
                 tail.append(line.decode("utf-8", errors="replace"))
+                if on_line is not None:
+                    on_line(line)
     if buffer:
         tail.append(buffer.decode("utf-8", errors="replace"))
+        if on_line is not None:
+            on_line(buffer)
 
 
 def _kill_process_group(pgid: int, signum: int) -> None:
@@ -123,6 +155,13 @@ async def run_command(
     stdout_path = request.run_dir / "stdout.log"
     stderr_path = request.run_dir / "stderr.log"
     tail: collections.deque[str] = collections.deque(maxlen=TAIL_LINES)
+
+    # In JSON mode the stdout lines are events, not a transcript: parse them as
+    # they arrive so the dashboard can show what the agent is saying, and so a
+    # run that ends without printing anything still leaves its last message.
+    events: AssistantStream | None = None
+    if request.json_events:
+        events = AssistantStream(path=stdout_path.with_name(LAST_MESSAGE_FILE))
 
     stdin: int | IO[bytes] | None = asyncio.subprocess.DEVNULL
     stdin_file: IO[bytes] | None = None
@@ -158,7 +197,10 @@ async def run_command(
 
     assert process.stdout is not None
     assert process.stderr is not None
-    stdout_task = asyncio.create_task(_pump(process.stdout, stdout_path, tail))
+    on_stdout_line = None if events is None else events.feed_line
+    stdout_task = asyncio.create_task(
+        _pump(process.stdout, stdout_path, tail, on_stdout_line)
+    )
     stderr_task = asyncio.create_task(_pump(process.stderr, stderr_path, tail))
 
     timed_out = False
@@ -226,13 +268,19 @@ async def run_command(
     exit_code = process.returncode if process.returncode is not None else -signal.SIGKILL
 
     duration = time.monotonic() - started_at
+    # Text mode prints the RESULT line verbatim on stdout. In JSON mode stdout
+    # is JSONL, where a line-based search would return the JSON tail of the
+    # record ("RESULT: ok\"}]}}"), so only the parser's copy counts.
+    result_line = (
+        events.result_line if events is not None else extract_result_line(tail)
+    )
     result = RunResult(
         exit_code=exit_code,
         timed_out=timed_out,
         duration_seconds=duration,
         stdout_path=stdout_path,
         stderr_path=stderr_path,
-        result_line=extract_result_line(tail),
+        result_line=result_line,
     )
     logger.info(
         "runner finished: exit_code=%d timed_out=%s duration=%.1fs",

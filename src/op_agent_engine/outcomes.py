@@ -36,9 +36,10 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
-from op_agent_engine.store import FAILED, SUCCEEDED, TIMEOUT
+from op_agent_engine.store import FAILED, SUCCEEDED, TIMEOUT, Run
 
 #: Matches a ``RESULT:`` line anywhere in the payload (the line itself is
 #: already extracted from the log tail by the runner).
@@ -106,12 +107,28 @@ def is_rejection(result_line: str | None) -> bool:
     return rejection_reason(result_line) is not None
 
 
+#: Outcome for a run that exited 0, printed nothing and left no PR.
+NO_RESULT_LINE = "no_result_line"
+
+#: Why a silent run is not an ordinary "no PR" failure, used in the escalation
+#: comment. The agent CLI can exit 0 without writing a byte (pi print mode
+#: writes only the final assistant message), so the log says nothing about
+#: what the agent did or why it stopped.
+NO_RESULT_LINE_NOTE = (
+    "The run exited 0 but wrote nothing at all to stdout or stderr, so there "
+    "is no RESULT line and no evidence of what the agent did. This is a known "
+    "agent-CLI failure mode, not a missing pull request: the run budget was "
+    "spent without producing a report."
+)
+
+
 def decide_implementer_outcome(
     *,
     exit_code: int,
     timed_out: bool,
     result_line: str | None,
     pr_found: bool,
+    silent: bool = False,
 ) -> OutcomeDecision:
     """Apply the rules for implement/fix runs.
 
@@ -125,6 +142,9 @@ def decide_implementer_outcome(
        for Review.
     3. Only without a PR do a timeout or a non-zero exit count as a crash
        retry.
+    4. A run that exited 0 without writing anything and without a PR is
+       ``no_result_line``, not ``no_pr``: the engine cannot tell whether the
+       agent did nothing or the agent CLI swallowed its output.
     """
     reason = blocked_reason(result_line)
     if reason is not None:
@@ -145,6 +165,10 @@ def decide_implementer_outcome(
     if exit_code != 0:
         return OutcomeDecision(
             run_state=FAILED, outcome="nonzero_exit", crash_retry=True
+        )
+    if silent:
+        return OutcomeDecision(
+            run_state=FAILED, outcome=NO_RESULT_LINE, crash_retry=True
         )
     return OutcomeDecision(run_state=FAILED, outcome="no_pr", crash_retry=True)
 
@@ -193,6 +217,32 @@ def decide_reviewer_outcome(
             crash_retry=True,
         )
     return OutcomeDecision(run_state=FAILED, outcome="not_merged", crash_retry=True)
+
+
+def rejection_is_outstanding(last_review: Run | None, last_code: Run | None) -> bool:
+    """True when the reviewer's rejection came after the newest code run.
+
+    Used by the resume path: an open pull request only proves that *some*
+    work reached review, not that the latest rejection was addressed. When
+    the last review rejected after the last successful implement/fix run
+    (the case after a fix run was killed), resuming must run the agent again
+    instead of declaring the work package ready for review.
+
+    Timestamps are compared, not read from comments: the engine knows both
+    (``runs.finished_at`` for the review and for the code run).
+    """
+    if last_review is None or last_review.outcome != "rejected":
+        return False
+    if last_review.finished_at is None:
+        return False
+    if last_code is None or last_code.finished_at is None:
+        return True
+    return _parse_time(last_code.finished_at) <= _parse_time(last_review.finished_at)
+
+
+def _parse_time(value: str) -> datetime:
+    """Parse an ISO timestamp from the store, tolerating a trailing ``Z``."""
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
 def no_pr_comment(branch: str) -> str:
@@ -254,6 +304,7 @@ def escalation_comment(
     tail_lines: list[str] | None = None,
     detail: str | None = None,
     artefact_path: str | None = None,
+    note: str | None = None,
 ) -> str:
     """Engine comment posted when the crash retry cap is reached.
 
@@ -267,6 +318,8 @@ def escalation_comment(
         f"The agent run failed ({outcome}) and the crash retry cap is reached.",
         "Putting the ticket on hold for a human.",
     ]
+    if note:
+        lines.extend(["", note])
     if detail:
         lines.extend(["", f"Failure detail: {detail}"])
     if exit_code is not None:

@@ -185,6 +185,46 @@ def status_targets(activity: dict[str, Any]) -> list[str]:
     return targets
 
 
+def status_transitions(activity: dict[str, Any]) -> list[tuple[str | None, str]]:
+    """The ``(from, to)`` pairs of every status change in one activity.
+
+    ``from`` is ``None`` for ``Status set to ...`` details, which OpenProject
+    writes when the journal is the ticket's first (or when the previous status
+    is not part of the detail).
+    """
+    details = activity.get("details")
+    if not isinstance(details, list):
+        return []
+    pairs: list[tuple[str | None, str]] = []
+    for detail in details:
+        raw = _detail_raw(detail)
+        if raw is None:
+            continue
+        text = raw.strip()
+        changed = _STATUS_CHANGED_RE.match(text)
+        if changed is not None:
+            pairs.append((changed.group("from").strip(), changed.group("to").strip()))
+            continue
+        set_to = _STATUS_SET_RE.match(text)
+        if set_to is not None:
+            pairs.append((None, set_to.group("to").strip()))
+    return pairs
+
+
+def unheld(activities: Iterable[dict[str, Any]], on_hold_status_name: str) -> bool:
+    """True when the newest status change moved the ticket off *On Hold*.
+
+    Used to reset the crash counter: a human un-holding a ticket is the signal
+    that the cause is understood, and the engine itself only ever moves
+    tickets *to* On Hold, never off it.
+    """
+    newest: tuple[str | None, str] | None = None
+    for activity in activities:
+        for pair in status_transitions(activity):
+            newest = pair
+    return newest is not None and newest[0] == on_hold_status_name
+
+
 def count_status_changes(
     activities: Iterable[dict[str, Any]], status_name: str
 ) -> int:

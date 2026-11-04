@@ -59,6 +59,7 @@ from op_agent_engine.openproject.activities import (
 )
 from op_agent_engine.openproject.activities import (
     count_status_changes,
+    unheld,
 )
 from op_agent_engine.openproject.activities import (
     created_at as activity_created_at,
@@ -72,6 +73,8 @@ from op_agent_engine.openproject.client import (
 from op_agent_engine.openproject.resolve import OpenProjectResolution
 from op_agent_engine.openproject.workpackage import WorkPackage, parse_work_package
 from op_agent_engine.outcomes import (
+    NO_RESULT_LINE,
+    NO_RESULT_LINE_NOTE,
     OutcomeDecision,
     already_open_pr_comment,
     decide_implementer_outcome,
@@ -81,6 +84,7 @@ from op_agent_engine.outcomes import (
     no_pr_comment,
     read_tail,
     rejection_cap_comment,
+    rejection_is_outstanding,
 )
 from op_agent_engine.prompts import FixContext, PromptRenderer, select_fix_context, with_standard
 from op_agent_engine.runners.base import OnSpawned, RunRequest, RunResult
@@ -235,24 +239,30 @@ class Dispatcher:
     ) -> None:
         wp = claimed.item.work_package
 
-        # A resume run whose branch already has an open PR is finished work:
-        # the previous run was killed or timed out after opening it. Starting
-        # the agent again would repeat the work (and can hang again), so the
-        # PR is authoritative here just like a merged PR for a review. A
+        # A resume run whose branch already has an open PR is usually finished
+        # work: the previous run was killed or timed out after opening it.
+        # Starting the agent again would repeat the work (and can hang again),
+        # so the PR is authoritative here just like a merged PR for a review. A
         # draft PR is not authoritative and the agent resumes normally.
+        #
+        # The exception is an outstanding rejection: when a fix run was killed
+        # before it pushed anything, the open PR predates the reviewer's latest
+        # verdict and treating it as finished work sends an unchanged branch
+        # back to review (WP 144: rejection at 07:40, interrupted fix run at
+        # 07:40, resume at 07:43 declared ready for review, same findings
+        # rejected again at 07:48). Then the agent must run.
         if claimed.kind == "resume":
-            try:
-                open_pr = await self._gh.find_pr(
-                    self._repo_github(wp.project_id), claimed.branch
-                )
-            except GitHubError as error:
-                # Verification is best-effort here; running the resume is
-                # still correct when GitHub cannot be reached.
-                logger.warning(
-                    "could not check for an open PR before resuming %s; "
-                    "starting the agent anyway: %s",
+            last_review = self._store.last_review_run(wp.id)
+            last_code = self._store.last_code_run(wp.id)
+            if rejection_is_outstanding(last_review, last_code):
+                # The rejection explains the interrupted fix run: run the
+                # agent, do not short-circuit to ready for review.
+                logger.info(
+                    "resuming %s despite an open PR: the last review was "
+                    "rejected at %s and the last code run finished at %s",
                     wp.display_id,
-                    error,
+                    last_review.finished_at if last_review else None,
+                    last_code.finished_at if last_code else None,
                     extra={
                         "run_id": run_id,
                         "work_package_id": wp.id,
@@ -262,11 +272,34 @@ class Dispatcher:
                     },
                 )
             else:
-                if open_pr is not None and not open_pr.is_draft:
-                    await self._resume_already_has_pr(
-                        claimed, run_id, open_pr, started_at
+                try:
+                    open_pr = await self._gh.find_pr(
+                        self._repo_github(wp.project_id), claimed.branch
                     )
-                    return
+                except GitHubError as error:
+                    # Verification is best-effort here; running the resume is
+                    # still correct when GitHub cannot be reached.
+                    logger.warning(
+                        "could not check for an open PR before resuming %s; "
+                        "starting the agent anyway: %s",
+                        wp.display_id,
+                        error,
+                        extra={
+                            "run_id": run_id,
+                            "work_package_id": wp.id,
+                            "agent": claimed.item.agent_key,
+                            "kind": claimed.kind,
+                            "branch": claimed.branch,
+                        },
+                    )
+                else:
+                    if open_pr is not None and not open_pr.is_draft:
+                        await self._resume_already_has_pr(
+                            claimed, run_id, open_pr, started_at
+                        )
+                        return
+
+        await self._reset_crash_count_if_unheld(wp)
 
         workspace = await self._prepare_workspace(claimed, run_id)
         if workspace is None:
@@ -486,6 +519,7 @@ class Dispatcher:
             timed_out=result.timed_out,
             result_line=result.result_line,
             pr_found=pr is not None,
+            silent=result.is_silent(),
         )
         archive = await self._finish_workspace(
             claimed, workspace, run_dir, decision=decision
@@ -651,6 +685,7 @@ class Dispatcher:
                         if archive is not None and archive.artefact is not None
                         else None
                     ),
+                    note=NO_RESULT_LINE_NOTE if outcome == NO_RESULT_LINE else None,
                 )
                 transition = "on_hold"
                 logger.warning(
@@ -1180,6 +1215,43 @@ class Dispatcher:
         """The full activity history of a work package (oldest first)."""
         return await self._client.get_collection(
             f"/api/v3/work_packages/{work_package_id}/activities"
+        )
+
+    def _on_hold_status_name(self) -> str:
+        return self._resolution.statuses["on_hold"].name
+
+    async def _reset_crash_count_if_unheld(self, wp: WorkPackage) -> None:
+        """Restore the crash retry budget when a human moved the ticket off hold.
+
+        The counter only ever incremented, so an escalation used up the whole
+        budget for good: WP 144 had to be requeued with a hand-written
+        ``DELETE``. The engine itself only ever moves tickets *to* On Hold, so
+        the newest status change leaving On Hold is a human saying the cause
+        was addressed. Only tickets that have a counter cost an API call.
+        """
+        previous = self._store.crash_count(wp.id)
+        if previous == 0:
+            return
+        try:
+            activities = await self._fetch_activities(wp.id)
+        except OpenProjectError as error:
+            logger.warning(
+                "could not read the history of %s to decide whether to reset "
+                "the crash counter (left at %d): %s",
+                wp.display_id,
+                previous,
+                error,
+                extra={"work_package_id": wp.id},
+            )
+            return
+        if not unheld(activities, self._on_hold_status_name()):
+            return
+        self._store.reset_crash_count(wp.id)
+        logger.info(
+            "reset the crash counter for %s (was %d): the ticket left On Hold",
+            wp.display_id,
+            previous,
+            extra={"work_package_id": wp.id, "previous_crash_count": previous},
         )
 
     def _rejected_status_name(self) -> str:

@@ -510,7 +510,7 @@ async def test_implement_blocked_moves_to_on_hold(
 async def test_no_pr_counts_as_crash_retry_and_stays_in_progress(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    runner = FakeRunner(make_result(tmp_path))
+    runner = FakeRunner(make_result(tmp_path, stdout="thinking about it\n"))
     dispatcher, fake, store, client, _ = await make_dispatcher(
         tmp_path, monkeypatch, runner=runner, gh=FakeGitHub(pr=None)
     )
@@ -1573,7 +1573,7 @@ async def test_fix_pass_without_a_pr_counts_as_crash_retry(
         priorities=PRIORITIES,
         activities=[activity_comment(100, "Please fix the failing test.")],
     )
-    runner = FakeRunner(make_result(tmp_path))
+    runner = FakeRunner(make_result(tmp_path, stdout="thinking about it\n"))
     dispatcher, _fake, store, client, _ = await make_dispatcher(
         tmp_path, monkeypatch, runner=runner, gh=FakeGitHub(pr=None), fake=fake
     )
@@ -1816,7 +1816,9 @@ async def test_failed_run_captures_worktree_state(
         )
         (workspace.repo_dir / "notes.md").write_text("agent notes\n", encoding="utf-8")
 
-    runner = FakeRunner(make_result(tmp_path), on_run=edit)
+    runner = FakeRunner(
+        make_result(tmp_path, stdout="I tried things\n"), on_run=edit
+    )
     dispatcher, _fake, store, client, _ = await make_dispatcher(
         tmp_path, monkeypatch, runner=runner, gh=FakeGitHub(pr=None)
     )
@@ -2048,6 +2050,203 @@ async def test_failed_worktree_size_cap_removes_the_worktree(
         assert (store.runs_dir / "1" / "worktree" / "status.txt").is_file()
         meta = json.loads((store.runs_dir / "1" / "meta.json").read_text())
         assert meta["worktree_kept"] is False
+    finally:
+        await client.aclose()
+        store.close()
+
+
+# -- resume with an open PR (WP 144) -------------------------------------------
+
+
+def seed_run(
+    store: Store, *, kind: str, outcome: str, agent: str = "IMPL"
+) -> int:
+    """Insert a finished run for work package 100 (project 4)."""
+    run_id = store.begin_run(
+        work_package_id=100,
+        project_id=4,
+        agent=agent,
+        kind=kind,
+        attempt=1,
+        branch="op-4-100",
+        run_dir_template=str(store.runs_dir / "{id}"),
+    )
+    store.finish_run(run_id, state=SUCCEEDED, outcome=outcome)
+    return run_id
+
+
+async def test_resume_with_open_pr_runs_the_agent_when_a_rejection_is_outstanding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A killed fix run leaves an open PR that predates the rejection."""
+    runner = FakeRunner(make_result(tmp_path))
+    dispatcher, fake, store, client, _ = await make_dispatcher(
+        tmp_path, monkeypatch, runner=runner, gh=FakeGitHub(pr=PR)
+    )
+    try:
+        # Code first, rejection after: the rejection is unanswered.
+        seed_run(store, kind="implement", outcome="ready_for_review")
+        seed_run(store, kind="review", outcome="rejected", agent="REVIEWER")
+
+        claimed = claim(store, make_item(100), kind="resume")
+        await dispatcher.execute(claimed)
+
+        run = store.get_run(claimed.run_id)
+        assert run is not None
+        assert run.state == SUCCEEDED
+        assert run.outcome == "ready_for_review"
+        # The agent ran instead of the PR short-circuiting the resume.
+        assert len(runner.requests) == 1
+        assert posted_comments(fake, 100) == []
+    finally:
+        await client.aclose()
+        store.close()
+
+
+async def test_resume_with_open_pr_is_skipped_when_the_rejection_was_addressed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = FakeRunner(make_result(tmp_path))
+    dispatcher, fake, store, client, _ = await make_dispatcher(
+        tmp_path, monkeypatch, runner=runner, gh=FakeGitHub(pr=PR)
+    )
+    try:
+        # Rejection first, then a fix run that answered it.
+        seed_run(store, kind="review", outcome="rejected", agent="REVIEWER")
+        seed_run(store, kind="fix", outcome="ready_for_review")
+
+        claimed = claim(store, make_item(100), kind="resume")
+        await dispatcher.execute(claimed)
+
+        run = store.get_run(claimed.run_id)
+        assert run is not None
+        assert run.state == SUCCEEDED
+        assert run.outcome == "ready_for_review_existing_pr"
+        assert runner.requests == []
+        assert any(
+            "resume skipped" in comment for comment in posted_comments(fake, 100)
+        )
+        assert status_href(fake, 100) == f"/api/v3/statuses/{STATUS_READY_FOR_REVIEW}"
+    finally:
+        await client.aclose()
+        store.close()
+
+
+async def test_resume_with_open_pr_and_no_review_is_skipped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = FakeRunner(make_result(tmp_path))
+    dispatcher, _fake, store, client, _ = await make_dispatcher(
+        tmp_path, monkeypatch, runner=runner, gh=FakeGitHub(pr=PR)
+    )
+    try:
+        seed_run(store, kind="implement", outcome="ready_for_review")
+
+        claimed = claim(store, make_item(100), kind="resume")
+        await dispatcher.execute(claimed)
+
+        run = store.get_run(claimed.run_id)
+        assert run is not None
+        assert run.outcome == "ready_for_review_existing_pr"
+        assert runner.requests == []
+    finally:
+        await client.aclose()
+        store.close()
+
+
+# -- crash counter reset on un-hold (WP 367) -----------------------------------
+
+
+async def test_unheld_ticket_resets_the_crash_counter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A human moving the ticket off On Hold restores the retry budget."""
+    runner = FakeRunner(make_result(tmp_path, stdout="still working\n"))
+    fake = make_fake(
+        work_packages=[wp(100, status=STATUS_IN_PROGRESS, agent=11)],
+        priorities=PRIORITIES,
+        activities=[
+            status_change(100, "On Hold", previous="In Progress", activity_id=900),
+            status_change(100, "New", previous="On Hold", activity_id=901),
+        ],
+    )
+    dispatcher, fake, store, client, _ = await make_dispatcher(
+        tmp_path, monkeypatch, runner=runner, gh=FakeGitHub(pr=None), fake=fake
+    )
+    try:
+        for _ in range(3):
+            store.increment_crash_count(100)
+
+        claimed = claim(store, make_item(100))
+        await dispatcher.execute(claimed)
+
+        run = store.get_run(claimed.run_id)
+        assert run is not None
+        assert run.outcome == "no_pr"
+        # 3 -> 0 by the reset, then 1 for this failure: still inside the cap.
+        assert store.crash_count(100) == 1
+        assert status_href(fake, 100) == f"/api/v3/statuses/{STATUS_IN_PROGRESS}"
+        assert posted_comments(fake, 100) == []
+    finally:
+        await client.aclose()
+        store.close()
+
+
+async def test_a_ticket_still_on_hold_keeps_its_crash_counter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The engine's own escalation must not hand the budget back."""
+    runner = FakeRunner(make_result(tmp_path, stdout="still working\n"))
+    fake = make_fake(
+        work_packages=[wp(100, status=STATUS_IN_PROGRESS, agent=11)],
+        priorities=PRIORITIES,
+        activities=[
+            status_change(100, "On Hold", previous="In Progress", activity_id=900),
+        ],
+    )
+    dispatcher, fake, store, client, _ = await make_dispatcher(
+        tmp_path, monkeypatch, runner=runner, gh=FakeGitHub(pr=None), fake=fake
+    )
+    try:
+        for _ in range(3):
+            store.increment_crash_count(100)
+
+        claimed = claim(store, make_item(100))
+        await dispatcher.execute(claimed)
+
+        assert store.crash_count(100) == 4
+        assert status_href(fake, 100) == f"/api/v3/statuses/{STATUS_ON_HOLD}"
+        assert posted_comments(fake, 100)[0].startswith("ENGINE: escalated")
+    finally:
+        await client.aclose()
+        store.close()
+
+
+async def test_silent_run_is_reported_as_no_result_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A run that exits 0 and writes nothing is not an ordinary "no PR"."""
+    runner = FakeRunner(make_result(tmp_path))  # exit 0, empty logs, no PR
+    dispatcher, fake, store, client, _ = await make_dispatcher(
+        tmp_path, monkeypatch, runner=runner, gh=FakeGitHub(pr=None)
+    )
+    try:
+        store.increment_crash_count(100)
+        store.increment_crash_count(100)
+        claimed = claim(store, make_item(100))
+        await dispatcher.execute(claimed)
+
+        run = store.get_run(claimed.run_id)
+        assert run is not None
+        assert run.state == FAILED
+        assert run.outcome == "no_result_line"
+        assert store.crash_count(100) == 3
+        assert status_href(fake, 100) == f"/api/v3/statuses/{STATUS_ON_HOLD}"
+        comment = posted_comments(fake, 100)[0]
+        assert comment.startswith("ENGINE: escalated")
+        assert "(no_result_line)" in comment
+        assert "wrote nothing at all to stdout or stderr" in comment
+        assert "(run log is empty)" in comment
     finally:
         await client.aclose()
         store.close()

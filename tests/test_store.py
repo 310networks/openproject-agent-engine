@@ -545,3 +545,63 @@ def test_read_only_store_requires_an_existing_file(tmp_path: Path) -> None:
 
     with pytest.raises(sqlite3.OperationalError):
         Store(tmp_path / "missing.db", read_only=True)
+
+
+# -- last review / last code run (resume path) ------------------------------
+
+
+def test_last_review_run_is_the_newest_finished_review(store: Store) -> None:
+    first = begin(store, kind="review", agent="REVIEWER")
+    store.finish_run(first, state=SUCCEEDED, outcome="rejected")
+    second = begin(store, kind="review", agent="REVIEWER")
+    store.finish_run(second, state=SUCCEEDED, outcome="approved")
+    # An unfinished review is not a verdict.
+    begin(store, kind="review", agent="REVIEWER")
+
+    run = store.last_review_run(100)
+    assert run is not None
+    assert run.id == second
+    assert run.outcome == "approved"
+
+
+def test_last_review_run_is_none_without_reviews(store: Store) -> None:
+    implement = begin(store)
+    store.finish_run(implement, state=SUCCEEDED, outcome="ready_for_review")
+
+    assert store.last_review_run(100) is None
+
+
+def test_last_code_run_ignores_a_resume_that_skipped_the_agent(
+    store: Store,
+) -> None:
+    """A skipped resume wrote no code, so it cannot count as an answer."""
+    implement = begin(store)
+    store.finish_run(implement, state=SUCCEEDED, outcome="ready_for_review")
+    skipped = begin(store, kind="resume")
+    store.finish_run(skipped, state=SUCCEEDED, outcome="ready_for_review_existing_pr")
+
+    run = store.last_code_run(100)
+    assert run is not None
+    assert run.id == implement
+
+
+def test_last_code_run_is_none_when_no_run_produced_work(store: Store) -> None:
+    failed = begin(store)
+    store.finish_run(failed, state=FAILED, outcome="no_pr")
+    interrupted = begin(store, kind="fix")
+    store.mark_interrupted(interrupted)
+
+    assert store.last_code_run(100) is None
+
+
+# -- crash counter reset ----------------------------------------------------
+
+
+def test_reset_crash_count_returns_the_previous_value(store: Store) -> None:
+    store.increment_crash_count(100)
+    store.increment_crash_count(100)
+
+    assert store.reset_crash_count(100) == 2
+    assert store.crash_count(100) == 0
+    # Idempotent: a second reset has nothing to delete.
+    assert store.reset_crash_count(100) == 0

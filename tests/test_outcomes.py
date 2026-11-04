@@ -3,6 +3,7 @@
 from pathlib import Path
 
 from op_agent_engine.outcomes import (
+    NO_RESULT_LINE_NOTE,
     already_open_pr_comment,
     blocked_comment,
     blocked_reason,
@@ -13,9 +14,10 @@ from op_agent_engine.outcomes import (
     no_pr_comment,
     parse_result_line,
     read_tail,
+    rejection_is_outstanding,
     rejection_reason,
 )
-from op_agent_engine.store import FAILED, SUCCEEDED, TIMEOUT
+from op_agent_engine.store import FAILED, SUCCEEDED, TIMEOUT, Run
 
 # -- decide_implementer_outcome -------------------------------------------
 
@@ -326,3 +328,186 @@ def test_already_open_pr_comment_names_branch_and_pr() -> None:
     assert comment.startswith("ENGINE: resume skipped (PR already open)")
     assert "`op-4-100`" in comment
     assert "https://github.com/o/r/pull/7" in comment
+
+
+# -- rejection_is_outstanding (resume path) ----------------------------------
+
+
+def make_run(
+    *,
+    kind: str,
+    outcome: str | None,
+    finished_at: str | None,
+    run_id: int = 1,
+) -> Run:
+    return Run(
+        id=run_id,
+        work_package_id=100,
+        project_id=4,
+        agent="IMPL",
+        kind=kind,
+        state=SUCCEEDED,
+        attempt=1,
+        branch="op-4-100",
+        display_id="OP#100",
+        subject="demo",
+        pid=None,
+        pgid=None,
+        proc_start=None,
+        started_at="2026-11-04T07:00:00+00:00",
+        finished_at=finished_at,
+        exit_code=0,
+        result_line="RESULT: ok",
+        outcome=outcome,
+        run_dir="/tmp/run",
+    )
+
+
+def test_rejection_after_the_last_code_run_is_outstanding() -> None:
+    """WP 144: the fix run was killed, so the PR predates the rejection."""
+    review = make_run(
+        kind="review",
+        outcome="rejected",
+        finished_at="2026-11-04T07:40:16+00:00",
+        run_id=2,
+    )
+    code = make_run(
+        kind="implement",
+        outcome="ready_for_review",
+        finished_at="2026-11-04T07:35:00+00:00",
+    )
+    assert rejection_is_outstanding(review, code) is True
+
+
+def test_rejection_before_the_last_code_run_is_addressed() -> None:
+    review = make_run(
+        kind="review",
+        outcome="rejected",
+        finished_at="2026-11-04T07:35:00+00:00",
+    )
+    code = make_run(
+        kind="fix",
+        outcome="ready_for_review",
+        finished_at="2026-11-04T07:50:00+00:00",
+        run_id=2,
+    )
+    assert rejection_is_outstanding(review, code) is False
+
+
+def test_no_rejection_is_never_outstanding() -> None:
+    review = make_run(
+        kind="review",
+        outcome="approved",
+        finished_at="2026-11-04T07:40:16+00:00",
+    )
+    code = make_run(
+        kind="implement",
+        outcome="ready_for_review",
+        finished_at="2026-11-04T07:35:00+00:00",
+    )
+    assert rejection_is_outstanding(review, code) is False
+
+
+def test_rejection_without_any_code_run_is_outstanding() -> None:
+    review = make_run(
+        kind="review",
+        outcome="rejected",
+        finished_at="2026-11-04T07:40:16+00:00",
+    )
+    assert rejection_is_outstanding(review, None) is True
+
+
+def test_no_review_run_is_never_outstanding() -> None:
+    code = make_run(
+        kind="implement",
+        outcome="ready_for_review",
+        finished_at="2026-11-04T07:35:00+00:00",
+    )
+    assert rejection_is_outstanding(None, code) is False
+
+
+def test_rejection_at_the_same_instant_as_the_code_run_is_outstanding() -> None:
+    """Ties resolve towards running the agent: the safer outcome."""
+    review = make_run(
+        kind="review", outcome="rejected", finished_at="2026-11-04T07:40:16+00:00"
+    )
+    code = make_run(
+        kind="fix",
+        outcome="ready_for_review",
+        finished_at="2026-11-04T07:40:16.000001+00:00",
+        run_id=2,
+    )
+    assert rejection_is_outstanding(review, code) is False
+    same = make_run(
+        kind="fix",
+        outcome="ready_for_review",
+        finished_at="2026-11-04T07:40:16+00:00",
+        run_id=3,
+    )
+    assert rejection_is_outstanding(review, same) is True
+
+
+# -- a silent run is its own outcome (WP 366) --------------------------------
+
+
+def test_silent_run_without_pr_is_no_result_line() -> None:
+    decision = decide_implementer_outcome(
+        exit_code=0,
+        timed_out=False,
+        result_line=None,
+        pr_found=False,
+        silent=True,
+    )
+    assert decision.run_state == FAILED
+    assert decision.outcome == "no_result_line"
+    assert decision.crash_retry is True
+    # The comment only lands at the cap; the decision itself stays quiet.
+    assert decision.comment is None
+
+
+def test_silent_run_with_a_pr_is_still_delivered() -> None:
+    decision = decide_implementer_outcome(
+        exit_code=0,
+        timed_out=False,
+        result_line=None,
+        pr_found=True,
+        silent=True,
+    )
+    assert decision.outcome == "ready_for_review"
+
+
+def test_silent_timeout_and_nonzero_exit_keep_their_outcomes() -> None:
+    """"Silent" only renames the exit-0/no-PR case, nothing else."""
+    timed_out = decide_implementer_outcome(
+        exit_code=-15, timed_out=True, result_line=None, pr_found=False, silent=True
+    )
+    assert timed_out.outcome == "timeout"
+    nonzero = decide_implementer_outcome(
+        exit_code=1, timed_out=False, result_line=None, pr_found=False, silent=True
+    )
+    assert nonzero.outcome == "nonzero_exit"
+
+
+def test_a_run_with_output_is_still_no_pr() -> None:
+    decision = decide_implementer_outcome(
+        exit_code=0,
+        timed_out=False,
+        result_line=None,
+        pr_found=False,
+        silent=False,
+    )
+    assert decision.outcome == "no_pr"
+
+
+def test_escalation_comment_carries_an_optional_note() -> None:
+    comment = escalation_comment(
+        outcome="no_result_line",
+        exit_code=0,
+        tail_lines=[],
+        note=NO_RESULT_LINE_NOTE,
+    )
+    assert "(no_result_line)" in comment
+    assert NO_RESULT_LINE_NOTE in comment
+    assert "(run log is empty)" in comment
+    without = escalation_comment(outcome="no_pr", exit_code=0, tail_lines=[])
+    assert "wrote nothing" not in without

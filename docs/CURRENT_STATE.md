@@ -132,7 +132,10 @@ The team is fixed in code and in the image (`agents/*/AGENTS.md`, baked at
 
 Every agent runs pi:
 
-- `pi -p --approve --no-extensions --no-context-files --no-session --model ...`
+- `pi --mode json --approve --no-extensions --no-context-files --no-session --model ...`
+  (JSONL events are parsed per line; the last assistant message lands in
+  `runs/<id>/last_message.txt` for the dashboard, `RESULT:` still comes from
+  the final assistant message)
 
 `AGENT_MODEL` is `<provider>/<model>`, and `AGENT_MODEL_<AGENT>` overrides it
 for one agent (same provider, one key); the provider selects the credential
@@ -145,7 +148,7 @@ provider of the configured model has no credentials; see
 `LLAMA_BASE_URL` (required) and the optional `LLAMA_API_KEY`, so the same
 environment-only rule covers a self-hosted router; for those runs the runner
 also writes a per-run Pi `models.json` (pointed to by `PI_CODING_AGENT_DIR`),
-because `pi -p` does not load the router's model catalog over the network.
+because `pi` in JSON mode does not load the router's model catalog over the network.
 The engine's own tokens are not forwarded. The reviewer additionally receives `GH_TOKEN_REVIEWER` as its
 `GH_TOKEN`/`GITHUB_TOKEN` when configured, and its workspace clone uses that
 token, so it can act as a different GitHub approver under branch protection.

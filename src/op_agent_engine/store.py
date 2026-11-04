@@ -373,6 +373,41 @@ class Store:
             ).fetchall()
         return [_row_to_run(row) for row in rows]
 
+    def last_review_run(self, work_package_id: int) -> Run | None:
+        """The most recent finished review run for *work_package_id*.
+
+        Used to tell whether the reviewer's latest verdict is still waiting
+        for work: a resume run that skipped because the branch already had a
+        pull request used to hide a rejection that the interrupted fix run
+        never addressed.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM runs WHERE work_package_id = ? AND kind = ? "
+                "AND state != ? AND outcome IS NOT NULL "
+                "ORDER BY finished_at DESC, id DESC LIMIT 1",
+                (work_package_id, "review", RUNNING),
+            ).fetchone()
+        return None if row is None else _row_to_run(row)
+
+    def last_code_run(self, work_package_id: int) -> Run | None:
+        """The most recent run that produced reviewable work, if any.
+
+        Only a successful implement/fix/resume run carries the work to review
+        (``ready_for_review``). A run that skipped because the PR was already
+        open is deliberately excluded: it produced no code, so counting it
+        would make an unaddressed rejection look handled.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM runs WHERE work_package_id = ? "
+                "AND kind IN ('implement', 'fix', 'resume') "
+                "AND outcome = 'ready_for_review' "
+                "ORDER BY finished_at DESC, id DESC LIMIT 1",
+                (work_package_id,),
+            ).fetchone()
+        return None if row is None else _row_to_run(row)
+
     def state_counts(self) -> dict[str, int]:
         """Number of runs per state (``running`` included)."""
         with self._lock:
@@ -455,6 +490,30 @@ class Store:
                 "SELECT count FROM crash_counts WHERE work_package_id = ?",
                 (work_package_id,),
             ).fetchone()
+            self._conn.commit()
+        return int(row["count"])
+
+    def reset_crash_count(self, work_package_id: int) -> int:
+        """Delete the crash counter and return the value it had.
+
+        The counter only ever incremented, so an escalation consumed the whole
+        retry budget permanently: WP 144 needed a hand-written ``DELETE`` to be
+        requeued. A human moving a ticket out of On Hold is the signal that
+        the cause was addressed, so the budget is restored then.
+        """
+        # Read inside the same lock: ``crash_count`` takes it too, and it is
+        # not reentrant.
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT count FROM crash_counts WHERE work_package_id = ?",
+                (work_package_id,),
+            ).fetchone()
+            if row is None:
+                return 0
+            self._conn.execute(
+                "DELETE FROM crash_counts WHERE work_package_id = ?",
+                (work_package_id,),
+            )
             self._conn.commit()
         return int(row["count"])
 

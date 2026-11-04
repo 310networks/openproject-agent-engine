@@ -70,8 +70,16 @@ The team is fixed, one OpenProject account and one token each:
 Exactly one agent is the reviewer. The implementers and the reviewer all run
 `pi`:
 
-- `pi -p --approve --no-extensions --no-context-files --no-session
+- `pi --mode json --approve --no-extensions --no-context-files --no-session
   --model {model} @{prompt_file} ...`
+
+JSON mode (not `-p`) is what makes progress visible: the runner parses the
+JSONL event stream as it arrives and keeps the last assistant message in
+`runs/<id>/last_message.txt`, which the dashboard shows as `last message:`.
+Thinking and tool calls are ignored. The `RESULT:` line is read from the final
+assistant message, exactly as text mode printed it. A runner that still emits
+plain text must set `event_format: text`; the default is `text`, and the
+built-in `pi` runner is `jsonl`.
 
 `AGENT_MODEL` sets the model for every agent; when it is unset the `{model}`
 placeholder and the flag in front of it are dropped, so pi's own default is
@@ -206,7 +214,7 @@ enough. `LLAMA_API_KEY` is optional because Pi supplies the literal key
 router mode and load or preset the model. `agent-init.sh` asks for the URL as
 plain text and offers the optional API key.
 
-The engine runs Pi in print mode (`pi -p`), which does not discover a
+The engine runs Pi in JSON mode, which does not discover a
 llama.cpp router's model list over the network. For a llama.cpp run it writes a
 per-run `models.json` into a private agent directory and points
 `PI_CODING_AGENT_DIR` at it, so the configured `AGENT_MODEL`/per-agent model is
