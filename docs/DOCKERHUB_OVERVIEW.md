@@ -156,7 +156,7 @@ can never satisfy the requirement.
 
 | Baked in | Configured at runtime |
 |---|---|
-| Python 3.12, `git`, `gh`, `ripgrep`, `fd`, `op` | deployment values, limits, API tokens, provider keys (environment only) |
+| Python 3.12, `git`, `git-lfs`, `gh`, `ripgrep`, `fd`, `op` | deployment values, limits, API tokens, provider keys (environment only) |
 | Node 22 and pi | model, git identity |
 | `agents/*/AGENTS.md` (synced into the workspace volume at start) | — |
 | `prompts/` | — |

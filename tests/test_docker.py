@@ -129,6 +129,30 @@ def test_entrypoint_validates_the_environment_and_seeds_no_credentials() -> None
     assert "GIT_AUTHOR_EMAIL" in entrypoint
 
 
+def test_image_checks_lfs_assets_out_into_the_worktree() -> None:
+    """git-lfs has to be in the image, not fetched by an agent mid-run.
+
+    Agent repositories track binary assets (``*.wav``, ``*.png``, ``*.fbx``)
+    through Git LFS. Where a clone carries the ``filter.lfs`` config -- the
+    audio workspace does -- ``git worktree add`` fails outright with
+    ``git-lfs filter-process: 1: git-lfs: not found`` and the run ends as a
+    ``workspace_error``. Where the filters are not registered at all, the
+    pointer files land in the worktree and the agents read 130-byte text
+    files instead of assets, which is worse because nothing fails.
+    """
+    dockerfile = DOCKERFILE.read_text()
+    apt_packages = re.search(
+        r"apt-get install.*?&& rm -rf /var/lib/apt/lists/\*", dockerfile, re.S
+    )
+    assert apt_packages is not None
+    assert re.search(r"^\s+git-lfs\s*\\?$", apt_packages.group(0), re.M), (
+        "the image must install git-lfs from apt"
+    )
+
+    entrypoint = (DOCKER_DIR / "entrypoint.sh").read_text()
+    assert "git lfs install --skip-repo" in entrypoint
+
+
 def test_every_configured_agent_has_an_engineering_standard() -> None:
     """A team entry without an AGENTS.md fails its first run in the workspace."""
     for _, login, _, _ in TEAM:
@@ -156,6 +180,11 @@ def _entrypoint_env(tmp_path: Path, standards: Path, workspace: Path) -> dict[st
     fake_engine = fake_bin / "op-agent-engine"
     fake_engine.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     fake_engine.chmod(0o755)
+    # The entrypoint registers the git-lfs filters, which only exist in the
+    # image; a stand-in keeps these tests independent of the host's packages.
+    fake_lfs = fake_bin / "git-lfs"
+    fake_lfs.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fake_lfs.chmod(0o755)
     home = tmp_path / "home"
     home.mkdir()
     return {

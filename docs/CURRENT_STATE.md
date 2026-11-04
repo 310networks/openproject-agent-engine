@@ -40,8 +40,9 @@ Named volumes hold all mutable state; there are no bind mounts:
 
 `docker/entrypoint.sh` validates the required variables, creates the state
 directories, syncs the baked agent standards into `WORKSPACE_ROOT`, writes the
-agents' git identity from `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL`, and execs the
-engine. Syncing on every start adds agents introduced by an upgrade to an
+agents' git identity from `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL`, registers the
+git-lfs filters (`git lfs install --skip-repo`, needed for repositories that
+track `*.wav`/`*.png`/`*.fbx` assets), and execs the engine. Syncing on every start adds agents introduced by an upgrade to an
 existing workspace volume and refreshes the other `AGENTS.md` files; clones and
 worktrees are untouched. Provider credentials are environment variables; no
 credential file is seeded.
