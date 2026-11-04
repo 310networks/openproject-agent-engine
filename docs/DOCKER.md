@@ -15,7 +15,7 @@ directory, which is `docker/` when you are looking at the repository.
 
 | Baked into the image | In `.env` (host only) | Named volumes (read-write) |
 |---|---|---|
-| Python 3.12, `git`, `gh`, `ripgrep`, `fd`, `op` | deployment values, limits, API tokens, provider keys | `/home/agent/.pi/agent` (pi state, model cache, tools) |
+| Python 3.12, `git`, `git-lfs`, `gh`, `ripgrep`, `fd`, `op` | deployment values, limits, API tokens, provider keys | `/home/agent/.pi/agent` (pi state, model cache, tools) |
 | Node 22 and pi (`PI_VERSION`) | model, git identity | `/home/agent/.local/share/op-agent-engine` (`DATA_DIR`) |
 | `agents/*/AGENTS.md` (at `/opt/op-agent-engine/agents`, synced into the workspace volume) | — | `/home/agent/agents` (`WORKSPACE_ROOT`) |
 | `prompts/` (`PROMPTS_DIR`) | — | — |
@@ -41,7 +41,10 @@ op-agent-engine "$@"`:
    `$WORKSPACE_ROOT`, creating any missing agent workspace and replacing an
    old `AGENTS.md` with the image's version;
 4. writes the agents' git identity from `GIT_AUTHOR_NAME`/`GIT_AUTHOR_EMAIL`
-   (defaults: `OP_ENGINE_USER` and `OP_ENGINE_USER@OP_EMAIL_DOMAIN`).
+   (defaults: `OP_ENGINE_USER` and `OP_ENGINE_USER@OP_EMAIL_DOMAIN`);
+5. registers the git-lfs filters globally (`git lfs install --skip-repo`), so
+   a clone of an asset-tracking repository checks out the real `*.wav`,
+   `*.png` or `*.fbx` rather than the LFS pointer file.
 
 Provider credentials and model settings are environment variables in `.env`;
 the entrypoint seeds no credential files.

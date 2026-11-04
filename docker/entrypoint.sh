@@ -68,4 +68,12 @@ git config --global user.name "${GIT_AUTHOR_NAME:-${OP_ENGINE_USER:-op-agent-eng
 git config --global user.email \
   "${GIT_AUTHOR_EMAIL:-${OP_ENGINE_USER:-op-agent-engine}@${OP_EMAIL_DOMAIN:-agent-engine.local}}"
 
+# Repositories that track binary assets declare git-lfs filters in
+# .gitattributes. An unregistered filter is silently ignored, so a clone would
+# check the pointer files out as if they were the assets and an agent would
+# read a 130-byte text file instead of a .wav or .png. Register the filters for
+# every clone in this container; --skip-repo writes the global config only and
+# does not install hooks into whatever directory the container starts in.
+git lfs install --skip-repo >/dev/null
+
 exec op-agent-engine "$@"

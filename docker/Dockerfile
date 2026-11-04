@@ -55,12 +55,19 @@ ENV WORKSPACE_ROOT=/home/agent/agents \
 # ripgrep and fd back pi's grep/find tools (pi looks for `rg`, `fd` and
 # `fdfind` on PATH); git/gh/op are invoked by the engine and by the agents;
 # tini reaps the process groups the engine spawns.
+#
+# git-lfs is not optional: agent repositories track binary assets (*.wav,
+# *.png, *.fbx) through it. Where a clone carries the `filter.lfs` config, a
+# checkout of such a path dies with `git-lfs filter-process: git-lfs: not
+# found`. Every run checks its branch out with `git worktree add`, so a missing
+# binary fails the run before the agent ever starts (a workspace_error).
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       ca-certificates \
       curl \
       fd-find \
       git \
+      git-lfs \
       gnupg \
       less \
       openssh-client \
