@@ -148,6 +148,14 @@ process groups only when the recorded process start time still matches
 `resume`/re-review runs. A clean `SIGTERM` stops polling, waits
 `STOP_GRACE_SECONDS`, then terminates the remaining groups.
 
+A resume run normally finishes without starting the agent when the branch
+already has an open PR: the interrupted run had delivered its work. The
+exception is an unanswered rejection. When the last review run rejected
+*after* the last successful implement/fix run (a fix run was killed before it
+pushed anything), the open PR predates the verdict, so the resume starts the
+agent and the run log says so (`resuming <id> despite an open PR`). Rejection
+timestamps come from `runs.finished_at`, not from comment text.
+
 ## Retention
 
 `cleanup` removes `DATA_DIR/runs/<id>` and worktrees when they are older than

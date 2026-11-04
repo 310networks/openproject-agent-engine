@@ -2051,3 +2051,102 @@ async def test_failed_worktree_size_cap_removes_the_worktree(
     finally:
         await client.aclose()
         store.close()
+
+
+# -- resume with an open PR (WP 144) -------------------------------------------
+
+
+def seed_run(
+    store: Store, *, kind: str, outcome: str, agent: str = "IMPL"
+) -> int:
+    """Insert a finished run for work package 100 (project 4)."""
+    run_id = store.begin_run(
+        work_package_id=100,
+        project_id=4,
+        agent=agent,
+        kind=kind,
+        attempt=1,
+        branch="op-4-100",
+        run_dir_template=str(store.runs_dir / "{id}"),
+    )
+    store.finish_run(run_id, state=SUCCEEDED, outcome=outcome)
+    return run_id
+
+
+async def test_resume_with_open_pr_runs_the_agent_when_a_rejection_is_outstanding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A killed fix run leaves an open PR that predates the rejection."""
+    runner = FakeRunner(make_result(tmp_path))
+    dispatcher, fake, store, client, _ = await make_dispatcher(
+        tmp_path, monkeypatch, runner=runner, gh=FakeGitHub(pr=PR)
+    )
+    try:
+        # Code first, rejection after: the rejection is unanswered.
+        seed_run(store, kind="implement", outcome="ready_for_review")
+        seed_run(store, kind="review", outcome="rejected", agent="REVIEWER")
+
+        claimed = claim(store, make_item(100), kind="resume")
+        await dispatcher.execute(claimed)
+
+        run = store.get_run(claimed.run_id)
+        assert run is not None
+        assert run.state == SUCCEEDED
+        assert run.outcome == "ready_for_review"
+        # The agent ran instead of the PR short-circuiting the resume.
+        assert len(runner.requests) == 1
+        assert posted_comments(fake, 100) == []
+    finally:
+        await client.aclose()
+        store.close()
+
+
+async def test_resume_with_open_pr_is_skipped_when_the_rejection_was_addressed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = FakeRunner(make_result(tmp_path))
+    dispatcher, fake, store, client, _ = await make_dispatcher(
+        tmp_path, monkeypatch, runner=runner, gh=FakeGitHub(pr=PR)
+    )
+    try:
+        # Rejection first, then a fix run that answered it.
+        seed_run(store, kind="review", outcome="rejected", agent="REVIEWER")
+        seed_run(store, kind="fix", outcome="ready_for_review")
+
+        claimed = claim(store, make_item(100), kind="resume")
+        await dispatcher.execute(claimed)
+
+        run = store.get_run(claimed.run_id)
+        assert run is not None
+        assert run.state == SUCCEEDED
+        assert run.outcome == "ready_for_review_existing_pr"
+        assert runner.requests == []
+        assert any(
+            "resume skipped" in comment for comment in posted_comments(fake, 100)
+        )
+        assert status_href(fake, 100) == f"/api/v3/statuses/{STATUS_READY_FOR_REVIEW}"
+    finally:
+        await client.aclose()
+        store.close()
+
+
+async def test_resume_with_open_pr_and_no_review_is_skipped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = FakeRunner(make_result(tmp_path))
+    dispatcher, _fake, store, client, _ = await make_dispatcher(
+        tmp_path, monkeypatch, runner=runner, gh=FakeGitHub(pr=PR)
+    )
+    try:
+        seed_run(store, kind="implement", outcome="ready_for_review")
+
+        claimed = claim(store, make_item(100), kind="resume")
+        await dispatcher.execute(claimed)
+
+        run = store.get_run(claimed.run_id)
+        assert run is not None
+        assert run.outcome == "ready_for_review_existing_pr"
+        assert runner.requests == []
+    finally:
+        await client.aclose()
+        store.close()

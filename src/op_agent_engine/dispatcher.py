@@ -81,6 +81,7 @@ from op_agent_engine.outcomes import (
     no_pr_comment,
     read_tail,
     rejection_cap_comment,
+    rejection_is_outstanding,
 )
 from op_agent_engine.prompts import FixContext, PromptRenderer, select_fix_context, with_standard
 from op_agent_engine.runners.base import OnSpawned, RunRequest, RunResult
@@ -235,24 +236,30 @@ class Dispatcher:
     ) -> None:
         wp = claimed.item.work_package
 
-        # A resume run whose branch already has an open PR is finished work:
-        # the previous run was killed or timed out after opening it. Starting
-        # the agent again would repeat the work (and can hang again), so the
-        # PR is authoritative here just like a merged PR for a review. A
+        # A resume run whose branch already has an open PR is usually finished
+        # work: the previous run was killed or timed out after opening it.
+        # Starting the agent again would repeat the work (and can hang again),
+        # so the PR is authoritative here just like a merged PR for a review. A
         # draft PR is not authoritative and the agent resumes normally.
+        #
+        # The exception is an outstanding rejection: when a fix run was killed
+        # before it pushed anything, the open PR predates the reviewer's latest
+        # verdict and treating it as finished work sends an unchanged branch
+        # back to review (WP 144: rejection at 07:40, interrupted fix run at
+        # 07:40, resume at 07:43 declared ready for review, same findings
+        # rejected again at 07:48). Then the agent must run.
         if claimed.kind == "resume":
-            try:
-                open_pr = await self._gh.find_pr(
-                    self._repo_github(wp.project_id), claimed.branch
-                )
-            except GitHubError as error:
-                # Verification is best-effort here; running the resume is
-                # still correct when GitHub cannot be reached.
-                logger.warning(
-                    "could not check for an open PR before resuming %s; "
-                    "starting the agent anyway: %s",
+            last_review = self._store.last_review_run(wp.id)
+            last_code = self._store.last_code_run(wp.id)
+            if rejection_is_outstanding(last_review, last_code):
+                # The rejection explains the interrupted fix run: run the
+                # agent, do not short-circuit to ready for review.
+                logger.info(
+                    "resuming %s despite an open PR: the last review was "
+                    "rejected at %s and the last code run finished at %s",
                     wp.display_id,
-                    error,
+                    last_review.finished_at if last_review else None,
+                    last_code.finished_at if last_code else None,
                     extra={
                         "run_id": run_id,
                         "work_package_id": wp.id,
@@ -262,11 +269,32 @@ class Dispatcher:
                     },
                 )
             else:
-                if open_pr is not None and not open_pr.is_draft:
-                    await self._resume_already_has_pr(
-                        claimed, run_id, open_pr, started_at
+                try:
+                    open_pr = await self._gh.find_pr(
+                        self._repo_github(wp.project_id), claimed.branch
                     )
-                    return
+                except GitHubError as error:
+                    # Verification is best-effort here; running the resume is
+                    # still correct when GitHub cannot be reached.
+                    logger.warning(
+                        "could not check for an open PR before resuming %s; "
+                        "starting the agent anyway: %s",
+                        wp.display_id,
+                        error,
+                        extra={
+                            "run_id": run_id,
+                            "work_package_id": wp.id,
+                            "agent": claimed.item.agent_key,
+                            "kind": claimed.kind,
+                            "branch": claimed.branch,
+                        },
+                    )
+                else:
+                    if open_pr is not None and not open_pr.is_draft:
+                        await self._resume_already_has_pr(
+                            claimed, run_id, open_pr, started_at
+                        )
+                        return
 
         workspace = await self._prepare_workspace(claimed, run_id)
         if workspace is None:

@@ -36,9 +36,10 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
-from op_agent_engine.store import FAILED, SUCCEEDED, TIMEOUT
+from op_agent_engine.store import FAILED, SUCCEEDED, TIMEOUT, Run
 
 #: Matches a ``RESULT:`` line anywhere in the payload (the line itself is
 #: already extracted from the log tail by the runner).
@@ -193,6 +194,32 @@ def decide_reviewer_outcome(
             crash_retry=True,
         )
     return OutcomeDecision(run_state=FAILED, outcome="not_merged", crash_retry=True)
+
+
+def rejection_is_outstanding(last_review: Run | None, last_code: Run | None) -> bool:
+    """True when the reviewer's rejection came after the newest code run.
+
+    Used by the resume path: an open pull request only proves that *some*
+    work reached review, not that the latest rejection was addressed. When
+    the last review rejected after the last successful implement/fix run
+    (the case after a fix run was killed), resuming must run the agent again
+    instead of declaring the work package ready for review.
+
+    Timestamps are compared, not read from comments: the engine knows both
+    (``runs.finished_at`` for the review and for the code run).
+    """
+    if last_review is None or last_review.outcome != "rejected":
+        return False
+    if last_review.finished_at is None:
+        return False
+    if last_code is None or last_code.finished_at is None:
+        return True
+    return _parse_time(last_code.finished_at) <= _parse_time(last_review.finished_at)
+
+
+def _parse_time(value: str) -> datetime:
+    """Parse an ISO timestamp from the store, tolerating a trailing ``Z``."""
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
 def no_pr_comment(branch: str) -> str:
