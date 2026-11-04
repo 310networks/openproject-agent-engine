@@ -510,7 +510,7 @@ async def test_implement_blocked_moves_to_on_hold(
 async def test_no_pr_counts_as_crash_retry_and_stays_in_progress(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    runner = FakeRunner(make_result(tmp_path))
+    runner = FakeRunner(make_result(tmp_path, stdout="thinking about it\n"))
     dispatcher, fake, store, client, _ = await make_dispatcher(
         tmp_path, monkeypatch, runner=runner, gh=FakeGitHub(pr=None)
     )
@@ -1573,7 +1573,7 @@ async def test_fix_pass_without_a_pr_counts_as_crash_retry(
         priorities=PRIORITIES,
         activities=[activity_comment(100, "Please fix the failing test.")],
     )
-    runner = FakeRunner(make_result(tmp_path))
+    runner = FakeRunner(make_result(tmp_path, stdout="thinking about it\n"))
     dispatcher, _fake, store, client, _ = await make_dispatcher(
         tmp_path, monkeypatch, runner=runner, gh=FakeGitHub(pr=None), fake=fake
     )
@@ -1816,7 +1816,9 @@ async def test_failed_run_captures_worktree_state(
         )
         (workspace.repo_dir / "notes.md").write_text("agent notes\n", encoding="utf-8")
 
-    runner = FakeRunner(make_result(tmp_path), on_run=edit)
+    runner = FakeRunner(
+        make_result(tmp_path, stdout="I tried things\n"), on_run=edit
+    )
     dispatcher, _fake, store, client, _ = await make_dispatcher(
         tmp_path, monkeypatch, runner=runner, gh=FakeGitHub(pr=None)
     )
@@ -2159,7 +2161,7 @@ async def test_unheld_ticket_resets_the_crash_counter(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A human moving the ticket off On Hold restores the retry budget."""
-    runner = FakeRunner(make_result(tmp_path))
+    runner = FakeRunner(make_result(tmp_path, stdout="still working\n"))
     fake = make_fake(
         work_packages=[wp(100, status=STATUS_IN_PROGRESS, agent=11)],
         priorities=PRIORITIES,
@@ -2194,7 +2196,7 @@ async def test_a_ticket_still_on_hold_keeps_its_crash_counter(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The engine's own escalation must not hand the budget back."""
-    runner = FakeRunner(make_result(tmp_path))
+    runner = FakeRunner(make_result(tmp_path, stdout="still working\n"))
     fake = make_fake(
         work_packages=[wp(100, status=STATUS_IN_PROGRESS, agent=11)],
         priorities=PRIORITIES,
@@ -2215,6 +2217,36 @@ async def test_a_ticket_still_on_hold_keeps_its_crash_counter(
         assert store.crash_count(100) == 4
         assert status_href(fake, 100) == f"/api/v3/statuses/{STATUS_ON_HOLD}"
         assert posted_comments(fake, 100)[0].startswith("ENGINE: escalated")
+    finally:
+        await client.aclose()
+        store.close()
+
+
+async def test_silent_run_is_reported_as_no_result_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A run that exits 0 and writes nothing is not an ordinary "no PR"."""
+    runner = FakeRunner(make_result(tmp_path))  # exit 0, empty logs, no PR
+    dispatcher, fake, store, client, _ = await make_dispatcher(
+        tmp_path, monkeypatch, runner=runner, gh=FakeGitHub(pr=None)
+    )
+    try:
+        store.increment_crash_count(100)
+        store.increment_crash_count(100)
+        claimed = claim(store, make_item(100))
+        await dispatcher.execute(claimed)
+
+        run = store.get_run(claimed.run_id)
+        assert run is not None
+        assert run.state == FAILED
+        assert run.outcome == "no_result_line"
+        assert store.crash_count(100) == 3
+        assert status_href(fake, 100) == f"/api/v3/statuses/{STATUS_ON_HOLD}"
+        comment = posted_comments(fake, 100)[0]
+        assert comment.startswith("ENGINE: escalated")
+        assert "(no_result_line)" in comment
+        assert "wrote nothing at all to stdout or stderr" in comment
+        assert "(run log is empty)" in comment
     finally:
         await client.aclose()
         store.close()

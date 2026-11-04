@@ -107,12 +107,28 @@ def is_rejection(result_line: str | None) -> bool:
     return rejection_reason(result_line) is not None
 
 
+#: Outcome for a run that exited 0, printed nothing and left no PR.
+NO_RESULT_LINE = "no_result_line"
+
+#: Why a silent run is not an ordinary "no PR" failure, used in the escalation
+#: comment. The agent CLI can exit 0 without writing a byte (pi print mode
+#: writes only the final assistant message), so the log says nothing about
+#: what the agent did or why it stopped.
+NO_RESULT_LINE_NOTE = (
+    "The run exited 0 but wrote nothing at all to stdout or stderr, so there "
+    "is no RESULT line and no evidence of what the agent did. This is a known "
+    "agent-CLI failure mode, not a missing pull request: the run budget was "
+    "spent without producing a report."
+)
+
+
 def decide_implementer_outcome(
     *,
     exit_code: int,
     timed_out: bool,
     result_line: str | None,
     pr_found: bool,
+    silent: bool = False,
 ) -> OutcomeDecision:
     """Apply the rules for implement/fix runs.
 
@@ -126,6 +142,9 @@ def decide_implementer_outcome(
        for Review.
     3. Only without a PR do a timeout or a non-zero exit count as a crash
        retry.
+    4. A run that exited 0 without writing anything and without a PR is
+       ``no_result_line``, not ``no_pr``: the engine cannot tell whether the
+       agent did nothing or the agent CLI swallowed its output.
     """
     reason = blocked_reason(result_line)
     if reason is not None:
@@ -146,6 +165,10 @@ def decide_implementer_outcome(
     if exit_code != 0:
         return OutcomeDecision(
             run_state=FAILED, outcome="nonzero_exit", crash_retry=True
+        )
+    if silent:
+        return OutcomeDecision(
+            run_state=FAILED, outcome=NO_RESULT_LINE, crash_retry=True
         )
     return OutcomeDecision(run_state=FAILED, outcome="no_pr", crash_retry=True)
 
@@ -281,6 +304,7 @@ def escalation_comment(
     tail_lines: list[str] | None = None,
     detail: str | None = None,
     artefact_path: str | None = None,
+    note: str | None = None,
 ) -> str:
     """Engine comment posted when the crash retry cap is reached.
 
@@ -294,6 +318,8 @@ def escalation_comment(
         f"The agent run failed ({outcome}) and the crash retry cap is reached.",
         "Putting the ticket on hold for a human.",
     ]
+    if note:
+        lines.extend(["", note])
     if detail:
         lines.extend(["", f"Failure detail: {detail}"])
     if exit_code is not None:
