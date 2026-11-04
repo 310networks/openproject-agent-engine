@@ -15,7 +15,7 @@ directory, which is `docker/` when you are looking at the repository.
 
 | Baked into the image | In `.env` (host only) | Named volumes (read-write) |
 |---|---|---|
-| Python 3.12, `git`, `git-lfs`, `gh`, `ripgrep`, `fd`, `op` | deployment values, limits, API tokens, provider keys | `/home/agent/.pi/agent` (pi state, model cache, tools) |
+| Python 3.12, `numpy`, `scipy`, `soundfile`, `pyloudnorm`, `git`, `git-lfs`, `gh`, `ripgrep`, `fd`, `op` | deployment values, limits, API tokens, provider keys | `/home/agent/.pi/agent` (pi state, model cache, tools) |
 | Node 22 and pi (`PI_VERSION`) | model, git identity | `/home/agent/.local/share/op-agent-engine` (`DATA_DIR`) |
 | `agents/*/AGENTS.md` (at `/opt/op-agent-engine/agents`, synced into the workspace volume) | — | `/home/agent/agents` (`WORKSPACE_ROOT`) |
 | `prompts/` (`PROMPTS_DIR`) | — | — |
@@ -143,6 +143,14 @@ without a new tag.
   otherwise.
 - **The agent is pi.** `AGENT_MODEL` selects the model; there is no separate
   agent-CLI setting.
+- **Audio QA tooling is baked in, like git-lfs.** `numpy`, `scipy`,
+  `soundfile` (wheel bundles libsndfile 1.2.2) and `pyloudnorm` are installed
+  system-wide, pinned to majors, for the AUDIO role's LUFS/true-peak and
+  null-sum measurements. Do not have a run `pip install` into `$HOME/.local`:
+  that is unpinned and invisible to every volume, so it is lost on the next
+  image recreate and eats the run budget (run 304 spent 10.5 of 14.6 minutes
+  on it). Version is not pinned exactly -- if an AUDIO ticket needs a specific
+  behaviour, pin it in this layer and bump the image.
 - The engine spawns one process group per run and kills it on timeout, so the
   container runs under `tini` and `stop_grace_period` is 90 s
   (`STOP_GRACE_SECONDS` + the runner's 20 s SIGKILL grace). Raise both together.

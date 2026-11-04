@@ -153,6 +153,37 @@ def test_image_checks_lfs_assets_out_into_the_worktree() -> None:
     assert "git lfs install --skip-repo" in entrypoint
 
 
+def test_image_ships_the_audio_qa_toolchain() -> None:
+    """The AUDIO role must not install its own DSP packages mid-run.
+
+    Audio QA (LUFS/true-peak, loop and stem-sum nulls) needs numpy, scipy,
+    soundfile and pyloudnorm. Installed by a run instead, they are unpinned,
+    land in ``$HOME/.local`` (no volume, lost on the next image recreate) and
+    cost minutes of download time inside the run budget: run 304 spent 10.5 of
+    its 14.6 minutes on pip and then stopped without committing.
+    """
+    dockerfile = DOCKERFILE.read_text()
+    marker = "# Audio QA toolchain"
+    assert marker in dockerfile, "the audio QA dependency layer is missing"
+    audio_section = dockerfile.split(marker, 1)[1]
+    layer_match = re.search(
+        r"RUN pip install --no-cache-dir \\\n(?:[ \t]+\"[^\n]*\n)+", audio_section
+    )
+    assert layer_match is not None, "the audio QA dependency layer is missing"
+    layer = layer_match.group(0)
+
+    # Pinned to a major range: an unpinned float would change the measurement
+    # numbers between rebuilds, silently.
+    for package in ("numpy", "scipy", "soundfile", "pyloudnorm"):
+        assert re.search(rf'"{package}>=[0-9][^"]*<[0-9]', layer), (
+            f"the image must install {package} with a pinned major range"
+        )
+
+    # System-wide only: `pip install --user` lands in $HOME/.local, which no
+    # volume keeps, so the packages would vanish on the next image recreate.
+    assert "--user" not in layer
+
+
 def test_every_configured_agent_has_an_engineering_standard() -> None:
     """A team entry without an AGENTS.md fails its first run in the workspace."""
     for _, login, _, _ in TEAM:
