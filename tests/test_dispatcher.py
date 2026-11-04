@@ -2150,3 +2150,71 @@ async def test_resume_with_open_pr_and_no_review_is_skipped(
     finally:
         await client.aclose()
         store.close()
+
+
+# -- crash counter reset on un-hold (WP 367) -----------------------------------
+
+
+async def test_unheld_ticket_resets_the_crash_counter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A human moving the ticket off On Hold restores the retry budget."""
+    runner = FakeRunner(make_result(tmp_path))
+    fake = make_fake(
+        work_packages=[wp(100, status=STATUS_IN_PROGRESS, agent=11)],
+        priorities=PRIORITIES,
+        activities=[
+            status_change(100, "On Hold", previous="In Progress", activity_id=900),
+            status_change(100, "New", previous="On Hold", activity_id=901),
+        ],
+    )
+    dispatcher, fake, store, client, _ = await make_dispatcher(
+        tmp_path, monkeypatch, runner=runner, gh=FakeGitHub(pr=None), fake=fake
+    )
+    try:
+        for _ in range(3):
+            store.increment_crash_count(100)
+
+        claimed = claim(store, make_item(100))
+        await dispatcher.execute(claimed)
+
+        run = store.get_run(claimed.run_id)
+        assert run is not None
+        assert run.outcome == "no_pr"
+        # 3 -> 0 by the reset, then 1 for this failure: still inside the cap.
+        assert store.crash_count(100) == 1
+        assert status_href(fake, 100) == f"/api/v3/statuses/{STATUS_IN_PROGRESS}"
+        assert posted_comments(fake, 100) == []
+    finally:
+        await client.aclose()
+        store.close()
+
+
+async def test_a_ticket_still_on_hold_keeps_its_crash_counter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The engine's own escalation must not hand the budget back."""
+    runner = FakeRunner(make_result(tmp_path))
+    fake = make_fake(
+        work_packages=[wp(100, status=STATUS_IN_PROGRESS, agent=11)],
+        priorities=PRIORITIES,
+        activities=[
+            status_change(100, "On Hold", previous="In Progress", activity_id=900),
+        ],
+    )
+    dispatcher, fake, store, client, _ = await make_dispatcher(
+        tmp_path, monkeypatch, runner=runner, gh=FakeGitHub(pr=None), fake=fake
+    )
+    try:
+        for _ in range(3):
+            store.increment_crash_count(100)
+
+        claimed = claim(store, make_item(100))
+        await dispatcher.execute(claimed)
+
+        assert store.crash_count(100) == 4
+        assert status_href(fake, 100) == f"/api/v3/statuses/{STATUS_ON_HOLD}"
+        assert posted_comments(fake, 100)[0].startswith("ENGINE: escalated")
+    finally:
+        await client.aclose()
+        store.close()

@@ -10,6 +10,8 @@ from op_agent_engine.openproject.activities import (
     comment_from_activity,
     count_status_changes,
     status_targets,
+    status_transitions,
+    unheld,
 )
 
 START = datetime(2026, 2, 10, 12, 0, tzinfo=UTC)
@@ -100,3 +102,40 @@ def test_author_id_accepts_plain_and_nested_shapes() -> None:
     assert author_id({"author": {"id": 7}}) == 7
     assert author_id({"user": {"_links": {"self": {"href": "/api/v3/users/9"}}}}) == 9
     assert author_id({}) is None
+
+
+# -- unheld (crash-counter reset) --------------------------------------------
+
+
+def test_status_transitions_keeps_from_and_to() -> None:
+    entry = activity([{"raw": "Status changed from On Hold to New"}])
+    assert status_transitions(entry) == [("On Hold", "New")]
+
+
+def test_status_transitions_marks_a_plain_set_as_having_no_source() -> None:
+    entry = activity([{"raw": "Status set to New"}])
+    assert status_transitions(entry) == [(None, "New")]
+
+
+def test_unheld_true_when_the_newest_change_leaves_on_hold() -> None:
+    activities = [
+        activity(
+            [{"raw": "Status changed from In Progress to On Hold"}], activity_id=1
+        ),
+        activity([{"raw": "Status changed from On Hold to New"}], activity_id=2),
+    ]
+    assert unheld(activities, "On Hold") is True
+
+
+def test_unheld_false_when_the_engine_still_holds_the_ticket() -> None:
+    activities = [
+        activity([{"raw": "Status changed from On Hold to New"}], activity_id=1),
+        activity([{"raw": "Status changed from New to On Hold"}], activity_id=2),
+    ]
+    assert unheld(activities, "On Hold") is False
+
+
+def test_unheld_false_without_history() -> None:
+    assert unheld([], "On Hold") is False
+    moved_on = activity([{"raw": "Status changed from New to In Progress"}])
+    assert unheld([moved_on], "On Hold") is False

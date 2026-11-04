@@ -592,3 +592,16 @@ def test_last_code_run_is_none_when_no_run_produced_work(store: Store) -> None:
     store.mark_interrupted(interrupted)
 
     assert store.last_code_run(100) is None
+
+
+# -- crash counter reset ----------------------------------------------------
+
+
+def test_reset_crash_count_returns_the_previous_value(store: Store) -> None:
+    store.increment_crash_count(100)
+    store.increment_crash_count(100)
+
+    assert store.reset_crash_count(100) == 2
+    assert store.crash_count(100) == 0
+    # Idempotent: a second reset has nothing to delete.
+    assert store.reset_crash_count(100) == 0

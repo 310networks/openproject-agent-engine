@@ -493,6 +493,30 @@ class Store:
             self._conn.commit()
         return int(row["count"])
 
+    def reset_crash_count(self, work_package_id: int) -> int:
+        """Delete the crash counter and return the value it had.
+
+        The counter only ever incremented, so an escalation consumed the whole
+        retry budget permanently: WP 144 needed a hand-written ``DELETE`` to be
+        requeued. A human moving a ticket out of On Hold is the signal that
+        the cause was addressed, so the budget is restored then.
+        """
+        # Read inside the same lock: ``crash_count`` takes it too, and it is
+        # not reentrant.
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT count FROM crash_counts WHERE work_package_id = ?",
+                (work_package_id,),
+            ).fetchone()
+            if row is None:
+                return 0
+            self._conn.execute(
+                "DELETE FROM crash_counts WHERE work_package_id = ?",
+                (work_package_id,),
+            )
+            self._conn.commit()
+        return int(row["count"])
+
     def close(self) -> None:
         with self._lock:
             self._conn.close()
