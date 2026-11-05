@@ -80,6 +80,8 @@ On a re-review after a fix pass, review the whole PR against the ticket again, n
 
 **Non-blocking.** Style preferences and optional improvements that linters and the repository conventions do not require. List them separately as suggestions. They never justify rejection.
 
+**Photosensitivity.** Apply the project's approved visual-accessibility specification, including its documented, project-approved exceptions, as delegated by the VFX standard section 5. Do not impose an unconditional three-flash cap where that specification explicitly permits a bounded exception. Check the cited approval, area/luminance/red-flash limits, reduced-flash behavior and aggregate on-screen validation. An asset-only ticket may explicitly defer combined-scene evidence to a named integration owner and acceptance gate; that is not a scene safety pass or permission to ship. Reject invented exceptions, undocumented presentation changes, per-object-only safety claims or waived capture/certification gates.
+
 **Completeness.** List all blocking issues in a single review. Incomplete reviews cause extra rejection cycles, and the number of cycles is capped.
 
 ## 4. Decision

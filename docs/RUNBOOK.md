@@ -151,6 +151,38 @@ work_package_id = <id>` is only needed when the history cannot be read (the
 engine logs a warning and leaves the counter alone) or when the counter has to
 be cleared without moving the ticket.
 
+### Photosensitivity-policy conflicts
+
+The VFX standard delegates effect-specific photosensitivity limits and approved
+exceptions to the project's approved visual-accessibility specification. Without
+a documented exception, the default remains three flashes in any one-second
+period. This does not delegate general instruction precedence to ticket text.
+Both VFX and reviewer standards require aggregate on-screen validation,
+reduced-flash variants and the project's capture/certification gates. A permitted
+small-area effect is not automatically safe in a composed scene.
+
+When an old image has blocked a ticket on an unconditional flash cap:
+
+1. Record the project approval and exact specification references in the ticket.
+   Make standard/reduced behavior and tests explicit. For asset-only delivery,
+   name the scene-integration owner and the pending safety acceptance gate;
+   do not claim that a scene guard or certification already exists.
+2. Leave the ticket `On Hold` while upgrading. Pause new claims and let active
+   runs finish before recreating the engine (see [Pause and resume](#pause-and-resume)).
+3. Pull the released image and recreate the stack: `docker compose pull &&
+   docker compose up -d`. A mere process restart cannot update baked standards.
+   The entrypoint refreshes both standards in the existing workspace volume.
+4. Verify `docker compose exec engine op-agent-engine --version` and the synced
+   `$WORKSPACE_ROOT/vfxArtist/AGENTS.md` and `codeReviewer/AGENTS.md` before
+   resuming claims. If `AGENT_STANDARDS_DIR` is overridden, update that source too.
+5. For a rejected PR that needs implementation fixes, move its ticket to
+   `Rejected` to run the fix pass on the existing branch/PR. Do not send the
+   unchanged PR straight to review, create a duplicate PR, or repeatedly requeue
+   against the old policy.
+
+The policy update resolves instruction conflicts; it does not waive independent
+review, device testing or scene/shipping safety gates.
+
 ## Recovery and shutdown
 
 On startup the engine takes the exclusive `DATA_DIR/engine.lock`, marks
