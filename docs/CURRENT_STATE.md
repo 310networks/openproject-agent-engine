@@ -55,8 +55,17 @@ One loop iteration:
    users, types, projects, and each project's `GIT_REPO`). Resolution is cached
    for the process.
 2. **Poll** (`poller.py`): list candidate work packages by dispatch priority,
-   then apply the eligibility rules. Cheap rules run first; blockers and
-   children are fetched only when they can change the decision.
+   then apply the eligibility rules in cost order. Before the first request,
+   the loop skips the poll entirely when no slot is free (every global or
+   per-agent slot is in use, or the engine is paused); the next poll then
+   happens as soon as a run finishes rather than at the next interval.
+   Per ticket, the fields already in the candidate payload and the store's
+   active-run state reject a ticket before any dependency query. The remaining
+   tickets get one batched dependency round — one `/relations` query, one
+   blocker lookup and one children query, issued sequentially, never in
+   parallel — and that round runs on its own, slower
+   `BLOCKER_REFRESH_SECONDS` timer, so a parked `Blocked` ticket costs nothing
+   between refreshes.
 3. **Schedule** (`scheduler.py`): move a New ticket with unfinished blockers
    to `Blocked` and post an engine comment, then re-check the slot rules
    against the store and claim work packages with an optimistic-locking
@@ -71,7 +80,11 @@ One loop iteration:
 
 The poller is read-only; only the scheduler writes claims and `Blocked`
 transitions; only the dispatcher writes run outcomes and the remaining
-OpenProject transitions. Agents never change status.
+OpenProject transitions. Agents never change status. A relation or blocker
+status change is only noticed at the next dependency refresh, so unblocking —
+and seeing a blocker that was reopened — can lag by up to
+`BLOCKER_REFRESH_SECONDS`; lower the value for projects whose dependencies
+change often.
 
 ## Ticket flow
 
@@ -86,7 +99,10 @@ OpenProject transitions. Agents never change status.
 | `Ready for Review`, no PR | — | — | — | `On Hold` + comment |
 | `Rejected`, eligible | claim, `In Progress` | fix | open PR | `Ready for Review` |
 
-`On Hold` is terminal until a human moves the ticket. Branch names are
+Polling pauses while every slot is busy or the engine is paused, so the
+`New` → `Blocked` bookkeeping for a ticket with unfinished blockers happens on
+the first poll after a slot frees. `On Hold` is terminal until a human moves
+the ticket. Branch names are
 `op-<projectId>-<workPackageId>`; every engine comment starts with `ENGINE:`.
 
 A rejection accepted past `MAX_REJECTIONS` moves the ticket to `On Hold` with a

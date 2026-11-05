@@ -27,7 +27,7 @@ import asyncio
 import contextlib
 import os
 import signal
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -193,6 +193,9 @@ class Engine:
             resolution,
             max_concurrent_runs=self._settings.max_concurrent_runs,
             max_runs_per_agent=self._settings.max_runs_per_agent,
+            blocker_refresh_seconds=float(
+                self._settings.blocker_refresh_seconds
+            ),
         )
         scheduler = Scheduler(
             client,
@@ -211,6 +214,7 @@ class Engine:
             "engine started",
             extra={
                 "poll_interval_seconds": self._settings.poll_interval_seconds,
+                "blocker_refresh_seconds": self._settings.blocker_refresh_seconds,
                 "max_concurrent_runs": self._settings.max_concurrent_runs,
                 "max_runs_per_agent": self._settings.max_runs_per_agent,
                 "paused": self._settings.engine_paused,
@@ -225,11 +229,49 @@ class Engine:
                 loop.add_signal_handler(sig, stop.set)
 
         in_flight: set[asyncio.Task[None]] = set()
+        # A run that finishes frees a slot; polling the very next interval would
+        # waste a cycle, so completion wakes the loop immediately.
+        wake = asyncio.Event()
+
+        def _run_finished(task: asyncio.Task[None]) -> None:
+            in_flight.discard(task)
+            wake.set()
+
         poll_number = 0
+        last_idle_reason: str | None = None
         while not stop.is_set():
+            # Consume a completion signal before deciding: the store snapshot
+            # read below already reflects the finished run.
+            wake.clear()
+            active_work_package_ids: frozenset[int] = frozenset()
+            active_run_counts: dict[str, int] = {}
+            if not dry_run:
+                active_work_package_ids = store.active_work_package_ids()
+                active_run_counts = store.active_run_counts_by_agent()
+
+            if max_polls is None and not dry_run:
+                idle_reason = self._idle_reason(
+                    len(active_work_package_ids), active_run_counts
+                )
+                if idle_reason is not None:
+                    # Nothing can be claimed, so a poll would only burn
+                    # OpenProject requests. The heartbeat still advances so the
+                    # dashboard does not look stale.
+                    self._write_heartbeat()
+                    if idle_reason != last_idle_reason:
+                        logger.info("poll skipped: %s", idle_reason)
+                        last_idle_reason = idle_reason
+                    await self._sleep_or_stop(stop, wake)
+                    continue
+            last_idle_reason = None
+
             poll_number += 1
             try:
-                plan = await poller.poll()
+                plan = await poller.poll(
+                    active_run_work_package_ids=active_work_package_ids,
+                    active_run_counts_by_agent=active_run_counts,
+                    global_slots_used=len(active_work_package_ids),
+                )
             except OpenProjectError as error:
                 logger.error(
                     "poll failed (will retry next cycle): %s",
@@ -238,7 +280,7 @@ class Engine:
                 )
                 if not dry_run:
                     self._write_heartbeat()
-                await self._sleep_or_stop(stop)
+                await self._sleep_or_stop(stop, wake)
                 continue
 
             if not dry_run:
@@ -275,11 +317,11 @@ class Engine:
                             self._execute_claimed(dispatcher, claimed)
                         )
                         in_flight.add(task)
-                        task.add_done_callback(in_flight.discard)
+                        task.add_done_callback(_run_finished)
 
             if max_polls is not None and poll_number >= max_polls:
                 break
-            await self._sleep_or_stop(stop)
+            await self._sleep_or_stop(stop, wake)
 
         if in_flight:
             logger.info(
@@ -335,11 +377,50 @@ class Engine:
                 },
             )
 
-    async def _sleep_or_stop(self, stop: asyncio.Event) -> None:
-        with contextlib.suppress(TimeoutError):
-            await asyncio.wait_for(
-                stop.wait(), timeout=self._settings.poll_interval_seconds
+    def _idle_reason(
+        self, active_total: int, active_run_counts: Mapping[str, int]
+    ) -> str | None:
+        """Why a poll would be wasted, or ``None`` when a slot is free.
+
+        Every reason here means no candidate could be claimed this cycle, so
+        the poll is skipped entirely. The scheduler re-checks the same limits
+        when it claims, so this only saves requests.
+        """
+        if self._is_paused():
+            return "engine is paused"
+        if active_total >= self._settings.max_concurrent_runs:
+            return (
+                f"all {self._settings.max_concurrent_runs} run slot(s) in use"
             )
+        busy_agents = [
+            key
+            for key in self._config.agents
+            if active_run_counts.get(key, 0) >= self._settings.max_runs_per_agent
+        ]
+        if len(busy_agents) == len(self._config.agents):
+            return "every agent already has an active run"
+        return None
+
+    async def _sleep_or_stop(
+        self, stop: asyncio.Event, wake: asyncio.Event | None = None
+    ) -> None:
+        timeout = self._settings.poll_interval_seconds
+        if wake is None:
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(stop.wait(), timeout=timeout)
+            return
+        waiters = [
+            asyncio.ensure_future(stop.wait()),
+            asyncio.ensure_future(wake.wait()),
+        ]
+        try:
+            await asyncio.wait(
+                waiters, timeout=timeout, return_when=asyncio.FIRST_COMPLETED
+            )
+        finally:
+            for waiter in waiters:
+                waiter.cancel()
+            await asyncio.gather(*waiters, return_exceptions=True)
 
 
 def is_paused(settings: EngineSettings) -> bool:

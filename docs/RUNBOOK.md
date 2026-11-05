@@ -131,7 +131,7 @@ always an explicit human decision.
 | Comment | Meaning | Human action |
 |---|---|---|
 | `ENGINE: blocked` | agent reported a blocker | remove it, move to `Rejected` or `New` |
-| `ENGINE: blocked by dependency` | unfinished OpenProject blocker relation; ticket is in `Blocked` | finish/close the blocker; the engine unblocks and assigns automatically |
+| `ENGINE: blocked by dependency` | unfinished OpenProject blocker relation; ticket is in `Blocked` | finish/close the blocker; the engine unblocks and assigns automatically (within `BLOCKER_REFRESH_SECONDS`, default 5 min) |
 | `ENGINE: no PR found` | `Ready for Review` without a PR for `op-<project>-<wp>` | push the PR, move back to `Ready for Review` |
 | `ENGINE: escalated` | crash/timeout retry cap; comment has exit code + last 40 log lines | fix the cause, move back to `In Progress`/`New` |
 | `ENGINE: escalated` with `(no_result_line)` | the run exited 0 and wrote nothing at all, so there is no RESULT line and no evidence | read `runs/<id>/meta.json`; the worktree is gone (#365), so re-run with a narrower scope |

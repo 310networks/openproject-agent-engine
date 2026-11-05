@@ -8,6 +8,8 @@ workspace preparation is stubbed (no git).
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import json
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -573,6 +575,102 @@ async def test_paused_engine_claims_nothing(
             store.close()
     finally:
         await client.aclose()
+
+
+# -- polling budget -----------------------------------------------------------------
+
+
+def status_poll_count(fake: FakeOpenProject) -> int:
+    """Candidate queries, i.e. one per poll (the recovery query has an assignee)."""
+    count = 0
+    for request in fake.requests:
+        if request.url.path != "/api/v3/work_packages":
+            continue
+        raw = request.url.params.get("filters")
+        if raw is None:
+            continue
+        conditions = json.loads(raw)
+        if any("status" in condition for condition in conditions) and not any(
+            "assignee" in condition for condition in conditions
+        ):
+            count += 1
+    return count
+
+
+async def wait_until(predicate: Callable[[], bool], *, timeout: float = 5.0) -> None:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while not predicate():
+        if loop.time() > deadline:
+            raise AssertionError("condition was not met in time")
+        await asyncio.sleep(0.01)
+
+
+async def stop_engine(
+    task: asyncio.Task[int], client: OpenProjectClient
+) -> None:
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+    await client.aclose()
+
+
+async def test_engine_skips_polls_while_every_slot_is_in_use(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The run outlives several poll intervals. Without the slot gate the engine
+    # would rebuild the dispatch plan on every one of them.
+    runner = FakeRunner(
+        make_result(tmp_path, result_line="RESULT: BLOCKED parked"), delay=2.0
+    )
+    engine, fake, client, _store_path = await make_engine(
+        tmp_path,
+        monkeypatch,
+        work_packages=[wp(100, status=STATUS_NEW, agent=11)],
+        runner=runner,
+        settings_overrides={"poll_interval_seconds": 1},
+    )
+    task = asyncio.create_task(engine.run())
+    try:
+        await wait_until(lambda: bool(runner.requests))
+        assert status_poll_count(fake) == 1
+
+        await asyncio.sleep(1.5)
+        assert status_poll_count(fake) == 1, "polled while the only slot was busy"
+
+        await wait_until(
+            lambda: status_href(fake, 100) == f"/api/v3/statuses/{STATUS_ON_HOLD}"
+        )
+    finally:
+        await asyncio.sleep(0.2)
+        await stop_engine(task, client)
+
+
+async def test_finished_run_wakes_the_engine_before_the_next_interval(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The poll interval is far longer than the run: only the completion signal
+    # can trigger the follow-up poll.
+    runner = FakeRunner(
+        make_result(tmp_path, result_line="RESULT: BLOCKED parked"), delay=0.4
+    )
+    engine, fake, client, _store_path = await make_engine(
+        tmp_path,
+        monkeypatch,
+        work_packages=[wp(100, status=STATUS_NEW, agent=11)],
+        runner=runner,
+        settings_overrides={"poll_interval_seconds": 5},
+    )
+    task = asyncio.create_task(engine.run())
+    try:
+        await wait_until(
+            lambda: status_href(fake, 100) == f"/api/v3/statuses/{STATUS_ON_HOLD}"
+        )
+        # Well inside the 5 s interval: the completion must have woken the loop.
+        await wait_until(lambda: status_poll_count(fake) >= 2, timeout=1.5)
+    finally:
+        await asyncio.sleep(0.2)
+        await stop_engine(task, client)
 
 
 # -- locking -----------------------------------------------------------------------
