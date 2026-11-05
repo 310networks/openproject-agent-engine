@@ -233,6 +233,7 @@ Docker network.
 | Variable | Default | Meaning |
 |---|---|---|
 | `POLL_INTERVAL_SECONDS` | `60` | how often OpenProject is polled |
+| `BLOCKER_REFRESH_SECONDS` | `300` | how often relations, blocker statuses and children are re-checked; they run batched and sequentially on their own timer, so a parked `Blocked` ticket costs no requests between refreshes. `0` checks them on every poll |
 | `MAX_CONCURRENT_RUNS` | `1` | agent runs in parallel across all agents |
 | `MAX_RUNS_PER_AGENT` | `1` | concurrent runs per agent; each run gets its own worktree |
 | `MAX_REJECTIONS` | `3` | rejections before an agent stops retrying a work package |

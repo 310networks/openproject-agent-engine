@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from typing import Any
 
 from op_agent_engine.config import WorkflowConfig
@@ -82,6 +83,8 @@ async def make_poller(
     relations: list[dict[str, Any]] | None = None,
     config: WorkflowConfig | None = None,
     max_concurrent_runs: int = 2,
+    blocker_refresh_seconds: float = 0.0,
+    clock: Callable[[], float] | None = None,
 ) -> tuple[Poller, FakeOpenProject]:
     fake = make_fake(
         work_packages=work_packages,
@@ -91,8 +94,40 @@ async def make_poller(
     cfg = config or make_config()
     client = OpenProjectClient(BASE_URL, TOKEN, transport=fake.transport)
     resolution = await resolve_workflow(client, cfg)
-    poller = Poller(client, cfg, resolution, max_concurrent_runs=max_concurrent_runs)
+    poller = Poller(
+        client,
+        cfg,
+        resolution,
+        max_concurrent_runs=max_concurrent_runs,
+        blocker_refresh_seconds=blocker_refresh_seconds,
+        **({"clock": clock} if clock is not None else {}),
+    )
     return poller, fake
+
+
+def work_package_queries(
+    fake: FakeOpenProject, field: str
+) -> list[Any]:
+    """Work package collection requests whose filters contain ``field``."""
+    matches: list[Any] = []
+    for request in fake.requests:
+        if request.url.path != "/api/v3/work_packages":
+            continue
+        raw = request.url.params.get("filters")
+        if raw is None:
+            continue
+        conditions = json.loads(raw)
+        if any(field in condition for condition in conditions):
+            matches.append(request)
+    return matches
+
+
+def relation_queries(fake: FakeOpenProject) -> list[Any]:
+    return [
+        request
+        for request in fake.requests
+        if request.url.path == "/api/v3/relations"
+    ]
 
 
 async def test_dispatch_ordering() -> None:
@@ -229,6 +264,141 @@ async def test_blocked_work_package_unblocks_only_when_all_blockers_are_closed()
         (105, "blocked")
     ]
     assert plan.items[0].agent_key == "IMPL"
+
+
+async def test_runtime_state_rejects_before_dependency_queries() -> None:
+    work_packages = [wp(100, status=1, agent=11)]
+    poller, fake = await make_poller(work_packages=work_packages)
+
+    # An active run for this work package rejects it immediately.
+    plan = await poller.poll(active_run_work_package_ids=frozenset({100}))
+    assert plan.items == ()
+    skipped = {work_package.id: reason for work_package, reason in plan.skipped}
+    assert skipped[100] == "already has an active run"
+    assert relation_queries(fake) == []
+    assert work_package_queries(fake, "parent") == []
+    assert work_package_queries(fake, "id") == []
+
+    # A full global slot budget rejects it the same way.
+    fake.requests.clear()
+    plan = await poller.poll(global_slots_used=2)
+    assert plan.items == ()
+    skipped = {work_package.id: reason for work_package, reason in plan.skipped}
+    assert skipped[100] == "no global run slot available"
+    assert relation_queries(fake) == []
+
+
+def test_all_agents_busy_is_recognised_by_the_engine(tmp_path) -> None:
+    from op_agent_engine.engine import Engine
+    from tests.test_engine import make_settings
+
+    engine = Engine(make_config(), make_settings(tmp_path))
+    assert engine._idle_reason(0, {}) is None
+    assert engine._idle_reason(1, {"IMPL": 1}) == "all 1 run slot(s) in use"
+
+    roomy = Engine(
+        make_config(),
+        make_settings(
+            tmp_path, max_concurrent_runs=5, max_runs_per_agent=1
+        ),
+    )
+    assert roomy._idle_reason(1, {"IMPL": 1}) is None
+    assert (
+        roomy._idle_reason(2, {"IMPL": 1, "REVIEWER": 1})
+        == "every agent already has an active run"
+    )
+
+    paused = Engine(make_config(), make_settings(tmp_path, engine_paused=True))
+    assert paused._idle_reason(0, {}) == "engine is paused"
+
+
+async def test_dependency_queries_are_batched_and_sequential() -> None:
+    work_packages = [
+        wp(100, status=1, agent=11),
+        wp(101, status=1, agent=11),
+        wp(102, status=1, agent=11),
+        wp(500, status=2),
+        wp(501, status=2),
+        wp(502, status=2),
+    ]
+    relations = [
+        # 500 blocks 100, 501 blocks 101, 102 blocked by 502.
+        {"id": 1, "type": "blocks", "_embedded": {"from": {"id": 500}, "to": {"id": 100}}},
+        {"id": 2, "type": "blocks", "_embedded": {"from": {"id": 501}, "to": {"id": 101}}},
+        {"id": 3, "type": "blocked", "_embedded": {"from": {"id": 102}, "to": {"id": 502}}},
+    ]
+    poller, fake = await make_poller(
+        work_packages=work_packages, relations=relations
+    )
+    plan = await poller.poll()
+
+    assert sorted(
+        action.work_package.id for action in plan.blocked_actions
+    ) == [100, 101, 102]
+    assert {
+        (action.work_package.id, action.blockers[0].id)
+        for action in plan.blocked_actions
+    } == {(100, 500), (101, 501), (102, 502)}
+
+    # One relations query, one blocker lookup and one children query, however
+    # many candidates there are.
+    assert len(relation_queries(fake)) == 1
+    blocker_queries = work_package_queries(fake, "id")
+    assert len(blocker_queries) == 1
+    assert sorted(
+        json.loads(blocker_queries[0].url.params["filters"])[0]["id"]["values"]
+    ) == ["500", "501", "502"]
+    assert len(work_package_queries(fake, "parent")) == 1
+
+
+async def test_dependency_checks_use_their_own_timer() -> None:
+    now = [1000.0]
+    work_packages = [wp(105, status=8, agent=11), wp(500, status=2)]
+    relations = [
+        {"id": 1, "type": "blocks", "_embedded": {"from": {"id": 500}, "to": {"id": 105}}}
+    ]
+    poller, fake = await make_poller(
+        work_packages=work_packages,
+        relations=relations,
+        blocker_refresh_seconds=300,
+        clock=lambda: now[0],
+    )
+
+    assert (await poller.poll()).items == ()
+    assert len(relation_queries(fake)) == 1
+
+    # Inside the refresh window a poll costs no dependency requests at all.
+    now[0] += 60
+    plan = await poller.poll()
+    assert plan.items == ()
+    assert {work_package.id: reason for work_package, reason in plan.skipped}[105] == (
+        "has unfinished blocker(s) [500]"
+    )
+    assert len(relation_queries(fake)) == 1
+
+    # The blocker closes, but the cached snapshot is reused until the timer
+    # fires; the ticket is not dispatched on stale data either way.
+    work_packages[1]["_links"]["status"] = {"href": "/api/v3/statuses/7"}
+    assert (await poller.poll()).items == ()
+    assert len(relation_queries(fake)) == 1
+
+    # After the interval the snapshot is refreshed and the ticket unblocks.
+    now[0] += 300
+    plan = await poller.poll()
+    assert [item.work_package.id for item in plan.items] == [105]
+    assert len(relation_queries(fake)) == 2
+
+
+async def test_children_query_is_skipped_when_the_rule_is_off() -> None:
+    config = make_config(
+        openproject={"skip_work_packages_with_children": False}
+    )
+    work_packages = [wp(100, status=1, agent=11), wp(300, status=1, agent=11, parent=100)]
+    poller, fake = await make_poller(work_packages=work_packages, config=config)
+    plan = await poller.poll()
+
+    assert {item.work_package.id for item in plan.items} == {100, 300}
+    assert work_package_queries(fake, "parent") == []
 
 
 async def test_mis_scoped_agent_value_is_skipped_without_claiming() -> None:

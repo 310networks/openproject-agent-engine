@@ -894,6 +894,11 @@ class EngineSettings(BaseSettings):
     op_status_closed: str = "Closed"
 
     poll_interval_seconds: int = Field(default=60, gt=0)
+    # Relations, blocker statuses and children are checked on their own, slower
+    # timer because a parked Blocked ticket's dependencies rarely change. The
+    # checks stay batched and sequential, so one refresh costs a few requests
+    # regardless of how many tickets are waiting. 0 checks them on every poll.
+    blocker_refresh_seconds: int = Field(default=300, ge=0)
     max_concurrent_runs: int = Field(default=1, gt=0)
     max_runs_per_agent: int = Field(default=1, gt=0)
     max_rejections: int = Field(default=3, ge=0)

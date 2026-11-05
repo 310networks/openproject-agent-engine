@@ -1,19 +1,29 @@
 """Poller: query candidate work packages, filter eligibility, order dispatch.
 
-M2 is read-only: :meth:`Poller.poll` produces a :class:`DispatchPlan` and logs
-it. It performs no OpenProject mutations and does not claim work packages
-(claiming and execution are M3 and later).
+The poller is read-only: :meth:`Poller.poll` produces a :class:`DispatchPlan`
+and logs it. It performs no OpenProject mutations and does not claim work
+packages.
+
+Request budget matters: a poll runs every ``POLL_INTERVAL_SECONDS``, so every
+query here is paid repeatedly. The rules are therefore applied in cost order —
+runtime state (active runs, free slots) and the fields already in the candidate
+payload reject a ticket before any dependency query is issued — and dependency
+state (relations, blocker statuses, children) is fetched in one batched round
+that runs on its own, slower ``BLOCKER_REFRESH_SECONDS`` timer.
 """
 
 from __future__ import annotations
 
 import json
+import time
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
 from op_agent_engine.config import WorkflowConfig
 from op_agent_engine.eligibility import (
     EligibilityContext,
+    EligibilityResult,
     build_eligibility_context,
     evaluate_eligibility,
 )
@@ -33,6 +43,10 @@ CANDIDATE_STATUS_KEYS = ("new", "rejected", "ready_for_review", "blocked")
 # a human put into In Progress/In Testing is never touched.
 RECOVERY_STATUS_KEYS = ("in_progress", "in_testing")
 
+# OpenProject rejects very long filter values, and one batched request is only
+# useful while it stays a single round trip; both limits are far apart.
+DEPENDENCY_CHUNK_SIZE = 100
+
 
 @dataclass(frozen=True)
 class Blocker:
@@ -50,6 +64,20 @@ class BlockAction:
     work_package: WorkPackage
     agent_key: str
     blockers: tuple[Blocker, ...]
+
+
+@dataclass(frozen=True)
+class _DependencySnapshot:
+    """Cached dependency state for one candidate work package.
+
+    Refreshed in a batched round when ``checked_at`` is older than
+    ``BLOCKER_REFRESH_SECONDS``, so a parked ``Blocked`` ticket costs no
+    requests between refreshes.
+    """
+
+    blockers: tuple[Blocker, ...]
+    has_children: bool
+    checked_at: float
 
 
 @dataclass(frozen=True)
@@ -113,30 +141,78 @@ class Poller:
         *,
         max_concurrent_runs: int = 1,
         max_runs_per_agent: int = 1,
+        blocker_refresh_seconds: float = 0.0,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._client = client
         self._config = config
         self._resolution = resolution
         self._max_concurrent_runs = max_concurrent_runs
         self._max_runs_per_agent = max_runs_per_agent
+        # ``0`` checks dependencies on every poll (the pre-cache behaviour).
+        self._blocker_refresh_seconds = blocker_refresh_seconds
+        self._clock = clock
+        self._dependencies: dict[int, _DependencySnapshot] = {}
 
-    async def poll(self) -> DispatchPlan:
+    async def poll(
+        self,
+        *,
+        active_run_work_package_ids: frozenset[int] = frozenset(),
+        active_run_counts_by_agent: Mapping[str, int] | None = None,
+        global_slots_used: int = 0,
+    ) -> DispatchPlan:
+        """Build the dispatch plan for this poll.
+
+        The runtime snapshot turns the slot rules into a first-class filter: a
+        ticket whose agent is busy, which already has a run, or which cannot
+        run because every slot is taken is dropped before any dependency query
+        is issued. The scheduler still re-checks the rules against the store
+        when it claims, so the snapshot only saves work, never authority.
+        """
         ctx = await self._build_context()
         candidates = await self._fetch_candidates(ctx)
+        active_counts = active_run_counts_by_agent or {}
+
+        # Keep the cache bounded: tickets that are no longer candidates (status
+        # changed, moved away, closed) must not accumulate snapshots forever.
+        candidate_ids = {wp.id for wp in candidates}
+        self._dependencies = {
+            work_package_id: snapshot
+            for work_package_id, snapshot in self._dependencies.items()
+            if work_package_id in candidate_ids
+        }
+
         items: list[DispatchItem] = []
         skipped: list[tuple[WorkPackage, str]] = []
         blocked_actions: list[BlockAction] = []
+        pending: list[tuple[WorkPackage, EligibilityResult]] = []
         for wp in candidates:
-            # Pre-check with empty external data: cheap rules (1-5) first so we
-            # only pay for relation/child queries when they can matter.
-            pre = evaluate_eligibility(wp, ctx)
+            # Cheap rules first (project, type, status, AGENT, human assignee,
+            # scope) plus the runtime slot rules, so we only pay for dependency
+            # queries when they can change the decision.
+            pre = evaluate_eligibility(
+                wp,
+                ctx,
+                active_run_work_package_ids=active_run_work_package_ids,
+                active_run_counts_by_agent=active_counts,
+                global_slots_used=global_slots_used,
+            )
             if not pre.eligible:
                 self._log_skipped(wp, pre.reason or "ineligible", pre.scope_violation)
                 skipped.append((wp, pre.reason or "ineligible"))
                 continue
-            blockers = await self._fetch_blockers(wp)
+            pending.append((wp, pre))
+
+        # One sequential, batched dependency round for the tickets that need it;
+        # fresh snapshots are reused and cost nothing.
+        await self._refresh_dependencies([wp for wp, _ in pending])
+
+        for wp, pre in pending:
+            snapshot = self._dependencies[wp.id]
             unfinished = tuple(
-                blocker for blocker in blockers if blocker.status_key != "closed"
+                blocker
+                for blocker in snapshot.blockers
+                if blocker.status_key != "closed"
             )
             # A New ticket with an unfinished blocker is not merely skipped:
             # the engine records the dependency on the ticket and parks it in
@@ -151,14 +227,16 @@ class Poller:
                     )
                 )
                 continue
-            has_children = await self._fetch_has_children(wp)
             result = evaluate_eligibility(
                 wp,
                 ctx,
                 blocker_status_keys=[
-                    (blocker.id, blocker.status_key) for blocker in blockers
+                    (blocker.id, blocker.status_key) for blocker in snapshot.blockers
                 ],
-                has_children=has_children,
+                has_children=snapshot.has_children,
+                active_run_work_package_ids=active_run_work_package_ids,
+                active_run_counts_by_agent=active_counts,
+                global_slots_used=global_slots_used,
             )
             if not result.eligible:
                 self._log_skipped(
@@ -300,66 +378,122 @@ class Poller:
                 )
         return candidates
 
-    async def _fetch_blockers(self, wp: WorkPackage) -> list[Blocker]:
-        relations = await self._fetch_relations_for(wp.id)
-        blocker_ids: set[int] = set()
-        for relation in relations:
-            relation_type = relation.get("type")
-            from_id, to_id = _relation_endpoints(relation)
-            if relation_type == "blocks" and to_id == wp.id and from_id is not None:
-                blocker_ids.add(from_id)
-            elif relation_type == "blocked" and from_id == wp.id and to_id is not None:
-                blocker_ids.add(to_id)
+    # -- dependency refresh ----------------------------------------------
+
+    def _is_fresh(self, work_package_id: int, now: float) -> bool:
+        snapshot = self._dependencies.get(work_package_id)
+        if snapshot is None or self._blocker_refresh_seconds <= 0:
+            return False
+        return now - snapshot.checked_at < self._blocker_refresh_seconds
+
+    async def _refresh_dependencies(self, work_packages: list[WorkPackage]) -> None:
+        """Refresh relations, blocker statuses and children in one round.
+
+        The queries are batched per chunk and issued sequentially, never in
+        parallel, so a poll produces a short, predictable burst instead of one
+        request per ticket.
+        """
+        now = self._clock()
+        stale = [wp for wp in work_packages if not self._is_fresh(wp.id, now)]
+        if not stale:
+            return
+        stale_ids = {wp.id for wp in stale}
+        relations = await self._fetch_relations_for_many(sorted(stale_ids))
+        blockers_by_wp = _blockers_by_work_package(relations, stale_ids)
+        blocker_ids = sorted(
+            {
+                blocker_id
+                for blocker_ids_for_wp in blockers_by_wp.values()
+                for blocker_id in blocker_ids_for_wp
+            }
+        )
+        blocker_details = await self._fetch_blocker_details(blocker_ids)
+        parent_ids = await self._fetch_work_packages_with_children(
+            sorted(stale_ids)
+        )
+        for wp in stale:
+            self._dependencies[wp.id] = _DependencySnapshot(
+                blockers=tuple(
+                    blocker_details[blocker_id]
+                    for blocker_id in blockers_by_wp.get(wp.id, ())
+                    if blocker_id in blocker_details
+                ),
+                has_children=wp.id in parent_ids,
+                checked_at=now,
+            )
+
+    async def _fetch_relations_for_many(
+        self, work_package_ids: list[int]
+    ) -> list[dict[str, Any]]:
+        relations: list[dict[str, Any]] = []
+        for chunk in _chunks(work_package_ids, DEPENDENCY_CHUNK_SIZE):
+            filters = [
+                {
+                    "involved": {
+                        "operator": "=",
+                        "values": [str(work_package_id) for work_package_id in chunk],
+                    }
+                }
+            ]
+            relations.extend(
+                await self._client.get_collection(
+                    "/api/v3/relations", params={"filters": json.dumps(filters)}
+                )
+            )
+        return relations
+
+    async def _fetch_blocker_details(
+        self, blocker_ids: list[int]
+    ) -> dict[int, Blocker]:
+        """Resolve every blocker's display id and current status in one query."""
+        details: dict[int, Blocker] = {}
         if not blocker_ids:
-            return []
+            return details
         status_by_id = {
             status.id: key for key, status in self._resolution.statuses.items()
         }
-        result: list[Blocker] = []
-        for blocker_id in sorted(blocker_ids):
-            entry = await self._fetch_work_package(blocker_id)
-            if entry is None:
-                continue
-            parsed = parse_work_package(
-                entry, self._resolution.agent_field.field_id, {}
-            )
-            result.append(
-                Blocker(
-                    id=blocker_id,
+        for chunk in _chunks(blocker_ids, DEPENDENCY_CHUNK_SIZE):
+            filters = [
+                {"id": {"operator": "=", "values": [str(item) for item in chunk]}}
+            ]
+            async for element in self._client.iter_collection(
+                "/api/v3/work_packages", params={"filters": json.dumps(filters)}
+            ):
+                parsed = parse_work_package(
+                    element, self._resolution.agent_field.field_id, {}
+                )
+                details[parsed.id] = Blocker(
+                    id=parsed.id,
                     display_id=parsed.display_id,
                     status_key=status_by_id.get(parsed.status_id, "unknown"),
                 )
-            )
-        return result
+        return details
 
-    async def _fetch_has_children(self, wp: WorkPackage) -> bool:
-        filters = [
-            {"project": {"operator": "=", "values": [str(wp.project_id)]}},
-            {"parent": {"operator": "=", "values": [str(wp.id)]}},
-        ]
-        payload = await self._client.get_json(
-            "/api/v3/work_packages",
-            params={"filters": json.dumps(filters), "pageSize": 1},
-        )
-        embedded = payload.get("_embedded")
-        elements = embedded.get("elements") if isinstance(embedded, dict) else None
-        return bool(elements)
-
-    async def _fetch_relations_for(self, work_package_id: int) -> list[dict[str, Any]]:
-        filters = [{"involved": {"operator": "=", "values": [str(work_package_id)]}}]
-        return await self._client.get_collection(
-            "/api/v3/relations", params={"filters": json.dumps(filters)}
-        )
-
-    async def _fetch_work_package(self, work_package_id: int) -> dict[str, Any] | None:
-        try:
-            payload = await self._client.get_json(
-                f"/api/v3/work_packages/{work_package_id}"
-            )
-            return payload if isinstance(payload, dict) else None
-        except Exception:  # a missing blocker must not kill the poll
-            logger.warning("cannot fetch work package %s", work_package_id)
-            return None
+    async def _fetch_work_packages_with_children(
+        self, work_package_ids: list[int]
+    ) -> set[int]:
+        """Ids among ``work_package_ids`` that currently have a child."""
+        if not self._config.openproject.skip_work_packages_with_children:
+            return set()
+        parents_with_children: set[int] = set()
+        for chunk in _chunks(work_package_ids, DEPENDENCY_CHUNK_SIZE):
+            filters = [
+                {
+                    "parent": {
+                        "operator": "=",
+                        "values": [str(item) for item in chunk],
+                    }
+                }
+            ]
+            async for element in self._client.iter_collection(
+                "/api/v3/work_packages", params={"filters": json.dumps(filters)}
+            ):
+                links = element.get("_links")
+                parent = links.get("parent") if isinstance(links, dict) else None
+                parent_id = _href_id(parent)
+                if parent_id is not None:
+                    parents_with_children.add(parent_id)
+        return parents_with_children
 
     # -- logging ---------------------------------------------------------
 
@@ -394,6 +528,37 @@ class Poller:
 # ---------------------------------------------------------------------------
 # HAL helpers
 # ---------------------------------------------------------------------------
+
+
+def _chunks(values: list[int], size: int) -> list[list[int]]:
+    return [values[index : index + size] for index in range(0, len(values), size)]
+
+
+def _blockers_by_work_package(
+    relations: Sequence[dict[str, Any]], blocked_ids: set[int]
+) -> dict[int, list[int]]:
+    """Map each candidate id to the ids of the work packages blocking it.
+
+    Covers both relation directions: ``A blocks B`` and ``B blocked by A``
+    mean the same thing.
+    """
+    blockers: dict[int, set[int]] = {}
+    for relation in relations:
+        relation_type = relation.get("type")
+        from_id, to_id = _relation_endpoints(relation)
+        if from_id is None or to_id is None:
+            continue
+        if relation_type == "blocks":
+            blocked, blocker = to_id, from_id
+        elif relation_type == "blocked":
+            blocked, blocker = from_id, to_id
+        else:
+            continue
+        if blocked in blocked_ids:
+            blockers.setdefault(blocked, set()).add(blocker)
+    return {
+        blocked: sorted(blocker_ids) for blocked, blocker_ids in blockers.items()
+    }
 
 
 def _relation_endpoints(

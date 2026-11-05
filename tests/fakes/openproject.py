@@ -649,6 +649,11 @@ class FakeOpenProject:
         self, wp: dict[str, JSON], conditions: dict[str, set[str]]
     ) -> bool:
         for key, wanted in conditions.items():
+            if key == "id":
+                # The engine batches blocker lookups with an id filter.
+                if str(wp.get("id")) in wanted:
+                    continue
+                return False
             actual = _href_id(_link(wp, key))
             if actual is None or str(actual) not in wanted:
                 return False
