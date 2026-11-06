@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from op_agent_engine import workspace as workspace_module
 from op_agent_engine.workspace import (
     WORKTREE_ARTEFACT_DIR_NAME,
     GitError,
@@ -21,6 +22,7 @@ from op_agent_engine.workspace import (
     cleanup_workspace,
     clone_url_for,
     prepare_workspace,
+    summarise_git_stderr,
 )
 
 # -- local git helpers --------------------------------------------------------
@@ -230,11 +232,177 @@ async def test_clone_failure_raises_git_error(
         )
 
 
+async def test_clone_failure_leaves_no_partial_clone(
+    tmp_path: Path, git_repo: GitFixture
+) -> None:
+    root = _workspace_root(tmp_path)
+    repo_dir = root / "fe" / "repositories" / "thing"
+
+    with pytest.raises(GitError):
+        await _prepare(root, git_repo, clone_url="file:///nonexistent/repo.git")
+
+    assert not repo_dir.exists()
+
+
+async def test_a_killed_clone_is_discarded(
+    tmp_path: Path, git_repo: GitFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A killed clone leaves .git without an index; the retry must start clean."""
+    root = _workspace_root(tmp_path)
+    repo_dir = root / "fe" / "repositories" / "thing"
+
+    async def killed_clone(
+        args: list[str],
+        *,
+        cwd: Path | None = None,
+        timeout: float = workspace_module.GIT_TIMEOUT_SECONDS,
+    ) -> str:
+        (repo_dir / ".git").mkdir(parents=True)
+        (repo_dir / ".git" / "index.lock").write_text("", encoding="utf-8")
+        raise GitError(args, -1, f"timed out after {timeout:g} seconds")
+
+    monkeypatch.setattr(workspace_module, "run_git", killed_clone)
+
+    with pytest.raises(GitError, match="timed out after"):
+        await _prepare(root, git_repo)
+
+    # Leaving the directory behind would make every retry take the incremental
+    # path and fail on the half-written checkout.
+    assert not repo_dir.exists()
+
+
+async def test_clone_gets_its_own_longer_timeout(
+    tmp_path: Path, git_repo: GitFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    timeouts: list[float] = []
+    real_run_git = workspace_module.run_git
+
+    async def spy(
+        args: list[str],
+        *,
+        cwd: Path | None = None,
+        timeout: float = workspace_module.GIT_TIMEOUT_SECONDS,
+    ) -> str:
+        if args and args[0] == "clone":
+            timeouts.append(timeout)
+        return await real_run_git(args, cwd=cwd, timeout=timeout)
+
+    monkeypatch.setattr(workspace_module, "run_git", spy)
+
+    await _prepare(_workspace_root(tmp_path), git_repo)
+
+    assert timeouts == [workspace_module.CLONE_TIMEOUT_SECONDS]
+    assert (
+        workspace_module.CLONE_TIMEOUT_SECONDS
+        > workspace_module.GIT_TIMEOUT_SECONDS
+    )
+
+
+async def test_prepare_workspace_reclones_a_clone_without_an_index(
+    tmp_path: Path, git_repo: GitFixture
+) -> None:
+    root = _workspace_root(tmp_path)
+    first = await _prepare(root, git_repo)
+    clone = first.base_repo_dir
+    # What a killed clone leaves: .git, a stale lock and no index.
+    (clone / ".git" / "index").unlink()
+    (clone / ".git" / "index.lock").write_text("", encoding="utf-8")
+
+    second = await _prepare(root, git_repo)
+
+    assert (second.base_repo_dir / ".git" / "index").is_file()
+    assert not (second.base_repo_dir / ".git" / "index.lock").exists()
+    assert (second.repo_dir / "README.md").is_file()
+
+
+async def test_prepare_workspace_removes_a_stale_index_lock(
+    tmp_path: Path, git_repo: GitFixture
+) -> None:
+    root = _workspace_root(tmp_path)
+    first = await _prepare(root, git_repo)
+    clone = first.base_repo_dir
+    # A checkout died while holding the lock and left the clone on a branch, so
+    # this preparation has to check out again.
+    _git(["checkout", "--quiet", "-B", git_repo.default_branch], cwd=clone)
+    (clone / ".git" / "index.lock").write_text("", encoding="utf-8")
+
+    second = await _prepare(root, git_repo)
+
+    assert not (clone / ".git" / "index.lock").exists()
+    head = _git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=clone).strip()
+    assert head == "HEAD"
+    assert (second.repo_dir / "README.md").is_file()
+
+
 def test_clone_url_for() -> None:
     assert clone_url_for("acme/thing") == "https://github.com/acme/thing.git"
     assert clone_url_for("acme/thing", "tok123") == (
         "https://x-access-token:tok123@github.com/acme/thing.git"
     )
+
+
+# -- stderr summarising -------------------------------------------------------
+
+
+# The real shape of a failed `git worktree add` on a 3k-file repository: a
+# progress line per percent, carriage-return separated, then the fatal error.
+_PROGRESS_STDERR = (
+    "Preparing worktree (resetting branch 'op-8-191'; was at 17150fe)\n"
+    + "".join(f"Updating files: {percent}% ({percent * 32}/3285)\r" for percent in range(1, 100))
+    + "fatal: unable to write new index file: No space left on device\n"
+)
+
+
+def test_git_error_keeps_the_fatal_line_after_progress_output() -> None:
+    error = GitError(["worktree", "add", "--force"], 128, _PROGRESS_STDERR)
+    message = str(error)
+
+    assert "failed (128)" in message
+    assert "No space left on device" in message
+    assert "Preparing worktree" in message
+    assert "Updating files" not in message
+    assert "\r" not in message
+
+
+def test_git_error_excerpt_keeps_the_tail_of_a_long_stderr() -> None:
+    stderr = "".join(f"error: line {index}\n" for index in range(400))
+    stderr += "fatal: the real reason\n"
+
+    message = str(GitError(["fetch"], 1, stderr))
+
+    assert "fatal: the real reason" in message
+    assert len(message) < 800
+
+
+def test_git_error_without_stderr_says_so() -> None:
+    assert "(no stderr)" in str(GitError(["status"], 128, "  \n\r\n"))
+
+
+def test_git_error_redacts_credentials_from_stderr() -> None:
+    # git-lfs echoes the remote URL, so a failed smudge prints the PAT.
+    stderr = (
+        "Error downloading object: Assets/Audio/hit.wav (192099d): Smudge error: "
+        "batch response: Fatal error: Server error from HTTP 502\n"
+        "https://x-access-token:github_pat_11B75EFXY0AfpvRCKyEjry_abc@github.com/"
+        "310networks/jungle-gym.git/info/lfs/objects/batch\n"
+        "https://x-access-token:ghp_abcdefghijklmnopqrstuvwxyz0123456789@github.com/x/y\n"
+    )
+
+    message = str(GitError(["worktree", "add"], 128, stderr))
+
+    assert "github_pat_11B75EFXY" not in message
+    assert "ghp_abcdefghij" not in message
+    assert "HTTP 502" in message
+    assert "https://***@github.com/" in message
+
+
+def test_summarise_falls_back_to_raw_output_when_only_progress() -> None:
+    # Never report "nothing" when git did write something: keep the last line so
+    # a stuck-looking failure still shows where it got to.
+    text = summarise_git_stderr("Updating files: 42% (1380/3285)\r")
+
+    assert text == "Updating files: 42% (1380/3285)"
+
 
 async def test_runs_use_separate_worktrees(
     tmp_path: Path, git_repo: GitFixture
