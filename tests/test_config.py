@@ -236,15 +236,31 @@ def test_per_agent_models_do_not_need_a_shared_default() -> None:
     assert config.model_for("REVIEWER") is None
 
 
-def test_models_must_share_one_provider() -> None:
-    with pytest.raises(ConfigError, match="one model provider per deployment"):
-        WorkflowConfig.from_settings(
-            deployment_settings(
-                agent_model="openrouter/deepseek/deepseek-v4.1-flash-1017",
-                agent_model_reviewer="anthropic/claude-sonnet-4-5",
-            ),
-            environ=dict(DEPLOYMENT_ENV),
-        )
+def test_per_agent_model_may_switch_provider() -> None:
+    config = WorkflowConfig.from_settings(
+        deployment_settings(
+            agent_model="openrouter/deepseek/deepseek-v4.1-flash-1017",
+            agent_model_designer="anthropic/claude-sonnet-4-5",
+        ),
+        environ=dict(DEPLOYMENT_ENV),
+    )
+
+    # The default provider is the fallback for every agent without an override.
+    assert config.model_for("FRONTEND") == "openrouter/deepseek/deepseek-v4.1-flash-1017"
+    assert config.model_for("LEAD_DESIGNER") == "anthropic/claude-sonnet-4-5"
+    assert config.providers_in_use() == {
+        "openrouter": [
+            "FRONTEND",
+            "BACKEND",
+            "VFX",
+            "AUDIO",
+            "REVIEWER",
+        ],
+        "anthropic": ["LEAD_DESIGNER"],
+    }
+    summary = "\n".join(config.summary())
+    assert "model providers: openrouter (FRONTEND" in summary
+    assert "anthropic (LEAD_DESIGNER)" in summary
 
 
 def test_agent_model_variables_cover_the_team() -> None:

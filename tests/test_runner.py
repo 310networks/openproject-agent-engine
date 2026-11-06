@@ -135,6 +135,7 @@ def test_build_request_forwards_provider_credentials(
 ) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
     monkeypatch.setenv("GH_TOKEN", "ghp-test")
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", "/run/pi-agent")
     monkeypatch.setenv("OP_ENGINE_TOKEN", "engine-secret")
 
     runner = GenericRunner(_config())
@@ -153,6 +154,8 @@ def test_build_request_forwards_provider_credentials(
     # pi reads its key and gh credential from the environment.
     assert request.env["ANTHROPIC_API_KEY"] == "sk-ant-test"
     assert request.env["GH_TOKEN"] == "ghp-test"
+    # check-config reads auth.json from the same agent directory a run uses.
+    assert request.env["PI_CODING_AGENT_DIR"] == "/run/pi-agent"
     # The engine's own OpenProject token is not forwarded to the agent.
     assert "OP_ENGINE_TOKEN" not in request.env
 
