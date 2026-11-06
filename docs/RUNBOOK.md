@@ -151,6 +151,31 @@ work_package_id = <id>` is only needed when the history cannot be read (the
 engine logs a warning and leaves the counter alone) or when the counter has to
 be cleared without moving the ticket.
 
+### `workspace_error` from an interrupted clone
+
+A `workspace_error` before the agent starts means the clone under
+`ws/<agent>/repositories/<repo>/` could not be prepared. Two shapes are worth
+recognising:
+
+| Escalation detail | Cause |
+|---|---|
+| `Unable to create '.../.git/index.lock': File exists` | a git command was killed while holding the index lock (engine restart, container stop, clone timeout) |
+| checkout failures with `Updating files: N%` only, or a `.git` without `.git/index` | the clone was killed before its checkout finished; typical for the first clone of a repository that stores assets in Git LFS |
+
+Both are handled by the engine now: a leftover `index.lock` is removed at the
+start of every preparation, a clone without `.git/index` is deleted and cloned
+from scratch, and a failed clone never leaves its half-written directory
+behind. Cloning also gets its own timeout (`CLONE_TIMEOUT_SECONDS`, 30 min)
+instead of the 300 s per-command timeout, because it downloads the whole
+history and every LFS asset in one go.
+
+If the same clone fails repeatedly, the cause is outside the ticket (network,
+LFS 502s, repository permissions for the agent token). Read the run's
+`stderr.log` and `meta.json` before requeueing: the error excerpt keeps the
+`fatal:` line (progress output is dropped) and redacts the token, so it is safe
+to paste into a comment. Requeueing without fixing the cause only consumes the
+crash budget.
+
 ### Photosensitivity-policy conflicts
 
 The VFX standard delegates effect-specific photosensitivity limits and approved

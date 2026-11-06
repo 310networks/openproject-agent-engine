@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import re
 import shutil
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -49,8 +50,16 @@ from op_agent_engine.logging import get_logger
 
 logger = get_logger(__name__)
 
-#: Timeout for a single git command (clone of a large repo included).
+#: Timeout for a single git command.
 GIT_TIMEOUT_SECONDS = 300.0
+
+#: Timeout for the initial clone. Cloning is not incremental: it downloads the
+#: whole history and, for a repository that stores assets in Git LFS, every
+#: asset. The per-command timeout above is therefore too short for a large
+#: repository, and a clone killed half-way through its checkout leaves a
+#: directory without ``.git/index`` that no later git command can repair. 30
+#: minutes is generous for the few-GiB repositories this engine works on.
+CLONE_TIMEOUT_SECONDS = 1800.0
 
 #: Directory under a run directory that holds a failed run's worktree state.
 WORKTREE_ARTEFACT_DIR_NAME = "worktree"
@@ -67,6 +76,65 @@ CAPTURE_MAX_TOTAL_BYTES = 20 * 1024 * 1024
 #: fill the volume.
 DEFAULT_FAILED_WORKTREE_MAX_BYTES = 2 * 1024 * 1024 * 1024
 
+#: Longest stderr excerpt kept in a :class:`GitError` message (characters).
+ERROR_EXCERPT_CHARS = 500
+
+#: Prefixes of git's progress lines. Git writes them to stderr, separated by
+#: carriage returns, and they are long enough to fill the excerpt on their own
+#: (``git worktree add`` on a 3k-file repository emits one per percent) so the
+#: ``fatal:`` line that explains the failure would be cut off.
+_PROGRESS_PREFIXES = (
+    "Updating files:",
+    "Checking out files:",
+    "Receiving objects:",
+    "Resolving deltas:",
+    "Counting objects:",
+    "Compressing objects:",
+    "Enumerating objects:",
+    "Filtering content:",
+    "Checking connectivity",
+    "remote: Compressing objects:",
+    "remote: Counting objects:",
+    "remote: Enumerating objects:",
+    "remote: Receiving objects:",
+    "remote: Resolving deltas:",
+)
+
+#: Credentials that must never reach a log line or a work-package comment. Git
+#: and git-lfs echo the remote URL, so a failed fetch/smudge prints the token
+#: (``https://x-access-token:ghp_...@github.com/...``). The message below is
+#: posted to OpenProject, so redaction is not optional.
+_SECRET_PATTERNS = (
+    # userinfo in any URL: keep the scheme, drop the credentials
+    (re.compile(r"(?P<scheme>https?://)[^/\s:@]+:[^/\s@]+@"), r"\g<scheme>***@"),
+    (re.compile(r"github_pat_[A-Za-z0-9_]+"), "github_pat_***"),
+    (re.compile(r"gh[pousr]_[A-Za-z0-9]{16,}"), "gh*_***"),
+)
+
+
+def redact_secrets(text: str) -> str:
+    """Replace credentials embedded in *text* with a placeholder."""
+    for pattern, replacement in _SECRET_PATTERNS:
+        text = pattern.sub(replacement, text)
+    return text
+
+
+def summarise_git_stderr(stderr: str) -> str:
+    """Return the part of *stderr* that explains why a git command failed.
+
+    Progress output is dropped, credentials are redacted, the remaining lines
+    are joined into one line and an overlong excerpt keeps its **tail**,
+    because git prints the ``fatal:``/``error:`` line after any progress
+    output.
+    """
+    lines = [line.strip() for line in re.split(r"[\r\n]+", stderr)]
+    lines = [line for line in lines if line]
+    meaningful = [line for line in lines if not line.startswith(_PROGRESS_PREFIXES)]
+    text = redact_secrets(" | ".join(meaningful or lines))
+    if len(text) > ERROR_EXCERPT_CHARS:
+        text = "…" + text[-ERROR_EXCERPT_CHARS:]
+    return text
+
 
 class WorkspaceError(Exception):
     """Workspace preparation failed; the run cannot start."""
@@ -79,7 +147,7 @@ class GitError(WorkspaceError):
         self.git_args = args
         self.returncode = returncode
         self.stderr = stderr
-        detail = stderr.strip()[:500] or "(no stderr)"
+        detail = summarise_git_stderr(stderr) or "(no stderr)"
         super().__init__(f"git {' '.join(args)} failed ({returncode}): {detail}")
 
 
@@ -111,6 +179,7 @@ async def run_git(
     args: list[str],
     *,
     cwd: Path | None = None,
+    timeout: float = GIT_TIMEOUT_SECONDS,
 ) -> str:
     """Run one git command and return its stdout; raise :class:`GitError`."""
     try:
@@ -127,13 +196,13 @@ async def run_git(
         raise GitError(args, -1, str(error)) from error
     try:
         _stdout, stderr = await asyncio.wait_for(
-            process.communicate(), timeout=GIT_TIMEOUT_SECONDS
+            process.communicate(), timeout=timeout
         )
     except TimeoutError as error:
         process.kill()
         with contextlib.suppress(BaseException):
             await process.wait()
-        raise GitError(args, -1, "timed out") from error
+        raise GitError(args, -1, f"timed out after {timeout:g} seconds") from error
     returncode = process.returncode
     if returncode is None or returncode != 0:
         raise GitError(
@@ -200,6 +269,79 @@ async def _remote_branch_exists(repo_dir: Path, branch: str) -> bool:
         return False
 
 
+def _clone_is_usable(repo_dir: Path) -> bool:
+    """Whether *repo_dir* is a clone that incremental git commands can use.
+
+    A finished clone always has ``.git/index``: ``git clone`` writes it when it
+    checks the worktree out. The directory left behind by a killed clone has
+    ``.git`` but no index, because the checkout never got that far.
+    """
+    return (repo_dir / ".git" / "index").is_file()
+
+
+def _discard_partial_clone(repo_dir: Path) -> None:
+    """Remove a half-written clone so the next attempt starts from scratch.
+
+    Deleting the directory is the only reliable repair. The objects and the
+    LFS cache of an incomplete checkout are worthless, and keeping ``.git``
+    makes every later preparation take the incremental path, where it fails on
+    the half-written state (``.git/index`` missing, ``.git/index.lock`` left
+    behind by the killed checkout) until the crash retry cap parks the ticket
+    for a failure the ticket cannot possibly cause.
+    """
+    if not repo_dir.exists() or repo_dir.is_symlink():
+        return
+    logger.warning(
+        "discarding the partial clone %s; the next attempt clones from scratch",
+        repo_dir,
+        extra={"repo_dir": str(repo_dir)},
+    )
+    shutil.rmtree(repo_dir, ignore_errors=True)
+
+
+async def _clone_into(repo_dir: Path, clone_url: str) -> None:
+    """Clone *clone_url* into *repo_dir*, never keeping a failed attempt."""
+    try:
+        await run_git(
+            ["clone", "--quiet", clone_url, str(repo_dir)],
+            timeout=CLONE_TIMEOUT_SECONDS,
+        )
+    except GitError:
+        _discard_partial_clone(repo_dir)
+        raise
+
+
+def _discard_stale_index_lock(repo_dir: Path) -> None:
+    """Remove a leftover ``index.lock`` from the shared clone.
+
+    Preparation is serialized per agent workspace, the engine keeps one clone
+    per agent and only preparation writes the shared clone's index (agent runs
+    write their own worktree's index). A lock that is already present when a
+    run starts therefore cannot belong to a live git command: it is what a
+    killed checkout leaves behind. Git refuses every later write with
+    "Unable to create '.git/index.lock': File exists", which would otherwise
+    park the work package after the crash retry cap.
+    """
+    lock = repo_dir / ".git" / "index.lock"
+    try:
+        lock.unlink()
+    except FileNotFoundError:
+        return
+    except OSError as error:
+        logger.warning(
+            "cannot remove the stale index lock %s: %s",
+            lock,
+            error,
+            extra={"repo_dir": str(repo_dir)},
+        )
+        return
+    logger.warning(
+        "removed the stale index lock %s left by an interrupted git command",
+        lock,
+        extra={"repo_dir": str(repo_dir)},
+    )
+
+
 async def prepare_workspace(
     *,
     root: Path,
@@ -233,7 +375,9 @@ async def prepare_workspace(
     repo_dir = workspace_dir / "repositories" / clone_dir
     branch = f"op-{project_id}-{work_package_id}"
 
-    if not (repo_dir / ".git").exists():
+    if not _clone_is_usable(repo_dir):
+        if (repo_dir / ".git").exists():
+            _discard_partial_clone(repo_dir)
         repo_dir.parent.mkdir(parents=True, exist_ok=True)
         logger.info(
             "cloning %s into %s",
@@ -241,15 +385,11 @@ async def prepare_workspace(
             repo_dir,
             extra={"github_repo": github_repo, "repo_dir": str(repo_dir)},
         )
-        await run_git(
-            [
-                "clone",
-                "--quiet",
-                clone_url or clone_url_for(github_repo, gh_token),
-                str(repo_dir),
-            ]
+        await _clone_into(
+            repo_dir, clone_url or clone_url_for(github_repo, gh_token)
         )
     else:
+        _discard_stale_index_lock(repo_dir)
         if gh_token is not None and clone_url is None:
             # Keep the stored remote credential in step with the configured
             # token. Reviewer and implementer workspaces are separate, so this
