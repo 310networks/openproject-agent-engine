@@ -51,7 +51,10 @@ push to and merge in.
    ```
 
 3. **Run the interactive setup.** It asks for the OpenProject URL and token,
-   the six agent tokens, the model and the provider key, and writes `.env`.
+   the six agent tokens, the default model, optional per-agent models (each may
+   use another provider) and the credentials of every provider in use, and
+   writes `.env`. For a ChatGPT/Codex subscription it pauses and prints the
+   exact one-time `pi /login` command before validating the configuration.
    Re-running is safe. It pulls the current image first, so it also creates
    the agent users added by an upgrade; the next start syncs their standards
    into the existing workspace volume:
@@ -96,10 +99,10 @@ OP_AGENT_ENGINE_TAG=<version>
 | `OP_BASE_URL` | your OpenProject URL |
 | `OP_PROJECT` | project identifier: one, a comma list, or `*` for every project that has `GIT_REPO` |
 | `OP_ENGINE_TOKEN` | API token of the runtime user (administrator) |
-| `AGENT_MODEL` | model for every agent as `<provider>/<model>`; the provider selects the credential variable |
-| `AGENT_MODEL_<AGENT>` | optional per-agent override: `AGENT_MODEL_FRONTEND`, `..._BACKEND`, `..._DESIGNER`, `..._VFX`, `..._AUDIO`, `..._REVIEWER` |
+| `AGENT_MODEL` | default model for every agent as `<provider>/<model>`; the provider selects the credential variable |
+| `AGENT_MODEL_<AGENT>` | optional per-agent override: `AGENT_MODEL_FRONTEND`, `..._BACKEND`, `..._DESIGNER`, `..._VFX`, `..._AUDIO`, `..._REVIEWER`; may name another provider |
 | `OP_TOKEN_FRONTEND` / `_BACKEND` / `_DESIGNER` / `_VFX` / `_AUDIO` / `_REVIEWER` | one token per agent account |
-| `OPENROUTER_API_KEY` (or another provider key) | model provider credential |
+| provider credential variables | one set per provider in use (for example `OPENROUTER_API_KEY` and `ANTHROPIC_OAUTH_TOKEN`) |
 | `LLAMA_BASE_URL` | local llama.cpp router URL, instead of a hosted provider |
 | `GH_TOKEN` | GitHub token used to clone, push and look up pull requests |
 

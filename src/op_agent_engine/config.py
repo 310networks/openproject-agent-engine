@@ -598,10 +598,25 @@ class WorkflowConfig(BaseModel):
 
         An agent's own ``model`` wins over the default declared on its runner.
         ``None`` means pi's own default is used and ``{model}`` (and its flag)
-        is dropped from the runner argv.
+        is dropped from the runner argv. The model reference also carries the
+        agent's provider, so a per-agent model can switch provider.
         """
         agent = self.agents[agent_key]
         return agent.model or self.runners[agent.runner].model
+
+    def providers_in_use(self) -> dict[str, list[str]]:
+        """Provider id -> agent keys that use it, in team order.
+
+        The provider is the prefix of each agent's model reference. Agents
+        without a model use pi's own default and are not listed.
+        """
+        providers: dict[str, list[str]] = {}
+        for key in self.agents:
+            model = self.model_for(key)
+            provider = provider_of(model)
+            if provider is not None:
+                providers.setdefault(provider, []).append(key)
+        return providers
 
     def summary(self) -> list[str]:
         """Human-readable summary used by ``check-config``."""
@@ -628,6 +643,15 @@ class WorkflowConfig(BaseModel):
             f"repo attribute: {GIT_REPO_FIELD} "
             f"(default branch: {self.repo_discovery.default_branch or 'auto'})"
         )
+        providers = self.providers_in_use()
+        if providers:
+            lines.append(
+                "model providers: "
+                + ", ".join(
+                    f"{provider} ({', '.join(keys)})"
+                    for provider, keys in providers.items()
+                )
+            )
         lines.append(f"agents: {len(self.agents)}")
         for key, agent in self.agents.items():
             model = agent.model or self.runners[agent.runner].model
@@ -721,20 +745,6 @@ class WorkflowConfig(BaseModel):
 
         assert settings.op_base_url is not None
         assert settings.op_project is not None
-
-        providers = {
-            provider
-            for model in settings.configured_models()
-            if (provider := provider_of(model)) is not None
-        }
-        if len(providers) > 1:
-            raise ConfigError(
-                "one model provider per deployment: AGENT_MODEL and the "
-                "AGENT_MODEL_<AGENT> overrides use "
-                + ", ".join(sorted(providers))
-                + " (each agent may use a different model, but they must all "
-                "share one provider)"
-            )
 
         identifiers = _project_identifiers(settings.op_project)
         single = len(identifiers) == 1 and identifiers[0] != "*"
@@ -862,9 +872,9 @@ class EngineSettings(BaseSettings):
     op_engine_token: SecretStr | None = None
     op_provision_token: SecretStr | None = None
     op_project: str | None = None
-    # Model for every agent as ``<provider>/<model>``; the per-agent overrides
-    # win for their agent. All of them share one provider, because the
-    # deployment stores one provider key.
+    # Default model for every agent as ``<provider>/<model>``. A per-agent
+    # override wins for its agent and may name a different provider; the
+    # deployment then needs the credentials of every provider in use.
     agent_model: str | None = None
     agent_model_frontend: str | None = None
     agent_model_backend: str | None = None
@@ -985,8 +995,8 @@ class EngineSettings(BaseSettings):
             )
 
 #: Per-agent model overrides. ``AGENT_MODEL_<AGENT>`` wins over ``AGENT_MODEL``
-#: for that agent; the deployment still has one provider, so the override only
-#: changes the model id.
+#: for that agent. The value is ``<provider>/<model>`` like the default, so an
+#: override may keep the default provider or switch to another one.
 AGENT_MODEL_VARS: dict[str, str] = {
     "FRONTEND": "AGENT_MODEL_FRONTEND",
     "BACKEND": "AGENT_MODEL_BACKEND",

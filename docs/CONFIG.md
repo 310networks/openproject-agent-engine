@@ -98,11 +98,26 @@ means joining them yourself.
 `AGENT_MODEL_VFX`, `AGENT_MODEL_AUDIO`, `AGENT_MODEL_REVIEWER`); without one,
 the agent uses `AGENT_MODEL`. A
 deployment can therefore name a model per agent and leave `AGENT_MODEL` unset
-entirely — an agent with neither uses pi's own default. The deployment
-still has **one provider**, because it stores one provider key: a model
-override may name a different model but not a different provider.
-`check-config` rejects a mix (`one model provider per deployment`), and
-`agent-init.sh` asks for the provider once and prefixes every model with it.
+entirely — an agent with neither uses pi's own default.
+
+An override may also switch provider, because the provider is the prefix of
+the same model reference. `AGENT_MODEL` is the default (and its provider is the
+fallback provider):
+
+```dotenv
+# Default: OpenRouter for every agent.
+AGENT_MODEL=openrouter/deepseek/deepseek-v4.1-flash-1017
+OPENROUTER_API_KEY=...
+
+# leadDesigner uses an Anthropic subscription instead.
+AGENT_MODEL_DESIGNER=anthropic/claude-sonnet-4-5
+ANTHROPIC_OAUTH_TOKEN=...
+```
+
+Each provider in use needs its own credential variable; `check-config` checks
+all of them and names the ones that are missing. `agent-init.sh` asks for a
+default provider and model, then optionally a model (and provider) per agent,
+and prompts for the credentials of every provider it saw.
 
 Status names come from `OP_STATUS_*` and are matched case- and
 whitespace-insensitively, so `In Progress` also matches OpenProject's default
@@ -171,14 +186,24 @@ docker compose up -d engine
 
 ## Provider credentials
 
-pi reads its model provider key from the environment; no `auth.json` or
-`settings.json` is mounted. `agent-init.sh` asks for the key belonging to the
-provider in `AGENT_MODEL` and writes it to `docker/.env`. The GitHub token is a
-manual `docker/.env` value. If you write `.env` yourself, set the variable for
-your provider (the table below is
-[`src/op_agent_engine/providers.py`](../src/op_agent_engine/providers.py)):
+pi reads its model provider credentials from the environment by default; no
+`auth.json` or `settings.json` is mounted from the host. `agent-init.sh` asks
+for the credentials of every provider in use and writes them to `docker/.env`.
+The GitHub token is a manual `docker/.env` value. If you write `.env` yourself,
+set the variables for every provider you use (the table below is
+[`src/op_agent_engine/providers.py`](../src/op_agent_engine/providers.py)).
+`ANTHROPIC_API_KEY` is an API key; `ANTHROPIC_OAUTH_TOKEN` (or
+`ANTHROPIC_AUTH_TOKEN`) is what an Anthropic subscription uses, so a
+subscription can drive one agent while a different provider serves the rest.
 
-`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`,
+The one exception to environment-only credentials is a provider whose
+subscription pi supports only through an interactive login. That credential
+lives in the container's persistent `pi-agent` volume
+(`/home/agent/.pi/agent/auth.json`), not in `.env`. `check-config` reads the
+same file and accepts a stored credential; it never prints its value.
+
+`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_OAUTH_TOKEN`,
+`ANTHROPIC_BASE_URL`,
 `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `AZURE_OPENAI_API_KEY`,
 `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_VERSION`, `GEMINI_API_KEY`,
 `GOOGLE_API_KEY`, `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION`,
@@ -192,7 +217,56 @@ your provider (the table below is
 `AWS_BEARER_TOKEN_BEDROCK`, `GH_TOKEN` and `GITHUB_TOKEN`.
 
 The engine forwards exactly these variables to the agent process and keeps the
-rest of its own environment (the OpenProject tokens) out of it.
+rest of its own environment (the OpenProject tokens) out of it. Forwarding all
+of them is what lets pi pick the right key for each agent's model. It also
+forwards `PI_CODING_AGENT_DIR` when set, so a run reads the same `auth.json`
+that `check-config` inspected.
+
+### Subscriptions
+
+**Claude Pro/Max.** Generate a token on a machine where Claude Code is signed
+in, then put it in `docker/.env` and point the agent at Anthropic:
+
+```bash
+claude setup-token          # prints sk-ant-oat01-...
+```
+
+```dotenv
+AGENT_MODEL_DESIGNER=anthropic/claude-sonnet-4-5
+ANTHROPIC_OAUTH_TOKEN=sk-ant-oat01-...
+```
+
+`ANTHROPIC_AUTH_TOKEN` works as bearer authentication too. These are ordinary
+environment variables, so `agent-init.sh` and `check-config` handle them like
+the Anthropic API key.
+
+**ChatGPT Plus/Pro (Codex).** pi has no environment variable for this
+subscription; `/login` writes an OAuth credential to `auth.json`. Log in once
+in the persistent `pi-agent` volume, then name the provider in a model
+reference:
+
+```bash
+cd docker
+# Before the stack exists, this still creates and mounts the volume.
+docker compose run --rm --entrypoint pi engine
+# In pi: /login -> OpenAI (ChatGPT subscription)
+# If the browser callback cannot reach the container, paste the final
+# redirect URL back into pi when prompted.
+```
+
+```dotenv
+# The modern provider id is openai; openai-codex is the legacy id.
+AGENT_MODEL_REVIEWER=openai/gpt-5.6-sol
+```
+
+Later runs use the same `~/.pi/agent` directory, so the login persists.
+`agent-init.sh` detects an `openai`/`openai-codex` model without an API key,
+pauses after writing `.env`, prints the exact command above, and waits for you
+to finish the login before it runs `check-config`. If you skipped it, run
+`docker compose run --rm engine check-config` after logging in.
+`check-config` reports `provider 'openai': using a stored auth.json credential`
+once the credential exists and a warning when it does not. The OAuth token is
+refreshed by pi on use; log in again if it is revoked or expires.
 
 ### llama.cpp
 
@@ -255,7 +329,8 @@ Docker network.
 | `GIT_AUTHOR_EMAIL` | `OP_ENGINE_USER@OP_EMAIL_DOMAIN` | author email for those commits |
 
 The image sets the container paths and the dashboard bind address, so `.env`
-normally only holds the deployment values, the provider key and the limits.
+normally only holds the deployment values, the provider credentials and the
+limits.
 
 Failed-run post-mortem: every failed run's worktree state is written to
 `DATA_DIR/runs/<runId>/worktree` (bounded to 20 MiB of untracked files, 1 MiB

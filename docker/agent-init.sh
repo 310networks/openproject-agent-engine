@@ -7,11 +7,12 @@
 #   2. add the GitHub token(s) to .env
 #   3. docker compose up -d
 #
-# It asks for the deployment values, the model (optionally one per agent) and
-# its provider key, and an OpenProject administrator token. Then it creates or
-# reconciles the engine and agent users, shows each generated password once,
-# interviews you for one API token per account (sign in at your OpenProject
-# URL -> My account -> Access tokens), writes .env and validates the result.
+# It asks for the deployment values, the models (optionally one per agent, each
+# may use another provider), the provider key(s) and an OpenProject
+# administrator token. Then it creates or reconciles the engine and agent
+# users, shows each generated password once, interviews you for one API token
+# per account (sign in at your OpenProject URL -> My account -> Access tokens),
+# writes .env and validates the result.
 #
 # It does not ask for GitHub credentials. Add GH_TOKEN (and the optional
 # GH_TOKEN_REVIEWER) to .env before starting the stack; the final message
@@ -25,7 +26,7 @@
 # attribute, so any project with that value set (and the AGENT field enabled)
 # can be monitored simply by setting OP_PROJECT=*.
 #
-# OpenProject tokens and the provider key are written to .env next to
+# OpenProject tokens and the provider keys are written to .env next to
 # docker-compose.yml (mode 0600), so compose picks them up on the next start.
 #
 #   ./agent-init.sh                      guided run
@@ -187,6 +188,120 @@ provider_vars() {
 provider_known() {
   printf '%s\n' "$provider_table" |
     awk -v wanted="$1" '$1 == wanted { found = 1 } END { exit(found ? 0 : 1) }'
+}
+
+# Provider ids are kept in a space-separated list; this adds one once.
+add_provider() {
+  current_list=$1
+  candidate=$2
+  case " $current_list " in
+    *" $candidate "*) printf '%s\n' "$current_list" ;;
+    *) printf '%s\n' "$current_list $candidate" ;;
+  esac
+}
+
+# Ask for one provider's credential variables. The first variable is normally
+# the provider's API key; a local provider's endpoint (llama.cpp) is asked for
+# as plain text instead. The rest are optional, and LLAMA_API_KEY stays
+# optional for an unauthenticated server.
+ask_provider_credentials() {
+  wanted=$1
+  say ""
+  if [ "$wanted" = "llama.cpp" ]; then
+    info "llama.cpp is a local server: LLAMA_BASE_URL is the router URL"
+    info "(for example http://192.168.1.10:8080) and LLAMA_API_KEY is optional."
+  fi
+  case "$wanted" in
+    anthropic)
+      info "A Claude Pro/Max subscription uses ANTHROPIC_OAUTH_TOKEN (from"
+      info "'claude setup-token'); it is one of the optional settings below."
+      ;;
+    openai)
+      info "A ChatGPT subscription uses a one-time 'pi /login'; OPENAI_API_KEY is"
+      info "optional then. This wizard shows the exact command before validating."
+      ;;
+    openai-codex)
+      info "This legacy Codex subscription provider has no environment variable;"
+      info "this wizard shows the one-time 'pi /login' command before validating."
+      ;;
+  esac
+  provider_keys=$(provider_vars "$wanted")
+  if provider_known "$wanted"; then
+    if [ -z "$provider_keys" ] || [ "$provider_keys" = "-" ]; then
+      warn "$wanted authenticates with an interactive login stored in auth.json."
+      warn "A one-time 'pi /login' in the persistent agent volume works for"
+      warn "later runs; there is no environment variable to store here."
+      provider_keys=
+    fi
+  else
+    warn "$wanted is not in the built-in provider list, so its credential"
+    warn "variable is asked for below (see docker/.env.example for the usual ones)."
+    provider_keys=$(ask_text "Credential variable for $wanted" \
+      "$(printf '%s' "$wanted" | tr '[:lower:]-' '[:upper:]_')_API_KEY")
+  fi
+
+  if [ -n "$provider_keys" ]; then
+    set -- $provider_keys
+    primary=$1
+    shift
+    existing=$(get_env "$primary")
+    if [ -n "$existing" ]; then
+      hint="stored - blank keeps it"
+    else
+      hint=
+    fi
+    case "$primary" in
+      *_URL|*_ENDPOINT)
+        key=$(ask_text "$primary" "$existing")
+        ;;
+      *)
+        key=$(ask_secret "$primary" "$hint")
+        ;;
+    esac
+    if [ -n "$key" ]; then
+      set_env "$primary" "$key"
+    elif [ -n "$existing" ]; then
+      ok "$primary: keeping the stored value"
+    else
+      case "$wanted" in
+        anthropic)
+          warn "ANTHROPIC_API_KEY not set; a subscription can use"
+          warn "ANTHROPIC_OAUTH_TOKEN in the optional settings below."
+          ;;
+        openai)
+          warn "OPENAI_API_KEY not set; a ChatGPT subscription needs a one-time"
+          warn "'pi /login' before check-config can see the credential."
+          ;;
+        *)
+          warn "$primary: no value set; check-config will reject the configuration"
+          ;;
+      esac
+    fi
+
+    if [ "$#" -gt 0 ]; then
+      say ""
+      info "Optional settings for $wanted: $*"
+      configure=$(ask_text "Set them now? (y/N)" "n")
+      case "$configure" in
+        y|Y|yes|YES)
+          for variable in "$@"; do
+            existing=$(get_env "$variable")
+            case "$variable" in
+              *KEY*|*TOKEN*|*SECRET*|*PASSWORD*)
+                value=$(ask_secret "$variable" "$existing")
+                ;;
+              *)
+                value=$(ask_text "$variable" "$existing")
+                ;;
+            esac
+            if [ -n "$value" ]; then
+              set_env "$variable" "$value"
+            fi
+          done
+          ;;
+      esac
+    fi
+  fi
 }
 
 # --- prompting --------------------------------------------------------------
@@ -353,9 +468,11 @@ info "Create it once under Administration -> Projects -> Project attributes"
 info "(text format) and make it available for all projects."
 info "The AGENT work-package custom field is set up separately."
 
-step 2 "Model and provider key"
-# The model is one setting for the engine (AGENT_MODEL=<provider>/<model>), but
-# two questions here: the provider is also what selects the credential variable.
+step 2 "Models and provider keys"
+# Each model is <provider>/<model>; the provider prefix selects the credential
+# variables. AGENT_MODEL is the default for every agent, and an
+# AGENT_MODEL_<AGENT> override may keep the default provider or name another
+# one, so the wizard collects the credentials of every provider in use.
 existing_model=$(get_env AGENT_MODEL)
 if [ -z "$existing_model" ]; then
   # A deployment that names a model per agent has no AGENT_MODEL; offer one of
@@ -390,24 +507,36 @@ printf '%s\n' "$provider_table" |
   awk 'NF { printf "%s%s", sep, $1; sep = ", " } END { print "" }' |
   fold -s -w 72 |
   sed 's/^/    /'
-provider=$(ask_text "Model provider" "$provider_default")
+provider=$(ask_text "Default model provider" "$provider_default")
 provider=$(printf '%s' "$provider" | tr '[:upper:]' '[:lower:]')
-[ -n "$provider" ] || die "a model provider is required"
+[ -n "$provider" ] || die "a default model provider is required"
 
-# One model for every agent, or one model per agent. The provider is asked for
-# once either way, so every model keeps it and the deployment stays on one
-# provider key.
 say ""
-info "All agents can share one model, or each can name its own."
-info "Either way they stay on the provider $provider."
-separate=$(ask_text "A separate model for each agent? (y/N)" "n")
+info "The default model is used by every agent that has no override."
+info "Leave it blank to give agents their own models (or pi's own default)."
+model=$(ask_text "Default model id (e.g. deepseek/deepseek-v4.1-flash-1017)" "$model_default")
+case "$model" in
+  "$provider"/*) model=${model#"$provider"/} ;;
+esac
+case "$model" in
+  *" "*|*"	"*) die "the default model id must be one token (no spaces)" ;;
+esac
+if [ -n "$model" ]; then
+  agent_model="${provider}/${model}"
+else
+  agent_model=
+fi
+
+# One agent may keep the default or name its own model and provider.
+say ""
+info "Each agent may keep the default model or name its own."
+info "Use <model> for $provider, or <provider>/<model> for another provider."
+separate=$(ask_text "A separate model for any agent? (y/N)" "n")
 case "$separate" in
   y|Y|yes|YES)
     say ""
-    info "The model id only - the provider prefix is added for you."
-    info "Press Enter to leave an agent on pi's own default model."
-    agent_model=
-    configured=0
+    info "Press Enter to keep the value in brackets, or - to remove an override."
+    overrides=0
     for entry in \
       FRONTEND:AGENT_MODEL_FRONTEND \
       BACKEND:AGENT_MODEL_BACKEND \
@@ -419,46 +548,50 @@ case "$separate" in
       agent_name=${entry%%:*}
       name=${entry#*:}
       existing=$(get_env "$name")
-      case "$existing" in
-        "$provider"/*) default=${existing#"$provider"/} ;;
-        "") default=$model_default ;;
-        *) default=$existing ;;
-      esac
-      override=$(ask_text "$agent_name model" "$default")
+      default=$agent_model
+      [ -n "$existing" ] && default=$existing
+      override=$(ask_text "$agent_name model (id or provider/id)" "$default")
       case "$override" in
-        "$provider"/*) override=${override#"$provider"/} ;;
-      esac
-      case "$override" in
-        *" "*|*"	"*) die "the model id for $agent_name must be one token (no spaces)" ;;
+        -)
+          unset_env "$name"
+          ok "$agent_name: no override"
+          continue
+          ;;
+        "$agent_model")
+          # Same as the default: an override would be redundant.
+          override=
+          ;;
       esac
       if [ -n "$override" ]; then
-        set_env "$name" "${provider}/${override}"
-        ok "$name: ${provider}/${override}"
-        configured=1
+        case "$override" in
+          */*)
+            override_provider=${override%%/*}
+            override_provider=$(printf '%s' "$override_provider" | tr '[:upper:]' '[:lower:]')
+            override="${override_provider}/${override#*/}"
+            ;;
+          *) override="${provider}/${override}" ;;
+        esac
+        case "$override" in
+          *" "*|*"	"*) die "the model for $agent_name must be one token (no spaces)" ;;
+        esac
+        set_env "$name" "$override"
+        ok "$name: $override"
+        overrides=$((overrides + 1))
       else
         unset_env "$name"
-        warn "$agent_name: no model; pi's own default is used"
+        if [ -n "$agent_model" ]; then
+          info "$agent_name: using the default $agent_model"
+        else
+          warn "$agent_name: no model; pi's own default is used"
+        fi
       fi
     done
-    [ "$configured" -eq 1 ] ||
-      die "no agent model was entered; re-run and answer n for one shared model"
-    if [ -n "$(get_env AGENT_MODEL)" ]; then
-      info "removing AGENT_MODEL; each agent names its own model"
-      unset_env AGENT_MODEL
+    if [ -z "$agent_model" ] && [ "$overrides" -eq 0 ]; then
+      die "no model was entered; set a default model or one per agent"
     fi
     ;;
   *)
-    say ""
-    info "The model id only - the provider prefix is added for you."
-    model=$(ask_text "Model (e.g. deepseek/deepseek-v4.1-flash-1017)" "$model_default")
-    case "$model" in
-      "$provider"/*) model=${model#"$provider"/} ;;
-    esac
-    case "$model" in
-      "" ) die "a model id is required" ;;
-      *" "*|*"	"*) die "the model id must be one token (no spaces)" ;;
-    esac
-    agent_model="${provider}/${model}"
+    # One shared model: drop any leftover per-agent overrides.
     for name in \
       AGENT_MODEL_FRONTEND \
       AGENT_MODEL_BACKEND \
@@ -468,87 +601,40 @@ case "$separate" in
       AGENT_MODEL_REVIEWER
     do
       if [ -n "$(get_env "$name")" ]; then
-        warn "removing $name; every agent uses $agent_model"
+        warn "removing $name; every agent uses the default model"
         unset_env "$name"
       fi
     done
     ;;
 esac
 
-# The provider's own credential variables; the CLI reads them from the
+# Collect the providers actually in use (the default plus every override) and
+# ask for each one's credentials. The CLI reads the variables from the
 # environment, and the engine forwards them to the agent process.
-say ""
-if [ "$provider" = "llama.cpp" ]; then
-  info "llama.cpp is a local server: LLAMA_BASE_URL is the router URL"
-  info "(for example http://192.168.1.10:8080) and LLAMA_API_KEY is optional."
+providers=
+if [ -n "$agent_model" ]; then
+  providers=$provider
 fi
-provider_keys=$(provider_vars "$provider")
-if provider_known "$provider"; then
-  if [ -z "$provider_keys" ] || [ "$provider_keys" = "-" ]; then
-    warn "$provider authenticates with an interactive login, which an"
-    warn "unattended run cannot use; there is no key to store."
-    provider_keys=
-  fi
-else
-  warn "$provider is not in the built-in provider list, so its credential"
-  warn "variable is asked for below (see docker/.env.example for the usual ones)."
-  provider_keys=$(ask_text "Credential variable (e.g. OPENROUTER_API_KEY)" \
-    "$(printf '%s' "$provider" | tr '[:lower:]-' '[:upper:]_')_API_KEY")
-fi
-
-if [ -n "$provider_keys" ]; then
-  # The first variable is normally the provider's API key; a local provider's
-  # endpoint (llama.cpp) is asked for as plain text instead. The rest are
-  # optional, and LLAMA_API_KEY stays optional for an unauthenticated server.
-  set -- $provider_keys
-  primary=$1
-  shift
-  existing=$(get_env "$primary")
-  if [ -n "$existing" ]; then
-    hint="stored - blank keeps it"
-  else
-    hint=
-  fi
-  case "$primary" in
-    *_URL|*_ENDPOINT)
-      key=$(ask_text "$primary" "$existing")
-      ;;
-    *)
-      key=$(ask_secret "$primary" "$hint")
-      ;;
+for name in \
+  AGENT_MODEL_FRONTEND \
+  AGENT_MODEL_BACKEND \
+  AGENT_MODEL_DESIGNER \
+  AGENT_MODEL_VFX \
+  AGENT_MODEL_AUDIO \
+  AGENT_MODEL_REVIEWER
+do
+  value=$(get_env "$name")
+  [ -n "$value" ] || continue
+  case "$value" in
+    */*) candidate=${value%%/*} ;;
+    *) candidate=$provider ;;
   esac
-  if [ -n "$key" ]; then
-    set_env "$primary" "$key"
-  elif [ -n "$existing" ]; then
-    ok "$primary: keeping the stored value"
-  else
-    warn "$primary: no value set; check-config will reject the configuration"
-  fi
+  providers=$(add_provider "$providers" "$candidate")
+done
 
-  if [ "$#" -gt 0 ]; then
-    say ""
-    info "Optional settings for $provider: $*"
-    configure=$(ask_text "Set them now? (y/N)" "n")
-    case "$configure" in
-      y|Y|yes|YES)
-        for name in "$@"; do
-          existing=$(get_env "$name")
-          case "$name" in
-            *KEY*|*TOKEN*|*SECRET*|*PASSWORD*)
-              value=$(ask_secret "$name" "$existing")
-              ;;
-            *)
-              value=$(ask_text "$name" "$existing")
-              ;;
-          esac
-          if [ -n "$value" ]; then
-            set_env "$name" "$value"
-          fi
-        done
-        ;;
-    esac
-  fi
-fi
+for wanted in $providers; do
+  ask_provider_credentials "$wanted"
+done
 
 step 3 "OpenProject administrator token"
 info "It is used once to create the users and is not stored."
@@ -655,15 +741,68 @@ set_env OP_TOKEN_REVIEWER "$reviewer_token"
 unset_env OP_PROVISION_TOKEN
 ok "wrote $env_file (mode 0600)"
 
-step 7 "Validating the configuration"
+# A ChatGPT/Codex subscription has no API key: pi stores an OAuth credential
+# from /login in the persistent pi-agent volume. Show the exact commands here,
+# after .env exists, so the operator can do it before validation.
+subscription_providers=
+for wanted in $providers; do
+  case "$wanted" in
+    openai-codex)
+      subscription_providers="$subscription_providers $wanted"
+      ;;
+    openai)
+      if [ -z "$(get_env OPENAI_API_KEY)" ]; then
+        subscription_providers="$subscription_providers $wanted"
+      fi
+      ;;
+  esac
+done
+
+if [ -n "$subscription_providers" ]; then
+  step 7 "ChatGPT subscription login"
+  info "These providers use a ChatGPT subscription, which has no API key:"
+  for wanted in $subscription_providers; do
+    info "  - $wanted"
+  done
+  say ""
+  info "In another terminal, run:"
+  info "  cd $deploy_dir"
+  info "  docker compose run --rm --entrypoint pi engine"
+  say ""
+  info "Inside pi, sign in once:"
+  info "  1. /login"
+  info "  2. choose the OpenAI subscription entry:"
+  info "       OpenAI (ChatGPT subscription)   for provider openai"
+  info "       OpenAI Codex (legacy)           for provider openai-codex"
+  info "       -> Device code login (headless) for openai-codex only"
+  info "  3. complete the browser sign-in"
+  info "  4. /quit to leave pi"
+  say ""
+  info "The credential is stored in the persistent pi-agent volume, so every"
+  info "later agent run reuses it. If you already logged in, just continue."
+  say ""
+  printf '    Press Enter to validate the configuration: ' >&2
+  IFS= read -r _ || true
+fi
+
+step 8 "Validating the configuration"
 if ! compose_run engine check-config; then
+  if [ -n "$subscription_providers" ]; then
+    warn "If check-config only complains about the ChatGPT provider, the login"
+    warn "is still missing; run the step 7 command, then:"
+    warn "  docker compose run --rm engine check-config"
+  fi
   die "check-config failed; fix the message above and re-run this script"
 fi
 
-step 8 "Before you start the stack"
+step 9 "Before you start the stack"
 info "Finish updating $env_file:"
 info "  - add GH_TOKEN (and the optional GH_TOKEN_REVIEWER)"
 info "  - review any other settings this wizard does not manage"
+if [ -n "$subscription_providers" ]; then
+  info "  - ChatGPT subscription: the /login credential is in the pi-agent"
+  info "    volume and is refreshed automatically"
+fi
 say ""
 info "Then start the engine:"
 info "  docker compose up -d"

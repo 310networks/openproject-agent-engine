@@ -557,10 +557,13 @@ def test_agent_init_asks_for_the_provider_and_its_key() -> None:
     script = (REPO_ROOT / "docker" / "agent-init.sh").read_text()
 
     # The provider and the model are separate questions; the script joins them.
-    assert 'ask_text "Model provider"' in script
-    assert 'ask_text "Model (e.g. deepseek/deepseek-v4.1-flash-1017)"' in script
+    assert 'ask_text "Default model provider"' in script
+    assert (
+        'ask_text "Default model id (e.g. deepseek/deepseek-v4.1-flash-1017)"'
+        in script
+    )
     assert 'agent_model="${provider}/${model}"' in script
-    # The provider's own credential variable is asked for and stored.
+    # The provider's own credential variables are asked for and stored.
     assert 'key=$(ask_secret "$primary"' in script
     assert 'set_env "$primary" "$key"' in script
     # Nothing tells the operator to finish the job by editing .env ...
@@ -612,14 +615,36 @@ def test_agent_init_finishes_with_an_env_reminder() -> None:
     """The last step tells the operator what to finish before starting."""
     script = (DOCKER_DIR / "agent-init.sh").read_text()
 
-    reminder = 'step 8 "Before you start the stack"'
+    reminder = 'step 9 "Before you start the stack"'
     assert reminder in script
     assert "Finish updating $env_file" in script
     assert "add GH_TOKEN" in script
-    assert script.index('step 7 "Validating the configuration"') < script.index(
+    assert script.index('step 8 "Validating the configuration"') < script.index(
         reminder
     )
     assert "docker compose up -d" in script[script.index(reminder) :]
+
+
+def test_agent_init_guides_chatgpt_subscription_login() -> None:
+    """A ChatGPT subscription needs one interactive /login, so say exactly how."""
+    script = (DOCKER_DIR / "agent-init.sh").read_text()
+
+    assert 'step 7 "ChatGPT subscription login"' in script
+    assert "docker compose run --rm --entrypoint pi engine" in script
+    assert "1. /login" in script
+    assert "OpenAI (ChatGPT subscription)" in script
+    assert "OpenAI Codex (legacy)" in script
+    assert "Device code login (headless)" in script
+    assert "Press Enter to validate the configuration" in script
+    # The login happens after .env is written and before check-config.
+    assert script.index('step 7 "ChatGPT subscription login"') < script.index(
+        'step 8 "Validating the configuration"'
+    )
+    # It is only offered for the subscription-capable providers, and only for
+    # `openai` when no API key was entered.
+    assert 'case "$wanted" in' in script
+    assert "openai-codex)" in script
+    assert '[ -z "$(get_env OPENAI_API_KEY)" ]' in script
 
 
 def test_agent_init_prints_account_credentials_on_separate_lines() -> None:
@@ -635,23 +660,26 @@ def test_agent_init_prints_account_credentials_on_separate_lines() -> None:
     assert "printf '\\n[%s] %s\\n\\n'" in script
 
 
-def test_agent_init_offers_per_agent_models_from_one_provider() -> None:
-    """One provider, but an agent may use another model from it."""
+def test_agent_init_offers_a_model_and_provider_per_agent() -> None:
+    """The default provider is the fallback; an agent may switch provider."""
     script = (DOCKER_DIR / "agent-init.sh").read_text()
 
-    assert 'ask_text "A separate model for each agent? (y/N)"' in script
-    # Asked before any model prompt, so nothing is entered twice.
-    assert script.index("A separate model for each agent?") < script.index(
-        'ask_text "Model (e.g.'
+    assert 'ask_text "A separate model for any agent? (y/N)"' in script
+    # Asked after the default model, so an override can show it in brackets.
+    assert script.index('ask_text "Default model id') < script.index(
+        "A separate model for any agent?"
     )
     for variable in AGENT_MODEL_VARS.values():
         assert variable in script, variable
-    # Switching back to a shared model prefills from an override.
-    assert 'existing_model=$(get_env "$name")' in script
-    # The provider is asked once and prefixed onto every override, so the
-    # script cannot produce the mixed-provider configuration check-config
-    # rejects.
-    assert 'set_env "$name" "${provider}/${override}"' in script
+    # The per-agent prompt accepts a full provider/id reference, and a bare id
+    # keeps the default provider.
+    assert 'ask_text "$agent_name model (id or provider/id)"' in script
+    assert 'override="${provider}/${override}"' in script
+    assert 'set_env "$name" "$override"' in script
+    # Credentials are collected for every provider actually used.
+    assert 'providers=$(add_provider "$providers" "$candidate")' in script
+    assert 'for wanted in $providers; do' in script
+    assert 'ask_provider_credentials "$wanted"' in script
     assert 'unset_env "$name"' in script
 
 

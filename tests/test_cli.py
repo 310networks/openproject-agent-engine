@@ -82,9 +82,13 @@ async def _fake_audit(config: object, settings: object) -> ProvisionReport:
 
 
 @pytest.fixture(autouse=True)
-def example_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+def example_environment(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     for name, value in EXAMPLE_ENV.items():
         monkeypatch.setenv(name, value)
+    # Never read the developer's real pi credentials from check-config.
+    monkeypatch.setattr(cli, "_agent_dir", lambda: tmp_path / "pi-agent")
     # The provisioning audit is exercised in tests/test_provision.py; keep the
     # CLI tests offline.
     monkeypatch.setattr(cli, "_audit_against_api", _fake_audit)
@@ -182,14 +186,50 @@ def test_check_config_accepts_llama_cpp_with_a_router_url(
     assert "Configuration OK" in output
 
 
-def test_check_config_rejects_mixed_model_providers(
+def test_check_config_accepts_a_provider_per_agent(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AGENT_MODEL_DESIGNER", "anthropic/claude-sonnet-4-5")
+    monkeypatch.setenv("ANTHROPIC_OAUTH_TOKEN", "sk-ant-oat-test")
+
+    assert main(["check-config", "--offline"]) == OK_EXIT
+
+    output = capsys.readouterr().out
+    assert "provider 'openrouter': using OPENROUTER_API_KEY" in output
+    assert "provider 'anthropic': using ANTHROPIC_OAUTH_TOKEN" in output
+    assert "model providers: openrouter (FRONTEND" in output
+
+
+def test_check_config_names_every_provider_without_credentials(
     capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("AGENT_MODEL_REVIEWER", "anthropic/claude-sonnet-4-5")
+    monkeypatch.delenv("OPENROUTER_API_KEY")
 
     assert main(["check-config", "--offline"]) == CONFIG_ERROR_EXIT
 
-    assert "one model provider per deployment" in capsys.readouterr().err
+    error = capsys.readouterr().err
+    assert "OPENROUTER_API_KEY" in error
+    assert "ANTHROPIC_API_KEY" in error
+    assert "sk-or-test" not in error
+
+
+def test_check_config_accepts_a_stored_subscription_login(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agent_dir = cli._agent_dir()
+    agent_dir.mkdir(parents=True)
+    (agent_dir / "auth.json").write_text(
+        '{"openai": {"type": "oauth", "access": "secret"}}'
+    )
+    monkeypatch.setenv("AGENT_MODEL_DESIGNER", "openai/gpt-5.6-sol")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    assert main(["check-config", "--offline"]) == OK_EXIT
+
+    output = capsys.readouterr().out
+    assert "provider 'openai': using a stored auth.json credential" in output
+    assert "secret" not in output
 
 
 def test_check_config_warns_when_no_model_is_configured(

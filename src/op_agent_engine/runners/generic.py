@@ -54,7 +54,12 @@ _AGENT_ENV_VARS = tuple(
     )
 )
 
-_INHERITED_ENV_VARS = _BASE_ENV_VARS + _AGENT_ENV_VARS
+#: Agent-directory override. ``check-config`` reads ``auth.json`` from this
+#: directory and a run must use the same one, so a one-time subscription login
+#: is visible to both. A llama.cpp run overrides it with its private directory.
+_AGENT_DIR_ENV_VARS = ("PI_CODING_AGENT_DIR",)
+
+_INHERITED_ENV_VARS = _BASE_ENV_VARS + _AGENT_DIR_ENV_VARS + _AGENT_ENV_VARS
 
 #: An argv element that is nothing but one placeholder, e.g. ``{model}``.
 _WHOLE_PLACEHOLDER = re.compile(r"\{[a-z_]+\}")

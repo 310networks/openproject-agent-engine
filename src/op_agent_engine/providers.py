@@ -8,14 +8,19 @@ the runner's environment allowlist (:mod:`op_agent_engine.runners.generic`) and
 
 ``AGENT_MODEL`` is a ``<provider>/<model>`` reference, so the provider is the
 part before the first ``/`` and the credential variables are looked up here.
-The interactive setup script (``docker/agent-init.sh``) carries the same table
-because it has to prompt before the image is running; ``tests/test_providers.py``
-keeps the two copies in step.
+Every agent gets its provider from its own model reference: ``AGENT_MODEL``
+sets the deployment default and ``AGENT_MODEL_<AGENT>`` may name a different
+provider for one agent. The deployment therefore stores one credential set per
+provider it uses. The interactive setup script (``docker/agent-init.sh``)
+carries the same table because it has to prompt before the image is running;
+``tests/test_providers.py`` keeps the two copies in step.
 """
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable, Mapping
+from pathlib import Path
 
 #: Provider id -> credential environment variables. The first entry is normally
 #: the provider's primary API key; the rest are endpoints, project ids or the
@@ -81,8 +86,11 @@ PROVIDER_ENV_VARS: Mapping[str, tuple[str, ...]] = {
     "moonshotai-cn": ("MOONSHOT_API_KEY",),
     "nvidia": ("NVIDIA_API_KEY",),
     "openai": ("OPENAI_API_KEY", "OPENAI_BASE_URL"),
-    # ChatGPT subscription; ``pi /login`` stores a token in auth.json, which a
-    # container run cannot provide.
+    # ChatGPT subscription. Pi exposes no environment variable for this
+    # provider: ``pi /login`` stores an OAuth credential in auth.json. An
+    # unattended run cannot log in, but a one-time interactive login in the
+    # persistent agent directory (the ``pi-agent`` volume) is usable by later
+    # runs.
     "openai-codex": (),
     "opencode": ("OPENCODE_API_KEY",),
     "opencode-go": ("OPENCODE_API_KEY",),
@@ -136,18 +144,60 @@ def credential_variables(provider: str) -> tuple[str, ...]:
     return PROVIDER_ENV_VARS.get(provider.strip().lower(), ())
 
 
+def stored_credential_providers(agent_dir: Path | str | None) -> set[str]:
+    """Provider ids with a stored credential in ``agent_dir/auth.json``.
+
+    ``pi /login`` writes API keys and OAuth credentials there, including the
+    ChatGPT subscription token that has no environment variable. Only the
+    top-level keys (provider ids) are read; values are never returned or
+    logged. A missing, unreadable or malformed file yields an empty set.
+    """
+    if agent_dir is None:
+        return set()
+    try:
+        raw = json.loads((Path(agent_dir) / "auth.json").read_text())
+    except (OSError, ValueError):
+        return set()
+    if not isinstance(raw, dict):
+        return set()
+    return {
+        str(provider).strip().lower()
+        for provider in raw
+        if str(provider).strip()
+    }
+
+
+#: Severity ordering used to combine one status per provider.
+_LEVEL_ORDER = {"ok": 0, "warn": 1, "error": 2}
+
+
 def credential_status(
-    models: Iterable[str | None], env: Mapping[str, str]
+    models: Iterable[str | None],
+    env: Mapping[str, str],
+    *,
+    stored_providers: Iterable[str] = (),
 ) -> tuple[str, str]:
-    """Describe whether the configured models have credentials in ``env``.
+    """Describe whether every configured model has credentials.
 
     ``models`` is every model reference in use (``AGENT_MODEL`` and the
-    per-agent overrides). They may name different models but must share one
-    provider, because the deployment stores one provider key. Returns
-    ``(level, message)`` with level ``ok``, ``warn`` or ``error``; only
+    per-agent overrides). Each model carries its own provider, so a deployment
+    may mix providers; each provider present needs its own credentials. A
+    provider with a stored ``auth.json`` entry (see
+    :func:`stored_credential_providers`) is satisfied even when it has no
+    environment variable. The overall level is the most severe per-provider
+    level, and the message names every provider in a deterministic order. Only
     variable names are ever reported, never values.
     """
-    configured = [model.strip() for model in models if model and model.strip()]
+    stored = {
+        provider.strip().lower()
+        for provider in stored_providers
+        if provider and provider.strip()
+    }
+    configured = list(
+        dict.fromkeys(
+            model.strip() for model in models if model and model.strip()
+        )
+    )
     if not configured:
         return (
             "warn",
@@ -156,33 +206,36 @@ def credential_status(
             "provider credentials are not checked",
         )
 
-    providers: set[str] = set()
+    reports: list[tuple[str, str]] = []
+    seen: set[str] = set()
     for model in configured:
         provider = provider_of(model)
         if provider is None:
-            return (
-                "warn",
-                f"model {model!r} has no <provider>/ prefix, so the provider "
-                "credentials are not checked",
+            reports.append(
+                (
+                    "warn",
+                    f"model {model!r} has no <provider>/ prefix, so its "
+                    "provider credentials are not checked",
+                )
             )
-        providers.add(provider)
-
-    if len(providers) > 1:
-        return (
-            "error",
-            "one model provider per deployment, but the configured models use "
-            + ", ".join(sorted(providers)),
+            continue
+        if provider in seen:
+            continue
+        seen.add(provider)
+        reports.append(
+            _provider_credential_status(provider, env, stored=provider in stored)
         )
 
-    provider = providers.pop()
+    level = max((level for level, _ in reports), key=_LEVEL_ORDER.__getitem__)
+    message = "; ".join(message for _, message in reports)
+    return level, message
+
+
+def _provider_credential_status(
+    provider: str, env: Mapping[str, str], *, stored: bool
+) -> tuple[str, str]:
+    """The credential status for one provider (``ok``, ``warn`` or ``error``)."""
     variables = credential_variables(provider)
-    if not variables:
-        return (
-            "warn",
-            f"provider {provider!r} needs an interactive login, which an "
-            "unattended run cannot provide; its credentials are not checked",
-        )
-
     required = PROVIDER_REQUIRED_ENV_VARS.get(provider, ())
     missing_required = [
         name for name in required if not env.get(name, "").strip()
@@ -190,9 +243,24 @@ def credential_status(
     if missing_required:
         return (
             "error",
-            f"the configured models use provider {provider!r}, which requires "
+            f"provider {provider!r} requires "
             f"{', '.join(missing_required)}; its variables are "
             f"{', '.join(variables)}",
+        )
+
+    if stored:
+        return (
+            "ok",
+            f"provider {provider!r}: using a stored auth.json credential",
+        )
+
+    if not variables:
+        return (
+            "warn",
+            f"provider {provider!r} has no environment variable: it uses an "
+            "interactive login stored in auth.json. A one-time login in the "
+            "persistent agent directory works for later runs; its "
+            "credentials are not checked here",
         )
 
     present = [name for name in variables if env.get(name, "").strip()]
@@ -200,6 +268,6 @@ def credential_status(
         return ("ok", f"provider {provider!r}: using {', '.join(present)}")
     return (
         "error",
-        f"the configured models use provider {provider!r}, which needs one of "
+        f"provider {provider!r} needs one of "
         f"{', '.join(variables)}; none of them is set",
     )

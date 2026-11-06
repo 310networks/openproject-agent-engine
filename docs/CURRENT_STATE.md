@@ -154,13 +154,16 @@ Every agent runs pi:
   the final assistant message)
 
 `AGENT_MODEL` is `<provider>/<model>`, and `AGENT_MODEL_<AGENT>` overrides it
-for one agent (same provider, one key); the provider selects the credential
-variable. The runner forwards the agent's OpenProject CLI credentials plus the
-provider/GitHub environment variables of
+for one agent. The provider is the model prefix, so an override may keep the
+default provider or switch to another one; `AGENT_MODEL` is the fallback for
+agents without an override. The runner forwards the agent's OpenProject CLI
+credentials plus the provider/GitHub environment variables of
 [`providers.py`](../src/op_agent_engine/providers.py) (`ANTHROPIC_API_KEY`,
-`OPENROUTER_API_KEY`, `GH_TOKEN`, ...), and `check-config` fails when the
-provider of the configured model has no credentials; see
-[CONFIG.md](CONFIG.md#provider-credentials). The local llama.cpp provider uses
+`ANTHROPIC_OAUTH_TOKEN`, `OPENROUTER_API_KEY`, `GH_TOKEN`, ...), and
+`check-config` fails when any provider in use has no credentials, unless the
+persistent `pi-agent` volume holds a matching `auth.json` credential (the
+ChatGPT subscription path); see [CONFIG.md](CONFIG.md#provider-credentials).
+The local llama.cpp provider uses
 `LLAMA_BASE_URL` (required) and the optional `LLAMA_API_KEY`, so the same
 environment-only rule covers a self-hosted router; for those runs the runner
 also writes a per-run Pi `models.json` (pointed to by `PI_CODING_AGENT_DIR`),
@@ -182,7 +185,8 @@ reference, including provider variables, object names, limits and compose-only
 settings, is [CONFIG.md](CONFIG.md).
 
 Required values: `OP_BASE_URL`, `OP_PROJECT`, `OP_ENGINE_TOKEN`, the six
-`OP_TOKEN_*` agent tokens, one model provider key and `GH_TOKEN`. The
+`OP_TOKEN_*` agent tokens, one credential set per model provider in use and
+`GH_TOKEN`. The
 `GIT_REPO` project and `AGENT` work-package custom fields are each created once and
 assigned to all projects, so each monitored project only needs its own
 `GIT_REPO` value.
@@ -198,17 +202,23 @@ values, credentials and deliberate tuning.
 
 `docker/agent-init.sh` is the supported setup path:
 
-1. prompts for the OpenProject URL and project(s), the model provider and its
-   key (for llama.cpp, the router URL and optional API key);
+1. prompts for the OpenProject URL and project(s), a default model provider and
+   model, optional per-agent models (each may name another provider) and the
+   credential variables of every provider in use (for llama.cpp, the router URL
+   and optional API key);
 2. asks for an OpenProject administrator token (used once, never written);
 3. runs `provision --apply --json --passwords` in the container, which creates
    or reconciles the engine user, the six agent users and the `Agent Worker`
    role/memberships, and shows each new password in its own block;
 4. prompts for one token per account and verifies it with
    `verify-token --login ...` (the engine token is also checked for admin);
-5. writes `docker/.env` (mode `0600`) and runs `check-config`, which also
-   checks that the provider key (or, for llama.cpp, the router URL) is present;
-6. finishes by reminding the operator to add `GH_TOKEN` (and the optional
+5. writes `docker/.env` (mode `0600`);
+6. for a ChatGPT/Codex subscription provider, pauses and prints the exact
+   command for the one-time interactive `pi /login`, then waits for Enter
+   (the credential is stored in the persistent `pi-agent` volume);
+7. runs `check-config`, which also checks that every provider in use has its
+   credentials (or, for llama.cpp, its router URL);
+8. finishes by reminding the operator to add `GH_TOKEN` (and the optional
    dedicated reviewer credentials) to `docker/.env` before starting the stack.
 
 The engine user must be an OpenProject administrator; the agent users only get

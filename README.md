@@ -73,23 +73,23 @@ The dashboard is served at `http://127.0.0.1:8765`
 ## Required environment variables
 
 `agent-init.sh` writes the OpenProject settings, the agent tokens and the
-provider key. It leaves the GitHub token(s) to you: add them to `docker/.env`
-before starting the stack.
+provider credentials for every provider in use. It leaves the GitHub token(s)
+to you: add them to `docker/.env` before starting the stack.
 
 | Variable | Meaning |
 |---|---|
 | `OP_BASE_URL` | your OpenProject URL |
 | `OP_PROJECT` | project identifier(s): one, a comma list, or `*` for every project with `GIT_REPO` |
 | `OP_ENGINE_TOKEN` | API token of the runtime user (administrator) |
-| `AGENT_MODEL` | model for every agent as `<provider>/<model>`; the provider also selects the credential or endpoint variable |
-| `AGENT_MODEL_<AGENT>` | optional per-agent model (`AGENT_MODEL_FRONTEND`, `..._BACKEND`, `..._DESIGNER`, `..._VFX`, `..._AUDIO`, `..._REVIEWER`) from the same provider |
+| `AGENT_MODEL` | default model for every agent as `<provider>/<model>`; the provider also selects the credential or endpoint variable |
+| `AGENT_MODEL_<AGENT>` | optional per-agent model (`AGENT_MODEL_FRONTEND`, `..._BACKEND`, `..._DESIGNER`, `..._VFX`, `..._AUDIO`, `..._REVIEWER`); may keep the default provider or name another |
 | `OP_TOKEN_FRONTEND` | token of `frontendEngineer` |
 | `OP_TOKEN_BACKEND` | token of `backendEngineer` |
 | `OP_TOKEN_DESIGNER` | token of `leadDesigner` |
 | `OP_TOKEN_VFX` | token of `vfxArtist` |
 | `OP_TOKEN_AUDIO` | token of `audioDesigner` |
 | `OP_TOKEN_REVIEWER` | token of `codeReviewer` |
-| `OPENROUTER_API_KEY` (or other provider key) | one model provider key for pi |
+| provider credential variables | one set per provider in use (for example `OPENROUTER_API_KEY` and `ANTHROPIC_OAUTH_TOKEN`) |
 | `LLAMA_BASE_URL` | llama.cpp router URL, when using the local llama.cpp provider |
 | `GH_TOKEN` | GitHub token used to clone, push and look up pull requests |
 
@@ -122,8 +122,28 @@ The team is fixed in the image, one OpenProject account and one token each:
 | `AUDIO` | `audioDesigner` | implementer |
 | `REVIEWER` | `codeReviewer` | reviewer |
 
-For reference, the model the script writes looks like
+For reference, the default model the script writes looks like
 `AGENT_MODEL=openrouter/deepseek/deepseek-v4.1-flash-1017`.
+
+Any agent can use another provider by naming it in its own model. The default
+provider remains the fallback for every agent without an override:
+
+```dotenv
+AGENT_MODEL=openrouter/deepseek/deepseek-v4.1-flash-1017
+OPENROUTER_API_KEY=...
+
+# leadDesigner uses an Anthropic subscription instead.
+AGENT_MODEL_DESIGNER=anthropic/claude-sonnet-4-5
+ANTHROPIC_OAUTH_TOKEN=...
+```
+
+Every provider in use needs its credentials in `docker/.env`; `check-config`
+validates all of them. A Claude subscription uses `ANTHROPIC_OAUTH_TOKEN`
+(from `claude setup-token`). A ChatGPT/Codex subscription has no environment
+variable: log in once with `pi /login` in the persistent `pi-agent` volume, and
+set the model to `openai/<model>` (see
+[docs/CONFIG.md](docs/CONFIG.md#subscriptions)). `agent-init.sh` pauses and
+prints the exact login command when it detects this setup.
 
 A local [llama.cpp](https://github.com/ggml-org/llama.cpp) router is a built-in
 provider instead of a hosted key: set `AGENT_MODEL=llama.cpp/<model>` and

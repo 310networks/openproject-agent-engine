@@ -47,7 +47,11 @@ from op_agent_engine.engine import (
 from op_agent_engine.logging import configure_logging
 from op_agent_engine.openproject.client import OpenProjectClient, OpenProjectError
 from op_agent_engine.openproject.resolve import OpenProjectResolution, resolve_workflow
-from op_agent_engine.providers import credential_status
+from op_agent_engine.providers import (
+    credential_status,
+    provider_of,
+    stored_credential_providers,
+)
 from op_agent_engine.provision import (
     ProvisioningError,
     ProvisionReport,
@@ -288,6 +292,8 @@ def _config_summary(config: WorkflowConfig) -> dict[str, object]:
                 "op_login": agent.op_login,
                 "workspace": agent.workspace,
                 "runner": agent.runner,
+                "model": config.model_for(key),
+                "provider": provider_of(config.model_for(key)),
                 "projects": agent.projects,
                 "scoped_projects": [
                     project.identifier
@@ -385,6 +391,12 @@ def _run(*, dry_run: bool) -> int:
         return CONFIG_ERROR_EXIT
 
 
+def _agent_dir() -> Path:
+    """The pi agent directory that a run uses (``PI_CODING_AGENT_DIR``/HOME)."""
+    configured = os.environ.get("PI_CODING_AGENT_DIR", "").strip()
+    return Path(configured) if configured else Path.home() / ".pi" / "agent"
+
+
 def _check_config(*, as_json: bool, offline: bool) -> int:
     try:
         settings = EngineSettings()
@@ -394,9 +406,13 @@ def _check_config(*, as_json: bool, offline: bool) -> int:
         return CONFIG_ERROR_EXIT
 
     # pi reads its provider key from the environment, so a model whose provider
-    # has no credentials would only fail inside the first run.
+    # has no credentials would only fail inside the first run. A one-time
+    # ``pi /login`` credential in the persistent agent directory (auth.json) is
+    # also accepted, which is the only way to use a ChatGPT subscription.
     credential_level, credential_message = credential_status(
-        settings.configured_models(), os.environ
+        settings.configured_models(),
+        os.environ,
+        stored_providers=stored_credential_providers(_agent_dir()),
     )
     if credential_level == "error":
         print(f"op-agent-engine: error: {credential_message}", file=sys.stderr)

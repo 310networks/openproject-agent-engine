@@ -1,10 +1,11 @@
 """The model provider table and its three consumers.
 
 ``AGENT_MODEL`` is ``<provider>/<model>``; the provider selects the credential
-variable. The table is defined once in :mod:`op_agent_engine.providers` and is
-used by the runner's environment allowlist and by ``check-config``. The
-interactive setup script carries a copy (it has to prompt before the image
-runs), so both copies are compared here.
+variable, and a per-agent model may select a different provider. The table is
+defined once in :mod:`op_agent_engine.providers` and is used by the runner's
+environment allowlist and by ``check-config``. The interactive setup script
+carries a copy (it has to prompt before the image runs), so both copies are
+compared here.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from op_agent_engine.providers import (
     credential_status,
     credential_variables,
     provider_of,
+    stored_credential_providers,
 )
 from op_agent_engine.runners.generic import _INHERITED_ENV_VARS
 
@@ -135,6 +137,53 @@ def test_interactive_only_providers_warn() -> None:
     assert "interactive login" in message
 
 
+def test_a_stored_auth_json_credential_satisfies_a_provider(tmp_path: Path) -> None:
+    (tmp_path / "auth.json").write_text(
+        '{"openai-codex": {"type": "oauth", "access": "secret"}}'
+    )
+    stored = stored_credential_providers(tmp_path)
+
+    level, message = credential_status(
+        ["openai-codex/gpt-6.1-sol"], {}, stored_providers=stored
+    )
+
+    assert level == "ok"
+    assert "stored auth.json credential" in message
+    assert "secret" not in message
+
+
+def test_a_stored_credential_satisfies_an_api_key_provider(tmp_path: Path) -> None:
+    # The modern ``openai`` provider supports both an API key and a ChatGPT
+    # subscription OAuth login; the stored credential wins.
+    (tmp_path / "auth.json").write_text('{"openai": {"type": "oauth"}}')
+
+    level, message = credential_status(
+        ["openai/gpt-5.6-sol"],
+        {},
+        stored_providers=stored_credential_providers(tmp_path),
+    )
+
+    assert level == "ok"
+    assert "provider 'openai': using a stored auth.json credential" in message
+
+
+@pytest.mark.parametrize(
+    "content",
+    [None, "", "not json", "[]", '"string"'],
+)
+def test_stored_credentials_tolerate_a_missing_or_bad_file(
+    tmp_path: Path, content: str | None
+) -> None:
+    if content is not None:
+        (tmp_path / "auth.json").write_text(content)
+
+    assert stored_credential_providers(tmp_path) == set()
+
+
+def test_stored_credentials_without_an_agent_dir() -> None:
+    assert stored_credential_providers(None) == set()
+
+
 def test_unknown_provider_has_no_variables() -> None:
     assert credential_variables("nope") == ()
 
@@ -153,15 +202,41 @@ def test_agents_may_use_different_models_of_one_provider() -> None:
     assert "OPENROUTER_API_KEY" in message
 
 
-def test_mixed_providers_are_rejected() -> None:
+def test_each_provider_needs_its_own_credentials() -> None:
     level, message = credential_status(
         ["openrouter/deepseek/deepseek-v4.1-flash-1017", "anthropic/claude-sonnet-4-5"],
         {"OPENROUTER_API_KEY": "sk-or-test", "ANTHROPIC_API_KEY": "sk-ant-test"},
     )
 
+    assert level == "ok"
+    assert "provider 'openrouter': using OPENROUTER_API_KEY" in message
+    assert "provider 'anthropic': using ANTHROPIC_API_KEY" in message
+
+
+def test_a_mixed_provider_deployment_reports_the_missing_one() -> None:
+    level, message = credential_status(
+        ["openrouter/deepseek/deepseek-v4.1-flash-1017", "anthropic/claude-sonnet-4-5"],
+        {"OPENROUTER_API_KEY": "sk-or-test"},
+    )
+
     assert level == "error"
-    assert "one model provider per deployment" in message
-    assert "anthropic, openrouter" in message
+    assert "provider 'anthropic' needs one of ANTHROPIC_API_KEY" in message
+    assert "provider 'openrouter': using OPENROUTER_API_KEY" in message
+    assert "sk-or-test" not in message
+
+
+def test_a_mixed_provider_deployment_supports_a_subscription() -> None:
+    level, message = credential_status(
+        ["openrouter/deepseek/deepseek-v4.1-flash-1017", "anthropic/claude-sonnet-4-5"],
+        {
+            "OPENROUTER_API_KEY": "sk-or-test",
+            "ANTHROPIC_OAUTH_TOKEN": "sk-ant-oat-test",
+        },
+    )
+
+    assert level == "ok"
+    assert "ANTHROPIC_OAUTH_TOKEN" in message
+    assert "sk-ant-oat-test" not in message
 
 
 def test_no_configured_model_warns() -> None:
