@@ -95,3 +95,43 @@ def test_shipped_prompts_carry_updated_standard(kind: str, standard: Path) -> No
     assert "project-approved exception" in prompt
     assert "capture/certification gates" in prompt
     assert "Finish with the RESULT line required by the standard." in prompt
+
+
+def test_vfx_may_make_bounded_endpoint_integration_edits() -> None:
+    text = VFX_STANDARD.read_text(encoding="utf-8")
+    assert "Integration edits that put the effect in front of the player" in text
+    assert "the minimal additive edit at the effect's own endpoint" in text
+    assert "record the edit as a shared change in the report" in text
+    assert "Never introduce a new dependency direction" in text
+
+
+def test_vfx_integration_exception_still_excludes_gameplay_rules() -> None:
+    text = VFX_STANDARD.read_text(encoding="utf-8")
+    assert "Gameplay rules and behaviour: movement, input, collision, hazards, health" in text
+    assert "death timing, checkpoints, scoring, progression, bosses" in text
+    assert "deliver everything section 4 does allow" in text
+    assert "Report `blocked` only when nothing usable can be delivered without that change" in text
+    assert "This widening is not a relaxation of the safety rules" in text
+
+
+def test_vfx_silent_contract_uses_a_documented_default_instead_of_blocking() -> None:
+    text = VFX_STANDARD.read_text(encoding="utf-8")
+    assert "When the contract an effect needs is silent rather than wrong" in text
+    assert "Pick the smallest documented default" in text
+    assert "record a **Design latitude** note in the report" in text
+    assert "Escalate instead when the default would change a gameplay rule" in text
+    assert "no documented default from section 4 closes the gap" in text
+
+
+def test_reviewer_scores_the_vfx_integration_allowance_as_a_waiver() -> None:
+    text = REVIEW_STANDARD.read_text(encoding="utf-8")
+    assert "VFX edit scope" in text
+    assert "Score that allowance in section 3 as a scope waiver for the VFX agent" in text
+    assert "not the mere presence of such an edit" in text
+    assert "A VFX agent that delivers the effect unbound" in text
+
+
+def test_vfx_report_records_shared_and_latitude_changes() -> None:
+    text = VFX_STANDARD.read_text(encoding="utf-8")
+    assert "**Shared and integration changes:**" in text
+    assert "**Design latitude:**" in text
