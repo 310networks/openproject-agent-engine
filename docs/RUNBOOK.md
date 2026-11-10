@@ -151,6 +151,29 @@ work_package_id = <id>` is only needed when the history cannot be read (the
 engine logs a warning and leaves the counter alone) or when the counter has to
 be cleared without moving the ticket.
 
+### Missing workflow skills (instruction/image mismatch)
+
+A worker may report `BLOCKED` because its standard mandates an OpenProject or
+GitHub PR skill that the container does not ship. This is not evidence of a
+missing token: check the actual commands/results first. Successful ticket reads,
+PR inspection or an own-user report show those particular operations worked;
+they do not independently prove push/merge permission.
+
+The standards and implement/resume templates now use the bundled `op`, `curl`,
+`git`, `gh` and Python tools directly. They require no external skill files and
+retain own-account credentials, engine-owned ticket fields, normal review and
+branch-protection boundaries. Do not rotate tokens, grant administrator rights,
+install host skills or repeatedly requeue to resolve an instruction-only problem.
+
+Upgrade to the corrected released image and verify all six synced standards plus
+the templates before returning the held ticket to `New` (or `Rejected` when an
+existing PR needs a fix pass). If an authorized operator applies a temporary
+instruction-only hotfix without a restart, back up every original, compare source
+and destination hashes, update both the baked-source copy and synced workspace
+standards, and verify the next run's rendered prompt. Record that this is **not**
+a released image upgrade: recreation from an older image will revert it. Do not
+interrupt active work or change tokens, branch state or crash history for this fix.
+
 ### `workspace_error` from an interrupted clone
 
 A `workspace_error` before the agent starts means the clone under
