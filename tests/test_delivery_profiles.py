@@ -28,6 +28,15 @@ def test_delivery_profile_is_bounded_and_cannot_be_created_by_pr_text(role: str)
         assert required in text, (role, required)
 
 
+def test_retired_optional_modes_do_not_return_as_generic_requirements() -> None:
+    vfx = (ROOT / "agents" / "vfxArtist" / "AGENTS.md").read_text()
+    reviewer = (ROOT / "agents" / "codeReviewer" / "AGENTS.md").read_text()
+    assert "project-supported reduced-flash variants" in vfx
+    assert "removal does not waive baseline safety protections" in vfx
+    assert "Do not reinstate optional modes explicitly retired" in reviewer
+    assert "baseline safety limits remain" in reviewer
+
+
 def test_reviewer_verifies_relevant_delta_without_skipping_required_gates() -> None:
     text = (ROOT / "agents" / "codeReviewer" / "AGENTS.md").read_text()
     assert "verify the fix delta and all previous blockers" in text
