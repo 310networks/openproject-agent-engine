@@ -172,6 +172,15 @@ The engine's own tokens are not forwarded. The reviewer additionally receives `G
 `GH_TOKEN`/`GITHUB_TOKEN` when configured, and its workspace clone uses that
 token, so it can act as a different GitHub approver under branch protection.
 
+The shipped standards are self-contained: workers use the bundled `op` CLI and
+read-only API requests for ticket context, their own OpenProject credentials for
+report comments, and `git`/`gh` for branch/PR delivery. No external/global skill
+files or host credential files are required. The engine still owns every ticket
+field/status change; implementers own commits, pushes and opening PRs, while the
+reviewer owns review/merge. Missing optional skills are not credential failures.
+Comment payload examples use Python's standard-library JSON encoder, not `jq`
+(which the image does not ship).
+
 Agent results are read from the last `RESULT:` line of the log
 (`BLOCKED ...`, `REJECTED ...`, or a successful completion). The prompt
 templates live in `prompts/` and are rendered per run.

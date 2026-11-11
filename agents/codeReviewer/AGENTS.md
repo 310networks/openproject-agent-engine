@@ -25,7 +25,7 @@ This delegation never changes engine-owned status/assignee/routing, branch prote
 | Ticket status | Owned by the engine. **Never change it.** Do not change the assignee or other ticket fields either. |
 | Your inputs | Ticket ID, project ID, title, description, repository path, branch name, and the PR URL when available. |
 | Your outputs | A merged PR or a rejection comment on the ticket, and a final result line. |
-| Git and PRs | Use the global GitHub PR skill or the `gh` CLI. The engine may give you a dedicated GitHub identity; check it as described in section 6. |
+| Git and PRs | Use read-only `git` commands and the bundled `gh` CLI for PR inspection, review and merge. The engine may give you a dedicated GitHub identity; check it as described in section 6. |
 | Autonomy | Reach a decision without asking for intervention. Stop only for a genuine blocker (section 7). |
 
 Your final message must end with exactly one of these lines:
@@ -36,7 +36,9 @@ Your final message must end with exactly one of these lines:
 
 The engine verifies your result against the PR state. A PR that is merged is treated as approved. Do not merge unless you intend to approve.
 
-Use the OpenProject skill to read the ticket, its acceptance criteria, and comments. Do not use it to edit status, assignee, or other fields.
+Use the bundled `op` CLI to read the ticket and its acceptance criteria (`op work-package inspect <id> --format json`). For comments and relations, use read-only API requests with your own `$OP_CLI_HOST` and `$OP_CLI_TOKEN`: `GET /api/v3/work_packages/<id>/activities` and `GET /api/v3/relations?filters=[{"involved":{"operator":"=","values":["<id>"]}}]`. Do not edit status, assignee, or other fields.
+
+These workflow instructions are self-contained. External skill files are not required. A missing optional skill is not an access failure; if a tool or API actually fails, report the failing command and error with secrets redacted. Use only the identity and credentials supplied by the engine, not host credential files.
 
 ### Posting a comment
 
@@ -46,8 +48,8 @@ Use the OpenProject skill to read the ticket, its acceptance criteria, and comme
 - `$OP_CLI_TOKEN` — your API token
 
 ```bash
-jq -Rs '{comment: {raw: .}}' /tmp/review.md > /tmp/comment.json
-curl -sS -X POST -u "apikey:$OP_CLI_TOKEN" \
+python -c 'import json, sys; print(json.dumps({"comment": {"raw": sys.stdin.read()}}))' < /tmp/review.md > /tmp/comment.json
+curl -fsS -X POST -u "apikey:$OP_CLI_TOKEN" \
   -H 'Content-Type: application/json' \
   --data-binary @/tmp/comment.json \
   "$OP_CLI_HOST/api/v3/work_packages/<workPackageId>/activities"
@@ -149,7 +151,7 @@ gh pr view <pr> --json author --jq .author.login
 ```
 
 - **Different accounts.** Use a formal approving review (`gh pr review <pr> --approve`) and then merge. This is the supported path for branch protection that requires a different approver.
-- **Same account.** Do not use GitHub's formal review states (Approve or Request changes); GitHub rejects them. Communicate through the ticket comment (authoritative) and, optionally, a PR comment with the same content, then merge directly with the global GitHub PR skill or `gh pr merge`.
+- **Same account.** Do not use GitHub's formal review states (Approve or Request changes); GitHub rejects them. Communicate through the ticket comment (authoritative) and, optionally, a PR comment with the same content, then merge directly with `gh pr merge`.
 - If the merge still fails because branch protection requires an approval or conditions you cannot satisfy, do not work around it. Stop with `RESULT: BLOCKED` and state the exact protection rule in a ticket comment.
 
 ## 7. Boundaries and blockers

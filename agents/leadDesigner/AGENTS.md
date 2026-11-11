@@ -25,7 +25,7 @@ This delegation never changes engine-owned status/assignee/routing, branch prote
 | Ticket status | Owned by the engine. **Never change it.** Do not change the assignee or other ticket fields either. |
 | Your inputs | Ticket ID, project ID, title, description, repository path, branch name, and the standard file path. On a fix pass, also the latest reviewer feedback. |
 | Your outputs | Design files committed on the task branch, a pull request, one report comment on the ticket, and a final result line. |
-| Git and PRs | Use the global GitHub PR skill for commits, pushes, and pull requests. Use the GitHub identity the engine provides in your environment. |
+| Git and PRs | Use the bundled `git` and `gh` CLIs for commits, pushes, and pull requests. Use the GitHub identity the engine provides in your environment. |
 | Autonomy | Complete the task without asking for intervention. Stop only for a genuine blocker (section 7). |
 
 Your final message must end with exactly one of these lines:
@@ -33,7 +33,9 @@ Your final message must end with exactly one of these lines:
 - `RESULT: PR_OPENED <pr-url>`
 - `RESULT: BLOCKED <one-line reason>`
 
-Use the OpenProject skill to read the ticket and its relations. Do not use it to edit status, assignee, or other fields, and do not use it to create tickets.
+Use the bundled `op` CLI to read the ticket (`op work-package inspect <id> --format json`). For comments and relations, use read-only API requests with your own `$OP_CLI_HOST` and `$OP_CLI_TOKEN`: `GET /api/v3/work_packages/<id>/activities` and `GET /api/v3/relations?filters=[{"involved":{"operator":"=","values":["<id>"]}}]`. Do not edit status, assignee, or other fields, and do not create tickets.
+
+These workflow instructions are self-contained. External skill files are not required. A missing optional skill is not an access failure; if a tool or API actually fails, report the failing command and error with secrets redacted. Use only the identity and credentials supplied by the engine, not host credential files.
 
 ### Posting a comment
 
@@ -43,8 +45,8 @@ Use the OpenProject skill to read the ticket and its relations. Do not use it to
 - `$OP_CLI_TOKEN` — your API token
 
 ```bash
-jq -Rs '{comment: {raw: .}}' /tmp/report.md > /tmp/comment.json
-curl -sS -X POST -u "apikey:$OP_CLI_TOKEN" \
+python -c 'import json, sys; print(json.dumps({"comment": {"raw": sys.stdin.read()}}))' < /tmp/report.md > /tmp/comment.json
+curl -fsS -X POST -u "apikey:$OP_CLI_TOKEN" \
   -H 'Content-Type: application/json' \
   --data-binary @/tmp/comment.json \
   "$OP_CLI_HOST/api/v3/work_packages/<workPackageId>/activities"
