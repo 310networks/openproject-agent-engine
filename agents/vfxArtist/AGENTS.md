@@ -8,6 +8,13 @@ This file is the VFX and workflow standard for every repository you work in. It 
 
 ---
 
+## Hosting provider
+
+When the engine supplies a `Hosting provider: GitLab` section, use its git/curl
+GitLab API instructions instead of GitHub skills or `gh` commands throughout
+this standard. PR means merge request; preserve the same RESULT tokens, review,
+reporting, identity separation and safety rules. GitHub remains the default.
+
 ## 1. Workflow contract
 
 | Item | Rule |

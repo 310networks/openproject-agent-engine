@@ -140,6 +140,41 @@ async def _prepare(root: Path, git_repo: GitFixture, **overrides: object) -> Wor
     return await prepare_workspace(**kwargs)  # type: ignore[arg-type]
 
 
+async def test_gitlab_clone_push_fetch_and_token_rotation(
+    tmp_path: Path, git_repo: GitFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Real git transport, rewritten locally: no GitLab credentials/network needed."""
+    host = "gitlab.example.org:8443"
+    repo = "team/subgroup/service"
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "2")
+    for index, token in enumerate(("implementer-token", "reviewer-token")):
+        monkeypatch.setenv(f"GIT_CONFIG_KEY_{index}", f"url.{git_repo.clone_url}.insteadOf")
+        monkeypatch.setenv(
+            f"GIT_CONFIG_VALUE_{index}", clone_url_for(repo, token, git_host=host)
+        )
+    root = _workspace_root(tmp_path)
+    first = await _prepare(
+        root, git_repo, github_repo=repo, clone_url=None, git_host=host,
+        gh_token="implementer-token",
+    )
+    assert first.branch == "op-4-100"
+    assert (first.repo_dir / "README.md").read_text() == "hello\n"
+    _git(["push", "origin", first.branch], cwd=first.repo_dir)
+    base_repo_dir = first.base_repo_dir
+    await cleanup_workspace(first)
+    rotated = await _prepare(
+        root, git_repo, github_repo=repo, clone_url=None, git_host=host,
+        gh_token="reviewer-token", role="reviewer",
+    )
+    try:
+        assert rotated.branch == first.branch
+        assert _git(["config", "--get", "remote.origin.url"], cwd=base_repo_dir).strip() == (
+            clone_url_for(repo, "reviewer-token", git_host=host)
+        )
+    finally:
+        await cleanup_workspace(rotated)
+
+
 # -- clone + checkout ----------------------------------------------------------
 
 

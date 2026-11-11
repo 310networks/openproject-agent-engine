@@ -11,6 +11,27 @@ using the real runner to spawn `tests/fakes/fake_agent.sh` with fake
 OpenProject and GitHub backends. Also asserts that a configured `GH_TOKEN`
 never appears in the run directory or SQLite history.
 
+## GitLab verification
+
+```bash
+.venv/bin/pytest tests/test_gitlab.py tests/test_workspace.py
+```
+
+Covers GitLab.com/self-managed host requests, nested project discovery,
+credentials and token rotation, actual git clone/push/fetch over a locally
+rewritten transport, pagination, draft/WIP normalization, fork exclusion,
+HTTP/network/malformed-response failures, MR verification and confirmed vs
+scheduled merges. No live GitLab service is contacted by these tests.
+
+Before production use, repeat the manual checklist below with a throwaway
+GitLab project, `GIT_HOST` and `GITLAB_TOKEN` (optionally a distinct
+`GITLAB_TOKEN_REVIEWER`). Verify MR creation/reuse, a rejected fix on the same
+MR, draft completion, resume after interruption, protected approval/merge and
+independent `merged` verification. Repeat on GitLab.com and your self-managed
+instance; install a private CA in the container trust store if needed. Inspect
+artifacts/logs for both token values. These live acceptance steps are not
+claimed as automated test coverage.
+
 ## Smoke-test with the fake agent
 
 The fake agent (`tests/fakes/fake_agent.sh`) is a test fixture, not a

@@ -50,6 +50,7 @@ from op_agent_engine.config import (
     WorkflowConfig,
 )
 from op_agent_engine.github import GitHub, GitHubError, PullRequest
+from op_agent_engine.gitlab import GitLab
 from op_agent_engine.logging import get_logger, redact_mapping
 from op_agent_engine.openproject.activities import (
     author_id as activity_author_id,
@@ -167,7 +168,13 @@ class Dispatcher:
         self._store = store
         self._client = client
         self._settings = settings
-        self._gh = gh if gh is not None else GitHub()
+        self._gh: GitHubLike = gh if gh is not None else (
+            GitHub() if settings.git_host == "github.com" else GitLab(
+                host=settings.git_host,
+                token=(settings.gitlab_token.get_secret_value()
+                       if settings.gitlab_token else None),
+            )
+        )
         self._runner = runner if runner is not None else GenericRunner(config)
         self._prompts = (
             prompts
@@ -518,7 +525,7 @@ class Dispatcher:
             exit_code=result.exit_code,
             timed_out=result.timed_out,
             result_line=result.result_line,
-            pr_found=pr is not None,
+            pr_found=pr is not None and not pr.is_draft,
             silent=result.is_silent(),
         )
         archive = await self._finish_workspace(
@@ -1291,6 +1298,7 @@ class Dispatcher:
                     work_package_id=wp.id,
                     role=agent.kind,
                     gh_token=self._gh_token(claimed.item.agent_key),
+                    git_host=self._settings.git_host,
                     max_kept_worktree_bytes=self._max_kept_worktree_bytes(),
                 )
         except WorkspaceError as error:
@@ -1436,7 +1444,10 @@ class Dispatcher:
             )
         prompt = self._prompts.render(kind, context)
         if self._config.runners[agent.runner].inject_standard:
-            prompt = with_standard(prompt, workspace.standard_path)
+            prompt = with_standard(
+                prompt, workspace.standard_path, git_host=self._settings.git_host,
+                repo=self._repo_github(wp.project_id),
+            )
         return prompt
 
     # -- meta.json -------------------------------------------
@@ -1514,10 +1525,16 @@ class Dispatcher:
         if agent_key is not None:
             agent = self._config.agents.get(agent_key)
             if agent is not None:
-                configured_token = agent.env.get("GH_TOKEN", "").strip()
+                token_var = (
+                    "GH_TOKEN" if self._settings.git_host == "github.com" else "GITLAB_TOKEN"
+                )
+                configured_token = agent.env.get(token_var, "").strip()
                 if configured_token:
                     return configured_token
-        shared_token = self._settings.gh_token
+        shared_token = (
+            self._settings.gh_token if self._settings.git_host == "github.com"
+            else self._settings.gitlab_token
+        )
         return shared_token.get_secret_value() if shared_token is not None else None
 
     def _project_for(self, project_id: int) -> ProjectConfig:

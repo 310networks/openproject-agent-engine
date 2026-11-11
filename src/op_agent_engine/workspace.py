@@ -45,7 +45,9 @@ import shutil
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from urllib.parse import quote
 
+from op_agent_engine.config import validate_git_host
 from op_agent_engine.logging import get_logger
 
 logger = get_logger(__name__)
@@ -107,6 +109,7 @@ _PROGRESS_PREFIXES = (
 _SECRET_PATTERNS = (
     # userinfo in any URL: keep the scheme, drop the credentials
     (re.compile(r"(?P<scheme>https?://)[^/\s:@]+:[^/\s@]+@"), r"\g<scheme>***@"),
+    (re.compile(r"glpat-[A-Za-z0-9_-]+"), "glpat-***"),
     (re.compile(r"github_pat_[A-Za-z0-9_]+"), "github_pat_***"),
     (re.compile(r"gh[pousr]_[A-Za-z0-9]{16,}"), "gh*_***"),
 )
@@ -148,7 +151,8 @@ class GitError(WorkspaceError):
         self.returncode = returncode
         self.stderr = stderr
         detail = summarise_git_stderr(stderr) or "(no stderr)"
-        super().__init__(f"git {' '.join(args)} failed ({returncode}): {detail}")
+        safe_args = redact_secrets(' '.join(args))
+        super().__init__(f"git {safe_args} failed ({returncode}): {detail}")
 
 
 @dataclass(frozen=True)
@@ -164,15 +168,18 @@ class Workspace:
     base_repo_dir: Path | None = None
 
 
-def clone_url_for(github_repo: str, gh_token: str | None = None) -> str:
+def clone_url_for(
+    github_repo: str, gh_token: str | None = None, *, git_host: str = "github.com"
+) -> str:
     """HTTPS clone URL for *github_repo*.
 
     With ``gh_token`` the token is embedded (``x-access-token``); without it
     the host's existing ``gh``/git authentication is used.
     """
-    if gh_token:
-        return f"https://x-access-token:{gh_token}@github.com/{github_repo}.git"
-    return f"https://github.com/{github_repo}.git"
+    host = validate_git_host(git_host)
+    user = "x-access-token" if host == "github.com" else "oauth2"
+    credentials = f"{user}:{quote(gh_token, safe='')}@" if gh_token else ""
+    return f"https://{credentials}{host}/{github_repo}.git"
 
 
 async def run_git(
@@ -353,6 +360,7 @@ async def prepare_workspace(
     work_package_id: int,
     role: str,
     gh_token: str | None = None,
+    git_host: str = "github.com",
     clone_url: str | None = None,
     max_kept_worktree_bytes: int = DEFAULT_FAILED_WORKTREE_MAX_BYTES,
 ) -> Workspace:
@@ -386,7 +394,7 @@ async def prepare_workspace(
             extra={"github_repo": github_repo, "repo_dir": str(repo_dir)},
         )
         await _clone_into(
-            repo_dir, clone_url or clone_url_for(github_repo, gh_token)
+            repo_dir, clone_url or clone_url_for(github_repo, gh_token, git_host=git_host)
         )
     else:
         _discard_stale_index_lock(repo_dir)
@@ -399,7 +407,7 @@ async def prepare_workspace(
                     "remote",
                     "set-url",
                     "origin",
-                    clone_url_for(github_repo, gh_token),
+                    clone_url_for(github_repo, gh_token, git_host=git_host),
                 ],
                 cwd=repo_dir,
             )
