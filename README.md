@@ -204,6 +204,29 @@ engine comment starts with `ENGINE:`.
 | [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md) | fake-agent test and manual acceptance checklist |
 | [docs/CURRENT_STATE.md](docs/CURRENT_STATE.md) | implemented architecture, control flow, state and limits |
 
+## Project delivery profiles
+
+Agent standards delegate phase-specific acceptance, test cadence and reversible
+local design latitude to an **Owner-approved policy verified on the repository's
+trusted default branch**. This allows prototype/feature work without requiring
+all future integration/release evidence after every small iteration. A policy
+proposed in the PR under review cannot authorize its own relaxed acceptance.
+Absent verified approval, the ordinary standard applies.
+
+Use affected checks during iteration and broader execution at the approved
+integration/release boundary. Reviewers may independently inspect trustworthy
+current CI evidence where the approved profile permits it; a failed, queued,
+skipped or unverifiable required check is not a pass. A bounded cross-role
+change needs named endpoint/contract authorization in the verified policy and
+must stay within the ticket's scope.
+
+This changes instructions, not scheduler eligibility or outcome verification.
+It does not override engine-owned status/routing, branch protection, independent
+review, security, licensing, numerical safety floors or actual human approvals.
+Later gates remain explicit and unverified until executed. These instructions
+must pass normal review/release/deployment before affecting a running engine;
+a merged instruction PR is not an automatic container upgrade.
+
 ## Contributing
 
 Issues and pull requests are welcome. Pull requests run the test suite
