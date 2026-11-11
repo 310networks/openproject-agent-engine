@@ -30,6 +30,61 @@ reference.
 `OP_PROVISION_TOKEN` is an administrator token used only by
 `agent-init.sh` and `docker compose run --rm provision`.
 
+## Git hosting (GitHub or GitLab)
+
+`GIT_HOST` selects one hosting service for the deployment. It defaults to
+`github.com`, preserving existing GitHub configuration. Any other hostname
+selects GitLab: use `gitlab.com` or a self-managed GitLab hostname, optionally
+with a port (for example `gitlab.example.org:8443`). Supply a hostname, not a
+URL. GitLab must be served over HTTPS at the host root; install any private CA
+in the container trust store rather than disabling TLS verification.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `GIT_HOST` | `github.com` | deployment-wide hosting authority; non-GitHub hosts use GitLab API v4 |
+| `GITLAB_TOKEN` | unset | required for GitLab; shared implementer and engine token with `api` scope and repository push/MR permissions |
+| `GITLAB_TOKEN_REVIEWER` | shared `GITLAB_TOKEN` | optional dedicated reviewer token with API, fetch, approval and merge permissions |
+
+For GitLab, set `GIT_HOST` and `GITLAB_TOKEN` in `docker/.env` yourself after
+running setup. `GH_TOKEN` is not used by the GitLab adapter. The optional
+`GIT_REVIEWER_NAME` and `GIT_REVIEWER_EMAIL` apply to either host; their defaults
+also apply when `GITLAB_TOKEN_REVIEWER` is configured. A separate token must
+belong to a different account when project approval rules require that.
+
+`GIT_REPO` remains the OpenProject project attribute. On GitLab it accepts
+`group/project`, nested `group/subgroup/project`, a matching HTTPS URL, or a
+matching `git@host:path.git` / `ssh://git@host/path.git` remote. Foreign hosts,
+credentials, query strings and traversal paths are rejected. GitHub retains
+its existing `owner/name` and github.com URL behavior. `GITHUB_REPO_DIR` and
+`GITHUB_DEFAULT_BRANCH` remain backward-compatible overrides on either host.
+Mixed GitHub/GitLab projects or multiple GitLab hosts require separate engine
+deployments with separate project scopes.
+
+GitLab follows the same implement/fix/resume/review/recovery flow. Agents use
+`git` and authenticated GitLab REST requests through the bundled `curl` (no
+`glab` dependency). Instructions cover MR reuse/create/update, diff and pipeline
+inspection, separate-account approval and SHA-pinned merge. The engine verifies
+MR state independently through API v4, excluding drafts and same-branch forks.
+`RESULT: PR_OPENED`, `APPROVED` and `REJECTED` are unchanged; their URL is the
+MR `web_url`. A scheduled merge is not accepted until GitLab reports `merged`.
+Existing metadata `github`/`pr_url` names are retained for compatibility; no
+state database migration is needed. Tokens are secret-redacted in metadata and
+logs; clone URLs use GitLab's `oauth2` username, with URL-encoded credentials.
+
+Example:
+
+```dotenv
+GIT_HOST=gitlab.example.org
+GITLAB_TOKEN=replace-with-implementer-token
+GITLAB_TOKEN_REVIEWER=replace-with-reviewer-token
+```
+
+Set the project's `GIT_REPO` to `team/subgroup/service`, then recreate the
+engine container. Tokens are never written to prompts. No public GitLab or
+self-managed live smoke test is performed by the automated suite; use a test
+project to verify clone/push, MR creation, approval and merge under your own
+branch-protection rules before enabling production polling.
+
 ## GitHub identity
 
 Every agent normally uses the shared `GH_TOKEN`. Some protected repositories

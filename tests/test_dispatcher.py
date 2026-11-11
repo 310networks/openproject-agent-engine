@@ -169,6 +169,7 @@ async def make_dispatcher(
     work_packages: list[dict[str, Any]] | None = None,
     max_crash_retries: int = 2,
     config_overrides: dict[str, Any] | None = None,
+    settings_overrides: dict[str, Any] | None = None,
     transport: httpx.AsyncBaseTransport | None = None,
     prompts_template: str = (
         "PROMPT subject={{ wp.subject }} branch={{ branch }} "
@@ -212,6 +213,7 @@ async def make_dispatcher(
         workspace_root=tmp_path / "ws",
         max_crash_retries=max_crash_retries,
         run_timeout_seconds=360,
+        **(settings_overrides or {}),
     )
 
     # Stub the workspace preparation: no real git in these tests.
@@ -244,7 +246,9 @@ async def make_dispatcher(
         store=store,
         client=client,
         settings=settings,
-        gh=gh if gh is not None else FakeGitHub(),
+        gh=gh if gh is not None else (
+            FakeGitHub() if settings.git_host == "github.com" else None
+        ),
         runner=runner,
         prompts=PromptRenderer(prompts_dir),
     )

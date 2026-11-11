@@ -27,7 +27,7 @@ from typing import Any, TextIO
 
 REDACTED = "***"
 
-_SECRET_PREFIXES = ("OP_", "GH_TOKEN")
+_SECRET_PREFIXES = ("OP_", "GH_TOKEN", "GITLAB_TOKEN")
 _SECRET_SUFFIXES = ("_API_KEY", "_TOKEN", "_PASSWORD", "_SECRET")
 
 _STANDARD_RECORD_KEYS = frozenset(

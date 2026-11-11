@@ -20,6 +20,7 @@ import re
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 from pydantic import (
     BaseModel,
@@ -243,10 +244,29 @@ class OpenProjectConfig(BaseModel):
         return self
 
 
+def validate_git_host(value: str) -> str:
+    """An HTTPS authority, not a URL/path or a source of embedded credentials."""
+    host = value.strip().lower()
+    parsed = urlsplit(f"https://{host}")
+    if (
+        not parsed.hostname or parsed.username or parsed.password
+        or parsed.path or parsed.query or parsed.fragment
+        or not re.fullmatch(r"(?:[a-z0-9.-]+|\[[0-9a-f:]+\])(?::[0-9]+)?", host)
+    ):
+        raise ValueError("GIT_HOST must be a hostname with optional port, not a URL")
+    try:
+        _ = parsed.port
+    except ValueError as error:
+        raise ValueError("GIT_HOST has an invalid port") from error
+    return host
+
+
 class RepoConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    # Historical field name retained for mapping/API compatibility on both hosts.
     github: str
+    git_host: str = "github.com"
     dir: str
     # ``None`` means the engine asks git for the remote default branch when it
     # prepares the workspace. Set it only to override that discovery.
@@ -255,9 +275,19 @@ class RepoConfig(BaseModel):
     @field_validator("github")
     @classmethod
     def _github_repo(cls, value: str) -> str:
-        if not re.fullmatch(r"[^/\s]+/[^/\s]+", value):
-            raise ValueError("must be a GitHub repository in 'owner/name' form")
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+", value):
+            raise ValueError("must be a repository in 'namespace/name' form")
+        if any(part in {".", ".."} for part in value.split("/")):
+            raise ValueError("repository must not contain traversal segments")
         return value
+
+    _host = field_validator("git_host")(validate_git_host)
+
+    @model_validator(mode="after")
+    def _namespace(self) -> RepoConfig:
+        if self.git_host == "github.com" and self.github.count("/") != 1:
+            raise ValueError("GitHub repositories require owner/name")
+        return self
 
     @field_validator("dir")
     @classmethod
@@ -293,6 +323,9 @@ class RepoDiscoveryConfig(BaseModel):
 
     dir_override: str | None = None
     default_branch: str | None = None
+    git_host: str = "github.com"
+
+    _host = field_validator("git_host")(validate_git_host)
 
     @field_validator("dir_override")
     @classmethod
@@ -663,12 +696,15 @@ class WorkflowConfig(BaseModel):
                 f"{model_text}"
             )
         reviewer = self.reviewer
-        github_identity = (
-            "dedicated reviewer token"
-            if "GH_TOKEN" in reviewer.env
-            else "shared GH_TOKEN"
-        )
-        lines.append(f"github identity: {github_identity}")
+        gitlab = self.repo_discovery.git_host != "github.com"
+        token_var = "GITLAB_TOKEN" if gitlab else "GH_TOKEN"
+        dedicated = token_var in reviewer.env
+        if gitlab:
+            implementer_tokens = {a.env.get(token_var) for a in self.implementers}
+            dedicated = reviewer.env.get(token_var) not in implementer_tokens
+        identity = "dedicated reviewer token" if dedicated else f"shared {token_var}"
+        lines.append(f"{'gitlab' if gitlab else 'github'} identity: {identity}")
+        lines.append(f"git host: {self.repo_discovery.git_host}")
         provisioning = self.openproject.provisioning
         engine_role = (
             repr(provisioning.engine_role)
@@ -771,8 +807,13 @@ class WorkflowConfig(BaseModel):
                 "OP_CLI_HOST": settings.op_base_url,
                 "OP_CLI_TOKEN": (env.get(token_var) or "").strip(),
             }
+            agent_env["GIT_HOST"] = settings.git_host
+            if settings.git_host != "github.com":
+                token = _secret_value(settings.gitlab_token)
+                if token:
+                    agent_env["GITLAB_TOKEN"] = token
             if kind == "reviewer":
-                agent_env.update(_reviewer_github_env(settings))
+                agent_env.update(_reviewer_git_env(settings))
             agents[key] = {
                 "name": login,
                 "kind": kind,
@@ -796,6 +837,7 @@ class WorkflowConfig(BaseModel):
                 },
             },
             "repo_discovery": {
+                "git_host": settings.git_host,
                 "dir_override": settings.github_repo_dir if single else None,
                 "default_branch": settings.github_default_branch or None,
             },
@@ -926,6 +968,11 @@ class EngineSettings(BaseSettings):
     data_dir: Path = Field(default_factory=lambda: Path(DEFAULT_DATA_DIR).expanduser())
     workspace_root: Path | None = None
     prompts_dir: Path | None = None
+    git_host: str = "github.com"
+    gitlab_token: SecretStr | None = None
+    gitlab_token_reviewer: SecretStr | None = None
+    _host = field_validator("git_host")(validate_git_host)
+
     gh_token: SecretStr | None = None
     # Optional dedicated GitHub identity for the reviewer. A branch protection
     # rule can require the approving/merging account to differ from the account
@@ -978,6 +1025,8 @@ class EngineSettings(BaseSettings):
         if self.workspace_root is None or not str(self.workspace_root):
             missing.append("WORKSPACE_ROOT")
         missing.extend(self.missing_agent_tokens())
+        if self.git_host != "github.com" and not _secret_value(self.gitlab_token):
+            missing.append("GITLAB_TOKEN")
         return missing
 
     def missing_agent_tokens(
@@ -1026,19 +1075,25 @@ def _secret_value(value: SecretStr | None) -> str | None:
     return stripped or None
 
 
-def _reviewer_github_env(settings: EngineSettings) -> dict[str, str]:
-    """Extra environment for the reviewer's dedicated GitHub identity.
+def _reviewer_git_env(settings: EngineSettings) -> dict[str, str]:
+    """Extra environment for the reviewer's dedicated hosting identity.
 
-    A dedicated token changes the account ``gh`` acts as, which is what branch
-    protection checks. The optional git-config part is the commit identity: it
+    A dedicated token changes the account the hosting API acts as, which is
+    what branch protection checks. The optional git-config part is the commit identity: it
     defaults to the reviewer login so a commit or merge created locally is not
     attributed to the implementer account.
     """
-    token = _secret_value(settings.gh_token_reviewer)
+    gitlab = settings.git_host != "github.com"
+    token = _secret_value(
+        settings.gitlab_token_reviewer if gitlab else settings.gh_token_reviewer
+    )
     env: dict[str, str] = {}
     if token is not None:
-        env["GH_TOKEN"] = token
-        env["GITHUB_TOKEN"] = token
+        if gitlab:
+            env["GITLAB_TOKEN"] = token
+        else:
+            env["GH_TOKEN"] = token
+            env["GITHUB_TOKEN"] = token
 
     name = (settings.git_reviewer_name or "").strip()
     email = (settings.git_reviewer_email or "").strip()

@@ -26,6 +26,7 @@ from jinja2 import (
 )
 
 from op_agent_engine.config import ConfigError, EngineSettings
+from op_agent_engine.gitlab_prompt import gitlab_instructions
 from op_agent_engine.openproject.activities import ActivityComment, comment_from_activity
 
 PROMPTS_DIR_NAME = "prompts"
@@ -189,13 +190,17 @@ def _author_label(
     return f"{name} ({role})"
 
 
-def with_standard(prompt: str, standard_path: Path) -> str:
+def with_standard(
+    prompt: str, standard_path: Path, *, git_host: str = "github.com", repo: str = ""
+) -> str:
     """Prepend the workspace AGENTS.md under a heading (section 10).
 
     The pi runner runs with ``--no-context-files``, so the standard is injected
     explicitly instead of relying on directory discovery.
     """
     content = standard_path.read_text(encoding="utf-8").strip()
+    if git_host != "github.com":
+        prompt = gitlab_instructions(git_host, repo) + "\n\n" + prompt
     return (
         f"# Engineering standard\n\n"
         f"Source: {standard_path}\n\n"

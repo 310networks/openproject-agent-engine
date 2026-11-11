@@ -29,7 +29,7 @@ are fixed to those three.
 
 ## 3. Project attribute (`GIT_REPO`)
 
-The GitHub repository is a **project attribute** — OpenProject 14+ calls
+The GitHub or GitLab repository is a **project attribute** — OpenProject 14+ calls
 project custom fields this, and the API still exposes them as
 `customField<N>`. The engine reads it from `GET /api/v3/projects/{id}`, so it
 is set **once per project**; there is nothing to select on each work package.
@@ -39,7 +39,10 @@ is set **once per project**; there is nothing to select on each work package.
 2. **Name**: `GIT_REPO`. **Format**: **Text**. Save.
 3. Make it available for **all projects**.
 4. In each monitored project's Overview page (openproject.example.com/projects/project-identifier), set `GIT_REPO` to its repository
-   (`owner/name` or `https://github.com/owner/name`).
+   (`owner/name` or `https://github.com/owner/name` for the default GitHub host).
+   For GitLab set deployment variable `GIT_HOST=gitlab.com` or your self-managed
+   hostname and `GITLAB_TOKEN`; the same attribute accepts `group/project`,
+   `group/subgroup/project`, or a URL on that host. See [CONFIG.md](CONFIG.md#git-hosting-github-or-gitlab).
 
 The name is matched case- and separator-insensitively: `GIT_REPO`, `GIT REPO`,
 and `git-repo` all resolve to the same attribute. The engine finds its

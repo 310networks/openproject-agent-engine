@@ -295,12 +295,16 @@ async def expand_projects(
             )
 
         raw_repo = _custom_field_value(payload, field_id)
-        github = _github_repo(raw_repo) if raw_repo else None
+        github = (
+            _repository(raw_repo, discovery.git_host) if raw_repo else None
+        )
         if raw_repo and github is None:
             raise OpenProjectResolutionError(
                 f"project '{identifier}': project attribute {GIT_REPO_FIELD} "
-                f"value {raw_repo!r} is not a GitHub repository "
-                "(expected owner/name or a github.com URL)"
+                f"value {raw_repo!r} is not a "
+                + ("GitHub repository" if discovery.git_host == "github.com"
+                   else f"GitLab repository on {discovery.git_host}")
+                + " (expected namespace/name or a matching host URL)"
             )
         if github is None:
             if wildcard:
@@ -327,6 +331,7 @@ async def expand_projects(
                 enabled=enabled_by_identifier.get(identifier, True),
                 repo=RepoConfig(
                     github=github,
+                    git_host=discovery.git_host,
                     dir=_unique_repo_dir(
                         dir_override or repo_name, identifier, used_dirs
                     ),
@@ -452,6 +457,21 @@ def _raw_custom_field_value(raw: Any) -> str | None:
             if isinstance(value, str) and value.strip():
                 return value.strip()
     return None
+
+
+def _repository(value: str, host: str) -> str | None:
+    if host == "github.com":
+        return _github_repo(value)
+    value = value.strip()
+    for prefix in (f"https://{host}/", f"ssh://git@{host}/", f"git@{host}:"):
+        if value.startswith(prefix):
+            value = value[len(prefix):]
+            break
+    value = value.removesuffix("/").removesuffix(".git")
+    try:
+        return RepoConfig(github=value, git_host=host, dir="repo").github
+    except ValueError:
+        return None
 
 
 def _github_repo(value: str) -> str | None:

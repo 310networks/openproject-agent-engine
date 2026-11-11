@@ -29,7 +29,8 @@ agent, verifies the outcome against GitHub and OpenProject, and performs
 
 - Docker
 - OpenProject 17 (API v3) with a project, plus one-time administrator access.
-- GitHub repository for each project and a token that can push to it and merge pull requests.
+- GitHub or GitLab repository for each project and a token that can push to it
+  and merge pull/merge requests. GitLab.com and HTTPS self-managed GitLab are supported.
 
 ## Quick start
 
@@ -154,6 +155,23 @@ container; see [docs/CONFIG.md](docs/CONFIG.md#llamacpp).
 Everything else — concurrency, timings, status names, paths and the shared git
 identity — has a working default. See [docs/CONFIG.md](docs/CONFIG.md) and the commented
 [`docker/.env.example`](docker/.env.example).
+
+## GitLab deployments
+
+Set `GIT_HOST=gitlab.com` (or your self-managed GitLab hostname, optionally
+with a port) and `GITLAB_TOKEN` in `docker/.env`. Keep `GIT_REPO` in the
+OpenProject project settings: `group/project`, nested `group/subgroup/project`
+or a matching host URL. GitHub remains the default when `GIT_HOST` is unset.
+One deployment targets one host; mixed hosts need separate deployments.
+
+Use a token with `api` scope and push/MR permissions. Optionally set
+`GITLAB_TOKEN_REVIEWER` for a different reviewer account. The full workflow is
+unchanged: clone/push, MR reuse and draft handling, fixes/resume, approval,
+merge and independent merged-state verification. Agents use the bundled git
+and curl against GitLab API v4; no additional CLI is needed. The existing
+`RESULT: PR_OPENED` token carries the merge request URL.
+See [Git hosting configuration](docs/CONFIG.md#git-hosting-github-or-gitlab)
+for credentials, self-managed TLS requirements and limitations.
 
 ## How a ticket flows
 

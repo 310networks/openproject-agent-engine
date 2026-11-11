@@ -879,7 +879,16 @@ async def test_startup_recovers_in_progress_with_a_resume_run(
         state="open",
         is_draft=True,
     )
-    runner = FakeRunner(make_result(tmp_path))
+    gh = FakeGitHub(pr=draft_pr)
+
+    def finish_draft() -> None:
+        # The agent must finish the draft before its result is authoritative.
+        gh.pr = PullRequest(
+            number=draft_pr.number, url=draft_pr.url,
+            head_branch=draft_pr.head_branch, state="open", is_draft=False,
+        )
+
+    runner = FakeRunner(make_result(tmp_path), on_run=finish_draft)
     engine, fake, client, store_path = await make_engine(
         tmp_path,
         monkeypatch,
@@ -887,7 +896,7 @@ async def test_startup_recovers_in_progress_with_a_resume_run(
             wp(100, status=STATUS_IN_PROGRESS, agent=11, assignee=AGENT_USER_ID)
         ],
         runner=runner,
-        gh=FakeGitHub(pr=draft_pr),
+        gh=gh,
     )
     try:
         assert await engine.run(max_polls=1) == 0
