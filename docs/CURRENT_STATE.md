@@ -119,8 +119,15 @@ and after running. A successful run with a `RESULT:` line, a clean worktree
 crash count. Drafts are never made ready by the engine. Missing baseline heads
 do not prove movement; unchanged heads, missing results, nonzero exits and
 timeouts still follow the crash path. Ready PR and reviewer precedence is
-unchanged. Local commits ahead of the fetched base survive workspace preparation
-on the next poll, even before a branch has been pushed.
+unchanged. An existing local task head survives workspace preparation on the
+next poll even before it has been pushed and even if the default branch has
+advanced independently. Default-branch updates are fetched but are not
+automatically integrated into an existing task branch. For a remote task branch,
+preparation retains local-ahead commits or fast-forwards to a remote-ahead head.
+Divergent local/remote task heads stop preparation with a workspace error before
+reclaiming any worktree or resetting the branch. The error identifies both head
+OIDs and the clone path; both refs remain available for explicit reconciliation.
+Automatic merge/rebase of divergent task branches is not attempted.
 
 ## Concurrency
 

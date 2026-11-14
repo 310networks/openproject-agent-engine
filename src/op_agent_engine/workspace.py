@@ -453,18 +453,45 @@ async def prepare_workspace(
         raise WorkspaceError(f"unknown agent kind {role!r}")
 
     if role == "implementer":
-        # A clean progress run need not have pushed or opened a PR yet. Do
-        # not reset its local commits on the next poll. Only retain a local
-        # branch containing the fetched base; divergent remote updates keep
-        # the existing remote-authoritative behavior.
+        # A clean progress run need not have pushed or opened a PR yet.
+        # Default-branch advancement must never reset an existing task head.
+        # A remote task head can replace it only via a safe fast-forward.
         local_ref = f"refs/heads/{branch}"
         try:
-            await run_git(["merge-base", "--is-ancestor", base, local_ref], cwd=repo_dir)
+            await run_git(["show-ref", "--verify", "--quiet", local_ref], cwd=repo_dir)
         except GitError as error:
-            if error.returncode not in {1, 128}:
+            if error.returncode != 1:
                 raise
         else:
-            base = (await run_git(["rev-parse", local_ref], cwd=repo_dir)).strip()
+            local_head = (await run_git(["rev-parse", local_ref], cwd=repo_dir)).strip()
+            if not remote_branch_exists:
+                base = local_head
+            else:
+                try:
+                    await run_git(
+                        ["merge-base", "--is-ancestor", base, local_head], cwd=repo_dir
+                    )
+                except GitError as error:
+                    if error.returncode != 1:
+                        raise
+                    try:
+                        await run_git(
+                            ["merge-base", "--is-ancestor", local_head, base], cwd=repo_dir
+                        )
+                    except GitError as error:
+                        if error.returncode != 1:
+                            raise
+                        remote_head = (
+                            await run_git(["rev-parse", base], cwd=repo_dir)
+                        ).strip()
+                        raise WorkspaceError(
+                            f"task branch {branch} has diverged: {local_ref} at "
+                            f"{local_head}, {base} at {remote_head}; both heads "
+                            f"are preserved in {repo_dir}. Reconcile the branches "
+                            "before retrying; no worktree was reclaimed or branch reset."
+                        ) from error
+                else:
+                    base = local_head
 
     # Every run gets its own working tree so checkouts (and the agents'
     # edits) cannot collide. The shared clone stays detached so every run
