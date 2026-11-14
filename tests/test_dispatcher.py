@@ -1808,6 +1808,78 @@ def use_workspace(monkeypatch: pytest.MonkeyPatch, workspace: Workspace) -> None
     )
 
 
+@pytest.mark.parametrize("comment_fails", [False, True])
+async def test_cancel_checkpoints_dirty_worktree_and_resumes_with_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, comment_fails: bool
+) -> None:
+    import asyncio
+
+    entered = asyncio.Event()
+
+    class WaitingRunner(FakeRunner):
+        async def run(self, request: RunRequest, *, on_spawned=None) -> RunResult:
+            (workspace.repo_dir / "notes.md").write_text("partial work\n")
+            entered.set()
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+    runner = WaitingRunner(make_result(tmp_path))
+    dispatcher, fake, store, client, settings = await make_dispatcher(
+        tmp_path, monkeypatch, runner=runner, gh=FakeGitHub(pr=PR),
+        settings_overrides={"drain_seconds": 1, "engine_comment_max_bytes": 512},
+        prompts_template="{{ interruption.run_dir if interruption else 'none' }} "
+        "{{ interruption.branch_head if interruption else 'none' }}",
+    )
+    try:
+        workspace = make_real_workspace(tmp_path)
+        use_workspace(monkeypatch, workspace)
+        claimed = claim(store, make_item(100))
+        store.increment_crash_count(100)
+        attempts = []
+        original_post = dispatcher._post_comment
+
+        async def post(wp_id: int, text: str) -> None:
+            attempts.append(text)
+            if comment_fails:
+                raise OpenProjectError("simulated 413")
+            await original_post(wp_id, text)
+
+        monkeypatch.setattr(dispatcher, "_post_comment", post)
+        task = asyncio.create_task(dispatcher.execute(claimed))
+        await asyncio.wait_for(entered.wait(), 2)
+        await dispatcher.checkpoint_before_stop(1)
+        assert (store.runs_dir / "1" / "meta.json").exists()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        run = store.get_run(1)
+        assert run and run.state == "interrupted" and run.outcome == "drained"
+        assert store.crash_count(100) == 1
+        assert store.active_work_package_ids() == frozenset()
+        meta = json.loads((store.runs_dir / "1" / "meta.json").read_text())
+        assert meta["argv"] == ["fake-runner"]
+        assert meta["pr_url"] == PR.url
+        assert len(meta["branch_head"]) == 40
+        artefact = Path(meta["worktree_artefact"])
+        assert (artefact / "untracked" / "notes.md").read_text() == "partial work\n"
+        assert len(attempts) == 1
+        assert len(attempts[0].encode()) <= settings.engine_comment_max_bytes
+        assert bool(meta["interruption_errors"]) == comment_fails
+        assert len(posted_comments(fake, 100)) == (0 if comment_fails else 1)
+        resumed = claim(store, make_item(100), kind="resume")
+        prompt = dispatcher._render_prompt(resumed, workspace)
+        assert str(store.runs_dir / "1") in prompt
+        assert meta["branch_head"] in prompt
+        resumed_runner = FakeRunner(make_result(tmp_path))
+        dispatcher._runner = resumed_runner
+        await dispatcher.execute(resumed)
+        assert len(resumed_runner.requests) == 1  # An existing PR must not skip recovery.
+        assert store.get_run(resumed.run_id).state == SUCCEEDED
+    finally:
+        await client.aclose()
+        store.close()
+
+
 async def test_failed_run_captures_worktree_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

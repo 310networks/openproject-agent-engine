@@ -205,10 +205,13 @@ async def run_git(
         _stdout, stderr = await asyncio.wait_for(
             process.communicate(), timeout=timeout
         )
-    except TimeoutError as error:
-        process.kill()
+    except (TimeoutError, asyncio.CancelledError) as error:
+        with contextlib.suppress(ProcessLookupError):
+            process.kill()
         with contextlib.suppress(BaseException):
             await process.wait()
+        if isinstance(error, asyncio.CancelledError):
+            raise
         raise GitError(args, -1, f"timed out after {timeout:g} seconds") from error
     returncode = process.returncode
     if returncode is None or returncode != 0:

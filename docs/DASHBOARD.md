@@ -5,7 +5,10 @@ glance:
 
 - **Is the engine alive and polling?** The status pill pulses green while the
   heartbeat is fresh, turns amber when the engine is paused, and red when the
-  heartbeat is stale or missing.
+  heartbeat is stale or missing. During graceful shutdown, `/api/status`
+  reports engine status `draining` while the heartbeat stays fresh; the UI
+  displays the humanized “Draining” label. A stale heartbeat still takes
+  precedence over a leftover `DRAINING` marker after a hard kill.
 - **Which agents are available?** Every agent in the fixed team, its
   runner/model, project scope, every current session (an agent can run more
   than one ticket at once) and last session.

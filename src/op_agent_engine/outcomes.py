@@ -74,6 +74,19 @@ class OutcomeDecision:
     crash_retry: bool = False
 
 
+def bound_engine_comment(comment: str, max_bytes: int) -> str:
+    """Limit a comment by UTF-8 bytes, including an explicit truncation marker."""
+    encoded = comment.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return comment
+    marker = " … truncated"
+    return (
+        encoded[:max(0, max_bytes - len(marker.encode("utf-8")))].decode(
+            "utf-8", errors="ignore"
+        ) + marker
+    )
+
+
 def parse_result_line(result_line: str | None) -> str | None:
     """The payload after ``RESULT:`` (e.g. ``BLOCKED need X``), or None."""
     if result_line is None:

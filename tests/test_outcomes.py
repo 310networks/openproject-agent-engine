@@ -7,6 +7,7 @@ from op_agent_engine.outcomes import (
     already_open_pr_comment,
     blocked_comment,
     blocked_reason,
+    bound_engine_comment,
     decide_implementer_outcome,
     decide_reviewer_outcome,
     escalation_comment,
@@ -20,6 +21,14 @@ from op_agent_engine.outcomes import (
 from op_agent_engine.store import FAILED, SUCCEEDED, TIMEOUT, Run
 
 # -- decide_implementer_outcome -------------------------------------------
+
+
+def test_restart_comment_cap_is_utf8_byte_bounded() -> None:
+    short = "ENGINE: run interrupted"
+    assert bound_engine_comment(short, 512) == short
+    text = bound_engine_comment("ENGINE: " + "🙂" * 300000, 512)
+    assert len(text.encode("utf-8")) <= 512
+    assert text.endswith(" … truncated")
 
 
 def test_timeout_without_pr_is_crash_retry() -> None:

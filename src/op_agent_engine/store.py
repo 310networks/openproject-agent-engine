@@ -408,6 +408,16 @@ class Store:
             ).fetchone()
         return None if row is None else _row_to_run(row)
 
+    def last_interrupted_run(self, work_package_id: int) -> Run | None:
+        """Most recent restart checkpoint, separate from successful code runs."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM runs WHERE work_package_id = ? "
+                "AND state = ? AND outcome = 'drained' ORDER BY id DESC LIMIT 1",
+                (work_package_id, INTERRUPTED),
+            ).fetchone()
+        return None if row is None else _row_to_run(row)
+
     def state_counts(self) -> dict[str, int]:
         """Number of runs per state (``running`` included)."""
         with self._lock:

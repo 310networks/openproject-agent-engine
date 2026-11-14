@@ -40,8 +40,9 @@ x-engine: &engine
     # plus the git clones.
     - agent-workspace:/home/agent/agents
   restart: unless-stopped
-  # STOP_GRACE_SECONDS (60) + the runner's 20 s SIGKILL grace, with margin.
-  stop_grace_period: 90s
+  # Must exceed drain + TERM/KILL (20s) + checkpoint/log budget (55s).
+  # Keep this numeric seconds value in sync with the startup warning setting.
+  stop_grace_period: ${CONTAINER_STOP_GRACE_SECONDS:-1020}s
 
 services:
   engine:

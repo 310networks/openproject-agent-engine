@@ -29,7 +29,12 @@ from urllib.parse import parse_qs, urlparse
 
 from op_agent_engine import __version__
 from op_agent_engine.config import EngineSettings, WorkflowConfig
-from op_agent_engine.engine import PAUSE_FILE_NAME, STORE_FILE_NAME, read_heartbeat
+from op_agent_engine.engine import (
+    DRAIN_FILE_NAME,
+    PAUSE_FILE_NAME,
+    STORE_FILE_NAME,
+    read_heartbeat,
+)
 from op_agent_engine.logging import get_logger
 from op_agent_engine.store import (
     CANCELLED,
@@ -142,6 +147,8 @@ def _engine_status(
         return "offline", stale_after
     if heartbeat_age > stale_after:
         return "stale", stale_after
+    if (settings.data_dir / DRAIN_FILE_NAME).exists():
+        return "draining", stale_after
     paused = settings.engine_paused or (
         settings.data_dir / PAUSE_FILE_NAME
     ).exists()

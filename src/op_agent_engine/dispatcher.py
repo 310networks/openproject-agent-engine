@@ -78,6 +78,7 @@ from op_agent_engine.outcomes import (
     NO_RESULT_LINE_NOTE,
     OutcomeDecision,
     already_open_pr_comment,
+    bound_engine_comment,
     decide_implementer_outcome,
     decide_reviewer_outcome,
     escalation_comment,
@@ -97,6 +98,7 @@ from op_agent_engine.workspace import (
     WorkspaceError,
     WorktreeArchive,
     archive_failed_worktree,
+    capture_worktree_state,
     cleanup_workspace,
     prepare_workspace,
 )
@@ -185,6 +187,9 @@ class Dispatcher:
         # preparation so fetch/worktree operations cannot race; the agents
         # themselves then run in separate worktrees.
         self._workspace_locks: dict[str, asyncio.Lock] = {}
+        self._active_workspaces: dict[int, Workspace] = {}
+        self._active_requests: dict[int, RunRequest] = {}
+        self._active_claims: dict[int, tuple[ClaimedRun, datetime]] = {}
 
     # -- main entry point ---------------------------------------------------
 
@@ -230,10 +235,112 @@ class Dispatcher:
         started_at = datetime.now(UTC)
         logger.info("starting %s run", claimed.kind, extra=log_extra)
 
-        if claimed.kind == "review":
-            await self._execute_review(claimed, run_id, run_dir, started_at)
-        else:
-            await self._execute_implement(claimed, run_id, run_dir, started_at)
+        self._active_claims[run_id] = (claimed, started_at)
+        try:
+            if claimed.kind == "review":
+                await self._execute_review(claimed, run_id, run_dir, started_at)
+            else:
+                await self._execute_implement(claimed, run_id, run_dir, started_at)
+        except asyncio.CancelledError:
+            if self._settings.drain_seconds:
+                await self._checkpoint_interruption(claimed, run_dir, started_at)
+            raise
+        finally:
+            self._active_workspaces.pop(run_id, None)
+            self._active_requests.pop(run_id, None)
+            self._active_claims.pop(run_id, None)
+
+    async def checkpoint_before_stop(self, run_id: int) -> None:
+        """Best-effort, non-destructive evidence before sending TERM.
+
+        The agent may still be writing. Cancellation captures a final snapshot
+        after process termination; this preliminary one survives a hard kill.
+        """
+        active = self._active_claims.get(run_id)
+        if active is None:
+            return
+        claimed, started_at = active
+        run_dir = claimed.run_dir or self._store.runs_dir / str(run_id)
+        self._write_meta(
+            claimed, self._active_requests.get(run_id), None,
+            state="interrupted", outcome="drained", transition=None, pr=None,
+            started_at=started_at,
+        )
+        workspace = self._active_workspaces.get(run_id)
+        if workspace is not None:
+            try:
+                async with asyncio.timeout(10):
+                    await capture_worktree_state(workspace, run_dir / "worktree")
+                    current = self._store.get_run(run_id)
+                    if current is not None and current.state == "running":
+                        self._write_meta(
+                            claimed, self._active_requests.get(run_id), None,
+                            state="interrupted", outcome="drained", transition=None, pr=None,
+                            started_at=started_at,
+                            archive=WorktreeArchive(artefact=run_dir / "worktree", kept=True),
+                        )
+            except Exception:
+                logger.exception("pre-stop checkpoint failed for run %s", run_id)
+
+    async def _checkpoint_interruption(
+        self, claimed: ClaimedRun, run_dir: Path, started_at: datetime
+    ) -> None:
+        """Snapshot after the runner stops writing; never spend a crash retry.
+
+        Each external operation has a deadline. Evidence failures must not leave
+        an active row, and a failed comment is not retried (no duplicate posts).
+        """
+        assert claimed.run_id is not None
+        run_id = claimed.run_id
+        archive = None
+        pr = None
+        errors: list[str] = []
+        for name in ("stdout.log", "stderr.log"):
+            try:
+                with (run_dir / name).open("rb") as log:
+                    log.seek(0, 2)
+                    log.seek(max(0, log.tell() - 65536))
+                    (run_dir / f"{name}.tail").write_bytes(log.read(65536))
+            except FileNotFoundError:
+                pass
+            except OSError as error:
+                errors.append(f"log tail: {error}")
+        workspace = self._active_workspaces.get(run_id)
+        if workspace is not None:
+            try:
+                async with asyncio.timeout(30):
+                    archive = await self._archive_workspace(workspace, run_dir, failed=True)
+            except Exception as error:
+                errors.append(f"archive: {error}")
+        try:
+            async with asyncio.timeout(5):
+                pr = await self._gh.find_pr(
+                    self._repo_github(claimed.item.work_package.project_id), claimed.branch
+                )
+        except Exception as error:
+            errors.append(f"PR lookup: {error}")
+        self._store.mark_interrupted(run_id, outcome="drained")
+        self._write_meta(
+            claimed, self._active_requests.get(run_id), None,
+            state="interrupted", outcome="drained", transition=None, pr=pr,
+            started_at=started_at, archive=archive,
+        )
+        meta_path = run_dir / "meta.json"
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        head = meta["branch_head"]
+        meta["interruption_errors"] = errors
+        meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+        comment = (
+            f"ENGINE: run {run_id} interrupted by engine restart at {meta['finished_at']}; "
+            f"branch head {head}; artefact at {run_dir}; the next run resumes."
+        )
+        comment = bound_engine_comment(comment, self._settings.engine_comment_max_bytes)
+        try:
+            async with asyncio.timeout(5):
+                await self._post_comment(claimed.item.work_package.id, comment)
+        except Exception as error:
+            errors.append(f"comment: {error}")
+            meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
 
     # -- implement runs (M4) ------------------------------------------------
 
@@ -261,11 +368,15 @@ class Dispatcher:
         if claimed.kind == "resume":
             last_review = self._store.last_review_run(wp.id)
             last_code = self._store.last_code_run(wp.id)
-            if rejection_is_outstanding(last_review, last_code):
+            interrupted = self._store.last_interrupted_run(wp.id)
+            if (
+                interrupted is not None and (last_code is None or interrupted.id > last_code.id)
+            ) or rejection_is_outstanding(last_review, last_code):
                 # The rejection explains the interrupted fix run: run the
                 # agent, do not short-circuit to ready for review.
                 logger.info(
-                    "resuming %s despite an open PR: the last review was "
+                    "resuming %s despite an open PR: interruption evidence or "
+                    "outstanding rejection; the last review was "
                     "rejected at %s and the last code run finished at %s",
                     wp.display_id,
                     last_review.finished_at if last_review else None,
@@ -1288,7 +1399,7 @@ class Dispatcher:
         lock = self._workspace_locks.setdefault(agent.workspace, asyncio.Lock())
         try:
             async with lock:
-                return await prepare_workspace(
+                workspace = await prepare_workspace(
                     root=self._workspace_root(),
                     agent_workspace=agent.workspace,
                     github_repo=self._repo_github(wp.project_id),
@@ -1301,6 +1412,8 @@ class Dispatcher:
                     git_host=self._settings.git_host,
                     max_kept_worktree_bytes=self._max_kept_worktree_bytes(),
                 )
+                self._active_workspaces[run_id] = workspace
+                return workspace
         except WorkspaceError as error:
             await self._fail_before_run(
                 run_id, claimed, f"workspace preparation failed: {error}"
@@ -1364,7 +1477,7 @@ class Dispatcher:
         agent = self._config.agents[claimed.item.agent_key]
         prompt_file = run_dir / "prompt.txt"
         prompt_file.write_text(prompt, encoding="utf-8")
-        return self._runner.build_request(
+        request = self._runner.build_request(
             claimed.item.agent_key,
             run_id=run_id,
             work_package_id=claimed.item.work_package.id,
@@ -1376,6 +1489,9 @@ class Dispatcher:
             timeout_seconds=agent.timeout_seconds
             or self._settings.run_timeout_seconds,
         )
+
+        self._active_requests[run_id] = request
+        return request
 
     async def _run(self, request: RunRequest, run_id: int) -> RunResult:
         def on_spawned(pid: int, pgid: int, proc_start: str) -> None:
@@ -1429,6 +1545,18 @@ class Dispatcher:
             },
             "review_number": 1,
         }
+        context["interruption"] = None
+        if kind == "resume":
+            previous = self._store.last_interrupted_run(wp.id)
+            last_code = self._store.last_code_run(wp.id)
+            if previous is not None and (last_code is None or previous.id > last_code.id):
+                previous_dir = self._store.runs_dir / str(previous.id)
+                try:
+                    context["interruption"] = json.loads(
+                        (previous_dir / "meta.json").read_text(encoding="utf-8")
+                    ) | {"run_dir": str(previous_dir)}
+                except (OSError, ValueError):
+                    logger.warning("interruption metadata unavailable for run %s", previous.id)
         if kind == "fix":
             context.update(
                 {
@@ -1467,7 +1595,15 @@ class Dispatcher:
     ) -> None:
         run_dir = claimed.run_dir or (self._store.runs_dir / str(claimed.run_id or 0))
         run_dir.mkdir(parents=True, exist_ok=True)
+        head = None
+        try:
+            for line in (run_dir / "worktree" / "head.txt").read_text().splitlines():
+                if line.startswith("HEAD: "):
+                    head = line.removeprefix("HEAD: ")
+        except OSError:
+            pass
         meta: dict[str, Any] = {
+            "branch_head": head,
             "run_id": claimed.run_id,
             "work_package_id": claimed.item.work_package.id,
             "agent": claimed.item.agent_key,
