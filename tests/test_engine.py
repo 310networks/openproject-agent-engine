@@ -19,11 +19,13 @@ import pytest
 from pydantic import SecretStr
 
 from op_agent_engine.config import EngineSettings
+from op_agent_engine.dashboard import DashboardData
 from op_agent_engine.dispatcher import Dispatcher
 from op_agent_engine.engine import Engine
 from op_agent_engine.github import PullRequest
 from op_agent_engine.openproject.client import OpenProjectClient
 from op_agent_engine.openproject.resolve import OpenProjectResolution
+from op_agent_engine.poller import Poller
 from op_agent_engine.prompts import PromptRenderer
 from op_agent_engine.provision import TokenVerificationError
 from op_agent_engine.runners.base import OnSpawned, RunRequest, RunResult
@@ -247,6 +249,93 @@ async def make_engine(
 
     engine = Engine(config, settings, client=client, dispatcher_factory=factory)
     return engine, fake, client, settings.data_dir / "engine.db"
+
+
+@pytest.mark.parametrize("resume_allowed", [True, False])
+async def test_poll_reconciles_orphan_without_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, resume_allowed: bool
+) -> None:
+    engine, fake, client, db_path = await make_engine(
+        tmp_path, monkeypatch,
+        work_packages=[wp(100, status=STATUS_ON_HOLD, agent=11)],
+        runner=FakeRunner(make_result(tmp_path, result_line=f"RESULT: PR_OPENED {PR.url}")),
+        gh=FakeGitHub(pr=PR),
+    )
+    stale_id: int | None = None
+    original_poll = Poller.poll
+
+    async def checked_poll(self: Poller, **kwargs: Any) -> Any:
+        if stale_id is not None:
+            with contextlib.closing(Store(db_path)) as store:
+                run = store.get_run(stale_id)
+                assert run is not None and run.state == INTERRUPTED
+                assert run.outcome == "reconciled_dead_pid"
+                assert store.crash_count(100) == 0
+                assert store.active_run_count() == 0
+            snapshot = DashboardData(engine._config, engine._settings).snapshot()
+            assert snapshot["engine"]["active_runs"] == 0
+            assert snapshot["active_sessions"] == []
+            assert snapshot["recent_sessions"][0]["outcome"] == "reconciled_dead_pid"
+        return await original_poll(self, **kwargs)
+
+    async def between_polls(stop: asyncio.Event, wake: asyncio.Event | None = None) -> None:
+        nonlocal stale_id
+        # Simulate an orphan created after startup recovery has already run.
+        assert stale_id is None
+        with contextlib.closing(Store(db_path)) as store:
+            stale_id = store.begin_run(
+                work_package_id=100, project_id=4, agent="IMPL", kind="implement",
+                attempt=1, branch="op-4-100", run_dir_template=str(store.runs_dir / "{id}"),
+            )
+            store.set_process(stale_id, pid=123, pgid=123, proc_start="gone:1")
+        if resume_allowed:
+            fake.work_packages[0]["_links"]["status"]["href"] = "/api/v3/statuses/2"
+            fake.work_packages[0]["_links"]["assignee"] = {"href": "/api/v3/users/11"}
+
+    monkeypatch.setattr(Poller, "poll", checked_poll)
+    monkeypatch.setattr(engine, "_sleep_or_stop", between_polls)
+    monkeypatch.setattr("op_agent_engine.recovery.process_start_identity", lambda _: None)
+    async with client:
+        assert await engine.run(max_polls=2) == 0
+    with contextlib.closing(Store(db_path)) as store:
+        assert store.state_counts()[INTERRUPTED] == 1
+        assert sum(store.state_counts().values()) == (2 if resume_allowed else 1)
+        assert store.crash_count(100) == 0
+    if not resume_allowed:
+        assert status_href(fake, 100) == "/api/v3/statuses/5"
+
+
+@pytest.mark.parametrize("paused", [False, True])
+async def test_reconciliation_runs_even_when_paused_or_slots_were_full(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, paused: bool
+) -> None:
+    engine, _, client, db_path = await make_engine(
+        tmp_path, monkeypatch, work_packages=[], runner=FakeRunner(),
+        settings_overrides={"engine_paused": paused},
+    )
+    stale_id: int | None = None
+
+    async def between_cycles(stop: asyncio.Event, wake: asyncio.Event | None = None) -> None:
+        nonlocal stale_id
+        with contextlib.closing(Store(db_path)) as store:
+            if stale_id is None:
+                stale_id = store.begin_run(
+                    work_package_id=100, project_id=4, agent="IMPL", kind="implement",
+                    attempt=1, branch="op-4-100",
+                    run_dir_template=str(store.runs_dir / "{id}"),
+                )
+                store.set_process(stale_id, pid=123, pgid=123, proc_start="gone:1")
+                assert store.active_run_count() == 1
+            else:
+                run = store.get_run(stale_id)
+                assert run is not None and run.state == INTERRUPTED
+                assert store.active_run_count() == 0
+                stop.set()
+
+    monkeypatch.setattr(engine, "_sleep_or_stop", between_cycles)
+    monkeypatch.setattr("op_agent_engine.recovery.process_start_identity", lambda _: None)
+    async with client:
+        assert await engine.run() == 0
 
 
 def status_href(fake: FakeOpenProject, work_package_id: int) -> str:
