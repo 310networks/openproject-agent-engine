@@ -135,3 +135,60 @@ def test_vfx_report_records_shared_and_latitude_changes() -> None:
     text = VFX_STANDARD.read_text(encoding="utf-8")
     assert "**Shared and integration changes:**" in text
     assert "**Design latitude:**" in text
+
+
+# --- Superseded CI runs -----------------------------------------------------
+#
+# Every agent can start GitHub Actions runs and every run holds a runner slot.
+# An agent that walks away from a run it no longer needs leaves that slot busy
+# and delays the next ticket's result, so the rule is part of every standard.
+
+ALL_STANDARDS = sorted((ROOT / "agents").glob("*/AGENTS.md"))
+IMPLEMENTER_STANDARDS = [
+    path for path in ALL_STANDARDS if path.parent.name != "codeReviewer"
+]
+
+
+def _standard_id(path: Path) -> str:
+    return path.parent.name
+
+
+@pytest.mark.parametrize("standard", ALL_STANDARDS, ids=_standard_id)
+def test_every_agent_cancels_superseded_workflow_runs(standard: Path) -> None:
+    text = standard.read_text(encoding="utf-8")
+    assert "### GitHub Actions runs" in text or "### Live workflow runs" in text
+    assert "Look before you start a run" in text
+    assert 'gh run list --repo "$repo" --branch "$branch"' in text
+    assert 'gh run cancel <databaseId> --repo "$repo"' in text
+    assert 'gh run view <databaseId> --repo "$repo" --json status,conclusion' in text
+    assert (
+        "Never cancel a run on the default branch, another branch, or another ticket's work"
+        in text
+    )
+    assert "Cancel, never delete." in text
+    assert "A refused cancellation" in text
+    assert "Do not retry in a loop." in text
+
+
+@pytest.mark.parametrize("standard", ALL_STANDARDS, ids=_standard_id)
+def test_workflow_run_rule_forbids_deleting_run_history(standard: Path) -> None:
+    text = standard.read_text(encoding="utf-8")
+    assert "`gh run delete` erases" in text
+
+
+@pytest.mark.parametrize("standard", IMPLEMENTER_STANDARDS, ids=_standard_id)
+def test_implementer_standard_keeps_one_live_run_and_a_clean_queue(standard: Path) -> None:
+    text = standard.read_text(encoding="utf-8")
+    assert "Keep at most one live run of your own work at a time." in text
+    assert "is not a ticket failure" in text
+    assert (
+        "- [ ] No superseded or unneeded workflow run you started is left queued or running"
+        in text
+    )
+
+
+def test_reviewer_never_cancels_a_run_it_is_waiting_on() -> None:
+    text = REVIEW_STANDARD.read_text(encoding="utf-8")
+    assert "Only runs on the PR's head branch are yours to cancel" in text
+    assert "is not a review blocker" in text
+    assert "A slow run is not a reason to cancel it" in text

@@ -78,6 +78,28 @@ Never read a credential file to find a token (`~/.pi/agent/infra/credentials/ope
 - On a fix pass, push to the same branch and update the existing PR. Do not open a second PR. Do not force-push.
 - Do not commit generated build output, engine cache directories, or files unrelated to the ticket. Follow the repository's rules for large binary files (Git LFS or equivalent). If none exist, list binary assets as an open question rather than committing large files.
 
+### GitHub Actions runs
+
+CI runs share a small runner pool, and a run nobody needs still holds a slot. Keep at most one live run of your own work at a time.
+
+- Look before you start a run: before a push that triggers CI, before any explicit dispatch (`gh workflow run`), before a re-run (`gh run rerun` or the re-run button in the web UI), and before a second push to the same branch.
+- Cancel every `queued`, `in_progress` or `waiting` run on your branch that your new commit replaces, and any run you dispatched and no longer need. Those are exactly the runs that clog the queue for the next ticket.
+- A `concurrency` group in the workflow already cancels older runs on a push. Check anyway: dispatched runs, re-runs and a different workflow on the same branch are not covered by it.
+
+```bash
+repo=<owner/repo>; branch=<branch>
+gh run list --repo "$repo" --branch "$branch" --limit 20 \
+  --json databaseId,workflowName,event,status,conclusion,createdAt
+gh run cancel <databaseId> --repo "$repo"
+gh run view <databaseId> --repo "$repo" --json status,conclusion
+```
+
+- Only runs on your own branch (`op-<projectId>-<workPackageId>`) are yours to cancel. Never cancel a run on the default branch, another branch, or another ticket's work, and never cancel the run whose result you are waiting for.
+- Cancel, never delete. `gh run delete` erases history the reviewer needs; cancelling keeps the logs of everything that already completed.
+- A refused cancellation (the run finished first, or your identity cannot cancel it) is not a ticket failure: record it in the report and continue. Do not retry in a loop.
+- Check once, after a short wait, that the run left `queued`/`in_progress`. GitHub takes a moment to honour a cancel on a queued run; do not poll in a tight loop.
+- Do not cancel a run to hide a failing result. A failure you need to read must finish, or be re-run after the fix.
+
 ## 4. Scope and safety
 
 - One ticket is one bounded run. Do not silently expand scope.
@@ -166,6 +188,7 @@ A task is complete only when all of the following are true:
 - [ ] No gameplay rule, engine, render-pipeline, UI, audio, save, platform or cross-assembly code was modified outside the ticket's named scope or the section 4 integration exception, and every shared or integration change is recorded in the report.
 - [ ] Generated assets are reproducible from unchanged source, and the regeneration command is recorded in the report.
 - [ ] Files are committed to the task branch and a PR is open against the default branch.
+- [ ] No superseded or unneeded workflow run you started is left queued or running (section 3).
 - [ ] The ticket report (section 9) is posted.
 
 ## 7. Blockers
