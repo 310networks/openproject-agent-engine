@@ -15,6 +15,13 @@ glance:
 - **How are the totals trending?** Total, running, completed, declined,
   blocked and failed counts, plus a breakdown of every recorded outcome.
 
+The outcome breakdown distinguishes **No progress** (stored legacy outcome
+`no_pr`) from **Progress not finished** (`progress_not_finished`). Partial
+progress is not a delivered result or a failure: the JSON headline counts
+include a separate `progress_not_finished` bucket, excluded from both
+`completed` and `failed`. The existing page displays the distinction in its
+outcome breakdown; run history retains the original recorded outcome.
+
 ## Run it
 
 The `dashboard` compose service runs it, so `docker compose up -d` serves the

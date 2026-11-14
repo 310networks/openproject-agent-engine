@@ -120,14 +120,25 @@ def _bucket_counts(
     completed = sum(outcomes.get(name, 0) for name in COMPLETED_OUTCOMES)
     declined = sum(outcomes.get(name, 0) for name in DECLINED_OUTCOMES)
     blocked = sum(outcomes.get(name, 0) for name in BLOCKED_OUTCOMES)
+    progress = outcomes.get("progress_not_finished", 0)
     return {
         "total": total,
         "running": running,
         "completed": completed,
         "declined": declined,
         "blocked": blocked,
-        "failed": max(0, total - running - completed - declined - blocked),
+        "progress_not_finished": progress,
+        "failed": max(0, total - running - completed - declined - blocked - progress),
     }
+
+
+def _outcome_buckets(outcomes: dict[str, int]) -> dict[str, int]:
+    """Label legacy no_pr runs as no progress, not partial delivery."""
+    buckets: dict[str, int] = {}
+    for outcome, count in outcomes.items():
+        name = "no_progress" if outcome == "no_pr" else outcome
+        buckets[name] = buckets.get(name, 0) + count
+    return dict(sorted(buckets.items(), key=lambda item: (-item[1], item[0])))
 
 
 def _engine_status(
@@ -398,9 +409,7 @@ class DashboardData:
             },
             "counts": {
                 **counts,
-                "outcomes": dict(
-                    sorted(outcome_counts.items(), key=lambda item: (-item[1], item[0]))
-                ),
+                "outcomes": _outcome_buckets(outcome_counts),
             },
             "agents": agents,
             "active_sessions": [

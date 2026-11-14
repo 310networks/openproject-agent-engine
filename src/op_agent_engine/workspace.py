@@ -220,6 +220,17 @@ async def run_git(
     return _stdout.decode("utf-8", errors="replace")
 
 
+async def branch_snapshot(workspace: Workspace) -> tuple[str, bool]:
+    """Observe the task branch head and cleanliness, including untracked files."""
+    head = await run_git(
+        ["rev-parse", "--verify", f"refs/heads/{workspace.branch}"], cwd=workspace.repo_dir
+    )
+    status = await run_git(
+        ["status", "--porcelain", "--untracked-files=all"], cwd=workspace.repo_dir
+    )
+    return head.strip(), not status.strip()
+
+
 async def remote_default_branch(repo_dir: Path) -> str | None:
     """Return the remote default branch, preferring local tracking data.
 
@@ -440,6 +451,20 @@ async def prepare_workspace(
         base = f"origin/{branch}"
     else:
         raise WorkspaceError(f"unknown agent kind {role!r}")
+
+    if role == "implementer":
+        # A clean progress run need not have pushed or opened a PR yet. Do
+        # not reset its local commits on the next poll. Only retain a local
+        # branch containing the fetched base; divergent remote updates keep
+        # the existing remote-authoritative behavior.
+        local_ref = f"refs/heads/{branch}"
+        try:
+            await run_git(["merge-base", "--is-ancestor", base, local_ref], cwd=repo_dir)
+        except GitError as error:
+            if error.returncode not in {1, 128}:
+                raise
+        else:
+            base = (await run_git(["rev-parse", local_ref], cwd=repo_dir)).strip()
 
     # Every run gets its own working tree so checkouts (and the agents'
     # edits) cannot collide. The shared clone stays detached so every run

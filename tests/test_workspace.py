@@ -140,6 +140,25 @@ async def _prepare(root: Path, git_repo: GitFixture, **overrides: object) -> Wor
     return await prepare_workspace(**kwargs)  # type: ignore[arg-type]
 
 
+@pytest.mark.parametrize("published", [True, False])
+async def test_next_poll_preserves_clean_local_progress(
+    tmp_path: Path, git_repo: GitFixture, published: bool,
+) -> None:
+    root = _workspace_root(tmp_path)
+    first = await _prepare(root, git_repo)
+    if published:
+        _git(["push", "origin", first.branch], cwd=first.repo_dir)
+    _git(["-c", "user.name=t", "-c", "user.email=t@example.com", "commit",
+          "--no-gpg-sign", "--allow-empty", "-m", "batch"], cwd=first.repo_dir)
+    head = _git(["rev-parse", "HEAD"], cwd=first.repo_dir)
+    await cleanup_workspace(first)
+    resumed = await _prepare(root, git_repo)
+    try:
+        assert _git(["rev-parse", "HEAD"], cwd=resumed.repo_dir) == head
+    finally:
+        await cleanup_workspace(resumed)
+
+
 async def test_gitlab_clone_push_fetch_and_token_rotation(
     tmp_path: Path, git_repo: GitFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:

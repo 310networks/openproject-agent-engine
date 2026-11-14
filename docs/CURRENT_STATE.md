@@ -108,8 +108,19 @@ the ticket. Branch names are
 A rejection accepted past `MAX_REJECTIONS` moves the ticket to `On Hold` with a
 summary comment instead of `Rejected`. A run that keeps failing increments the
 crash counter; past `MAX_CRASH_RETRIES` the ticket moves to `On Hold` with the
-log tail in an escalation comment. An existing open PR is authoritative for
-implement/fix runs (no retry), and a merged PR is authoritative for reviews.
+log tail in an escalation comment. An existing **non-draft** open PR is authoritative
+for implement/fix runs (no retry), and a merged PR is authoritative for reviews.
+
+Implement/fix/resume runs capture the task branch head and open PR head before
+and after running. A successful run with a `RESULT:` line, a clean worktree
+(including untracked files), and a changed observed branch or PR head records
+`progress_not_finished` when there is no ready PR. This leaves the ticket
+`In Progress` for the next poll's resume, without incrementing or resetting its
+crash count. Drafts are never made ready by the engine. Missing baseline heads
+do not prove movement; unchanged heads, missing results, nonzero exits and
+timeouts still follow the crash path. Ready PR and reviewer precedence is
+unchanged. Local commits ahead of the fetched base survive workspace preparation
+on the next poll, even before a branch has been pushed.
 
 ## Concurrency
 
@@ -251,7 +262,9 @@ without deleting the volume's clones.
 - `engine.lock` — single-instance `flock`.
 
 `meta.json` records the run identity, argv, cwd, redacted env, state, outcome,
-transition, PR URL and timings. The store keeps run history after the
+transition, PR URL and timings. Implementer runs also record `heads` with
+`branch_before`, `branch_after`, `pr_before`, `pr_after` (null when unavailable)
+and `worktree_clean`. The store keeps run history after the
 artifacts are cleaned up; `cleanup` removes old run directories and stale
 worktrees.
 

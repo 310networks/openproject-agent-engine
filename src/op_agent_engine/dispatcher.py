@@ -49,7 +49,7 @@ from op_agent_engine.config import (
     ProjectConfig,
     WorkflowConfig,
 )
-from op_agent_engine.github import GitHub, GitHubError, PullRequest
+from op_agent_engine.github import GitHub, GitHubError, PullRequest, head_advanced
 from op_agent_engine.gitlab import GitLab
 from op_agent_engine.logging import get_logger, redact_mapping
 from op_agent_engine.openproject.activities import (
@@ -97,6 +97,7 @@ from op_agent_engine.workspace import (
     WorkspaceError,
     WorktreeArchive,
     archive_failed_worktree,
+    branch_snapshot,
     cleanup_workspace,
     prepare_workspace,
 )
@@ -361,6 +362,24 @@ class Dispatcher:
                 claimed, workspace, fix_context=fix_context, attempt=attempt
             ),
         )
+        try:
+            before_head, _ = await branch_snapshot(workspace)
+        except WorkspaceError as error:
+            await self._fail_before_run(
+                run_id, claimed, detail=f"cannot capture initial head: {error}",
+                workspace=workspace,
+            )
+            return
+        try:
+            before_pr = await self._gh.find_pr(
+                self._repo_github(wp.project_id), workspace.branch
+            )
+        except GitHubError as error:
+            # A missing baseline cannot prove PR progress, but the local
+            # branch comparison remains available. Verification after the
+            # run is still required, just as before.
+            logger.warning("could not capture initial PR head: %s", error)
+            before_pr = None
         result = await self._run(request, run_id)
 
         # External check: open PR for the branch?
@@ -368,7 +387,8 @@ class Dispatcher:
             pr = await self._gh.find_pr(
                 self._repo_github(wp.project_id), workspace.branch
             )
-        except GitHubError as error:
+            after_head, clean = await branch_snapshot(workspace)
+        except (GitHubError, WorkspaceError) as error:
             archive = await self._archive_workspace(
                 workspace, run_dir, failed=True
             )
@@ -388,6 +408,13 @@ class Dispatcher:
             started_at,
             workspace=workspace,
             run_dir=run_dir,
+            heads={
+                "branch_before": before_head,
+                "branch_after": after_head,
+                "pr_before": before_pr.head_oid if before_pr else None,
+                "pr_after": pr.head_oid if pr else None,
+                "worktree_clean": clean,
+            },
         )
 
     # -- review runs (M5) ---------------------------------------------------
@@ -520,20 +547,27 @@ class Dispatcher:
         *,
         workspace: Workspace | None = None,
         run_dir: Path | None = None,
+        heads: dict[str, Any] | None = None,
     ) -> None:
+        heads = heads or {}
+        moved = head_advanced(heads.get("branch_before"), heads.get("branch_after"))
+        pr_moved = pr is not None and head_advanced(
+            heads.get("pr_before"), heads.get("pr_after")
+        )
         decision = decide_implementer_outcome(
             exit_code=result.exit_code,
             timed_out=result.timed_out,
             result_line=result.result_line,
             pr_found=pr is not None and not pr.is_draft,
             silent=result.is_silent(),
+            progress=bool(heads.get("worktree_clean")) and (moved or pr_moved),
         )
         archive = await self._finish_workspace(
             claimed, workspace, run_dir, decision=decision
         )
         await self._apply_decision(
             run_id, claimed, request, result, decision, pr=pr,
-            started_at=started_at, archive=archive,
+            started_at=started_at, archive=archive, heads=heads,
         )
 
     async def _finish_review_run(
@@ -659,6 +693,7 @@ class Dispatcher:
         pr: PullRequest | None,
         started_at: datetime,
         archive: WorktreeArchive | None = None,
+        heads: dict[str, Any] | None = None,
     ) -> None:
         wp = claimed.item.work_package
         expected_status_key = EXPECTED_STATUS_KEY_BY_KIND[claimed.kind]
@@ -736,7 +771,7 @@ class Dispatcher:
             self._write_meta(
                 claimed, request, result, state="running", outcome="error",
                 transition=transition, pr=pr, started_at=started_at,
-                archive=archive,
+                archive=archive, heads=heads,
             )
             logger.error(
                 "OpenProject error after run %d finished; run left active: %s",
@@ -756,7 +791,7 @@ class Dispatcher:
         self._write_meta(
             claimed, request, result, state=state, outcome=outcome,
             transition=transition, pr=pr, started_at=started_at,
-            archive=archive,
+            archive=archive, heads=heads,
         )
         logger.info(
             "run finished: state=%s outcome=%s transition=%s",
@@ -1464,6 +1499,7 @@ class Dispatcher:
         pr: PullRequest | None,
         started_at: datetime | None,
         archive: WorktreeArchive | None = None,
+        heads: dict[str, Any] | None = None,
     ) -> None:
         run_dir = claimed.run_dir or (self._store.runs_dir / str(claimed.run_id or 0))
         run_dir.mkdir(parents=True, exist_ok=True)
@@ -1493,6 +1529,8 @@ class Dispatcher:
             ),
             "worktree_kept": bool(archive.kept) if archive is not None else False,
         }
+        if heads is not None:
+            meta["heads"] = heads
         if archive is not None:
             meta["worktree"] = archive.as_dict()
         if result is not None:

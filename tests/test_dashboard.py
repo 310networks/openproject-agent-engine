@@ -460,6 +460,20 @@ def test_cli_dashboard_rejects_invalid_port(
     assert called is False
 
 
+def test_bucket_counts_separates_progress_from_failure_and_delivery() -> None:
+    from op_agent_engine.dashboard import _bucket_counts, _outcome_buckets
+
+    assert _outcome_buckets({"no_pr": 1, "progress_not_finished": 2}) == {
+        "no_progress": 1, "progress_not_finished": 2,
+    }
+    counts = _bucket_counts(total=4, running=0, outcomes={
+        "progress_not_finished": 2, "no_pr": 1, "ready_for_review": 1,
+    })
+    assert counts["progress_not_finished"] == 2
+    assert counts["failed"] == 1
+    assert counts["completed"] == 1
+
+
 def test_bucket_counts_puts_no_result_line_under_blocked() -> None:
     """A silent run needs a human, so it lands in the blocked bucket."""
     counts = _bucket_counts(
