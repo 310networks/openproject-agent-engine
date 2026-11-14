@@ -79,6 +79,26 @@ Never read a credential file to find a token (`~/.pi/agent/infra/credentials/ope
 
 On re-review, verify the fix delta and all previous blockers, then recheck relevant shared-risk paths and that the whole PR still meets the current stage's contract. Repeat broad execution only when changed inputs/risk or required gates warrant it, not automatically after every fix.
 
+### Live workflow runs
+
+CI runs share a small runner pool with every other ticket's work, so a run nobody needs delays the next result.
+
+- Look before you start a run: before `gh workflow run`, and before a re-run (`gh run rerun` or the re-run button in the web UI).
+- Cancel the PR's runs that a newer commit or a newer run supersedes. A run for an older head SHA is dead weight once the implementer's fix is pushed, and a run you dispatched that you no longer need is the same.
+
+```bash
+repo=<owner/repo>; branch=<head branch>
+gh run list --repo "$repo" --branch "$branch" --limit 20 \
+  --json databaseId,workflowName,event,status,conclusion,headSha,createdAt
+gh run cancel <databaseId> --repo "$repo"
+gh run view <databaseId> --repo "$repo" --json status,conclusion
+```
+
+- Only runs on the PR's head branch are yours to cancel, and only when a newer commit or a newer run makes their result irrelevant. Never cancel a run on the default branch, another branch, or another ticket's work, and never cancel the run whose result you are about to read.
+- Cancel, never delete. `gh run delete` erases evidence the ticket and the implementer need; cancelling keeps the logs of everything that already completed.
+- A refused cancellation (the run finished first, or your identity cannot cancel it) is not a review blocker: note it in the ticket comment and continue. Do not retry in a loop.
+- A slow run is not a reason to cancel it, and a failing result is never a reason to cancel it. Waiting for CI is part of the review (section 2).
+
 ## 3. Review criteria
 
 **Blocking.** Any of the following requires rejection:
