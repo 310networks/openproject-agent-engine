@@ -205,6 +205,13 @@ async def make_engine(
         repo_dir=repo_dir, branch="op-4-100", standard_path=standard
     )
 
+    async def fake_branch_snapshot(workspace: Workspace) -> tuple[str, bool]:
+        return "unchanged", True
+
+    monkeypatch.setattr(
+        "op_agent_engine.dispatcher.branch_snapshot", fake_branch_snapshot
+    )
+
     async def fake_prepare_workspace(**kwargs: Any) -> Workspace:
         return workspace
 
@@ -358,6 +365,44 @@ def runs_for(store: Store, work_package_id: int) -> list[Any]:
 
 
 # -- the M4 happy path -----------------------------------------------------------
+
+
+async def test_progress_is_resumed_by_next_poll_without_crash_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from dataclasses import replace
+
+    runner = FakeRunner(make_result(
+        tmp_path, result_line=f"RESULT: PR_OPENED {PR.url}", stdout="batch done\n",
+    ))
+    engine, fake, client, store_path = await make_engine(
+        tmp_path, monkeypatch,
+        work_packages=[wp(100, status=STATUS_NEW, agent=11)],
+        runner=runner, gh=FakeGitHub(pr=replace(PR, is_draft=True)),
+    )
+    snapshot_count = 0
+
+    async def moving_head(workspace: Workspace) -> tuple[str, bool]:
+        nonlocal snapshot_count
+        snapshot_count += 1
+        return str(snapshot_count), True
+
+    monkeypatch.setattr("op_agent_engine.dispatcher.branch_snapshot", moving_head)
+    try:
+        assert await engine.run(max_polls=1) == 0
+        assert status_href(fake, 100) == f"/api/v3/statuses/{STATUS_IN_PROGRESS}"
+        assert await engine.run(max_polls=1) == 0
+        assert status_href(fake, 100) == f"/api/v3/statuses/{STATUS_IN_PROGRESS}"
+        store = Store(store_path)
+        try:
+            runs = sorted(runs_for(store, 100), key=lambda run: run.id)
+            assert [run.kind for run in runs] == ["implement", "resume"]
+            assert [run.outcome for run in runs] == ["progress_not_finished"] * 2
+            assert store.crash_count(100) == 0
+        finally:
+            store.close()
+    finally:
+        await client.aclose()
 
 
 async def test_engine_polls_claims_and_executes(

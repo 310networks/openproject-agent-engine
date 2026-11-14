@@ -23,6 +23,39 @@ from op_agent_engine.outcomes import (
 )
 from op_agent_engine.store import FAILED, SUCCEEDED, TIMEOUT, Run
 
+
+@pytest.mark.parametrize(("ready_pr", "advanced", "expected", "retry"), [
+    (False, True, "progress_not_finished", False),
+    (False, False, "no_pr", True),
+    (True, True, "ready_for_review", False),
+    (True, False, "ready_for_review", False),
+])
+def test_partial_progress(ready_pr: bool, advanced: bool, expected: str, retry: bool) -> None:
+    decision = decide_implementer_outcome(
+        exit_code=0, timed_out=False, result_line="RESULT: PR_OPENED https://example.org/pr",
+        pr_found=ready_pr, progress=advanced,
+    )
+    assert decision.outcome == expected
+    assert decision.crash_retry is retry
+    assert decision.transition == ("ready_for_review" if ready_pr else None)
+
+
+@pytest.mark.parametrize(("exit_code", "timed_out", "result_line", "expected"), [
+    (1, False, "RESULT: PR_OPENED url", "nonzero_exit"),
+    (0, True, "RESULT: PR_OPENED url", "timeout"),
+    (0, False, None, "no_pr"),
+    (0, False, "RESULT: BLOCKED needs help", "blocked"),
+])
+def test_progress_does_not_mask_failure(
+    exit_code: int, timed_out: bool, result_line: str | None, expected: str,
+) -> None:
+    decision = decide_implementer_outcome(
+        exit_code=exit_code, timed_out=timed_out, result_line=result_line,
+        pr_found=False, progress=True,
+    )
+    assert decision.outcome == expected
+
+
 # -- decide_implementer_outcome -------------------------------------------
 
 
@@ -515,6 +548,8 @@ def test_escalation_comment_carries_an_optional_note() -> None:
     assert "(run log is empty)" in comment
     without = escalation_comment(outcome="no_pr", exit_code=0, tail_lines=[])
     assert "wrote nothing" not in without
+    assert "No progress" in without
+    assert "Progress, not finished" in without
 
 
 @pytest.mark.parametrize("limit", [1024, 8192, 65536])

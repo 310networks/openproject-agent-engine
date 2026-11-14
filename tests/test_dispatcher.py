@@ -226,6 +226,13 @@ async def make_dispatcher(
         repo_dir=repo_dir, branch="op-4-100", standard_path=standard
     )
 
+    async def fake_branch_snapshot(workspace: Workspace) -> tuple[str, bool]:
+        return "unchanged", True
+
+    monkeypatch.setattr(
+        "op_agent_engine.dispatcher.branch_snapshot", fake_branch_snapshot
+    )
+
     async def fake_prepare_workspace(**kwargs: Any) -> Workspace:
         return workspace
 
@@ -315,6 +322,160 @@ def posted_comments(fake: FakeOpenProject, work_package_id: int) -> list[str]:
     ]
 
 
+@pytest.mark.parametrize("kind", ["implement", "resume", "fix"])
+@pytest.mark.parametrize(("draft", "advance", "dirty", "expected"), [
+    (True, True, False, "progress_not_finished"),
+    (True, False, False, "no_pr"),
+    (False, True, False, "ready_for_review"),
+    (False, False, False, "ready_for_review"),
+    (True, True, True, "no_pr"),
+    (None, True, False, "progress_not_finished"),
+])
+async def test_clean_head_progress(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    kind: str, draft: bool | None, advance: bool, dirty: bool, expected: str,
+) -> None:
+    from dataclasses import replace
+
+    from op_agent_engine.workspace import branch_snapshot
+
+    gh = FakeGitHub(pr=replace(PR, is_draft=bool(draft), head_oid="before")
+                    if draft is not None else None)
+    holder: dict[str, Workspace] = {}
+
+    def commit_batch() -> None:
+        workspace = holder["ws"]
+        if advance:
+            _git(["-C", str(workspace.repo_dir), "commit", "--allow-empty",
+                  "--no-gpg-sign", "--quiet", "-m", "batch"])
+            if gh.pr is not None:
+                gh.pr = replace(gh.pr, head_oid="after")
+        if dirty:
+            (workspace.repo_dir / "untracked.txt").write_text("unfinished")
+
+    runner = FakeRunner(make_result(
+        tmp_path, result_line=f"RESULT: PR_OPENED {PR.url}",
+        stdout=f"RESULT: PR_OPENED {PR.url}\n",
+    ), on_run=commit_batch)
+    fake = make_fake(
+        work_packages=[wp(100, status=STATUS_IN_PROGRESS, agent=11)],
+        priorities=PRIORITIES,
+        activities=[activity_comment(100, "Fix this", author_id=REVIEWER_USER_ID)],
+    )
+    dispatcher, fake, store, client, _ = await make_dispatcher(
+        tmp_path, monkeypatch, runner=runner, gh=gh, fake=fake,
+    )
+    try:
+        workspace = make_real_workspace(tmp_path)
+        holder["ws"] = workspace
+        use_workspace(monkeypatch, workspace)
+        monkeypatch.setattr("op_agent_engine.dispatcher.branch_snapshot", branch_snapshot)
+        store.increment_crash_count(100)
+        claimed = claim(store, make_item(100), kind=kind)
+        await dispatcher.execute(claimed)
+        run = store.get_run(claimed.run_id)
+        assert run is not None
+        # Resume with an already-ready PR short-circuits exactly as before.
+        if kind == "resume" and draft is False:
+            assert run.outcome == "ready_for_review_existing_pr"
+            assert not runner.requests
+            return
+        assert run.outcome == expected
+        assert store.crash_count(100) == (2 if expected == "no_pr" else 1)
+        if expected == "progress_not_finished":
+            assert run.state == SUCCEEDED
+            assert status_href(fake, 100) == f"/api/v3/statuses/{STATUS_IN_PROGRESS}"
+            assert not fake.patches
+            assert not posted_comments(fake, 100)
+        elif expected == "ready_for_review":
+            assert status_href(fake, 100) == f"/api/v3/statuses/{STATUS_READY_FOR_REVIEW}"
+        meta = json.loads((Path(run.run_dir) / "meta.json").read_text())
+        assert meta["decision"]["outcome"] == expected
+        assert meta["engagement_error"] is None
+        heads = meta["heads"]
+        assert (heads["branch_before"] != heads["branch_after"]) is advance
+        assert heads["worktree_clean"] is not dirty
+        assert heads["pr_before"] == ("before" if draft is not None else None)
+        assert heads["pr_after"] == (
+            ("after" if advance else "before") if draft is not None else None
+        )
+    finally:
+        await client.aclose()
+        store.close()
+
+
+@pytest.mark.parametrize(("exit_code", "timed_out", "result_line", "expected"), [
+    (0, False, "RESULT: PR_OPENED url", "progress_not_finished"),
+    (1, False, "RESULT: PR_OPENED url", "nonzero_exit"),
+    (0, True, "RESULT: PR_OPENED url", "timeout"),
+    (0, False, None, "no_pr"),
+])
+async def test_pr_head_progress_requires_successful_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    exit_code: int, timed_out: bool, result_line: str | None, expected: str,
+) -> None:
+    from dataclasses import replace
+
+    gh = FakeGitHub(pr=replace(PR, is_draft=True, head_oid="before"))
+
+    def push() -> None:
+        gh.pr = replace(PR, is_draft=True, head_oid="after")
+
+    runner = FakeRunner(make_result(
+        tmp_path, exit_code=exit_code, timed_out=timed_out,
+        result_line=result_line, stdout="agent output\n",
+    ), on_run=push)
+    dispatcher, fake, store, client, _ = await make_dispatcher(
+        tmp_path, monkeypatch, runner=runner, gh=gh,
+    )
+    try:
+        claimed = claim(store, make_item(100))
+        await dispatcher.execute(claimed)
+        run = store.get_run(claimed.run_id)
+        assert run is not None
+        assert run.outcome == expected
+        assert store.crash_count(100) == (0 if expected == "progress_not_finished" else 1)
+        assert status_href(fake, 100) == f"/api/v3/statuses/{STATUS_IN_PROGRESS}"
+    finally:
+        await client.aclose()
+        store.close()
+
+
+@pytest.mark.parametrize("fail_after_run", [True, False])
+async def test_head_snapshot_error_uses_crash_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fail_after_run: bool,
+) -> None:
+    runner = FakeRunner(make_result(
+        tmp_path, result_line="RESULT: PR_OPENED url", stdout="batch output\n",
+    ))
+    dispatcher, fake, store, client, _ = await make_dispatcher(
+        tmp_path, monkeypatch, runner=runner,
+    )
+    calls = 0
+
+    async def broken_snapshot(workspace: Workspace) -> tuple[str, bool]:
+        nonlocal calls
+        calls += 1
+        if not fail_after_run or calls > 1:
+            raise WorkspaceError("cannot read task branch")
+        return "before", True
+
+    monkeypatch.setattr("op_agent_engine.dispatcher.branch_snapshot", broken_snapshot)
+    try:
+        claimed = claim(store, make_item(100))
+        await dispatcher.execute(claimed)
+        run = store.get_run(claimed.run_id)
+        assert run is not None
+        assert run.state == FAILED
+        assert run.outcome == ("pr_verification_error" if fail_after_run else "workspace_error")
+        assert calls == (2 if fail_after_run else 1)
+        assert store.crash_count(100) == 1
+        assert status_href(fake, 100) == f"/api/v3/statuses/{STATUS_IN_PROGRESS}"
+    finally:
+        await client.aclose()
+        store.close()
+
+
 # -- success path ---------------------------------------------------------------
 
 
@@ -352,7 +513,7 @@ async def test_implement_success_with_pr(
         assert posted_comments(fake, 100) == []
 
         # GitHub was checked with the project repo and the run branch.
-        assert gh.calls == [("owner/demo", "op-4-100")]
+        assert gh.calls == [("owner/demo", "op-4-100")] * 2
 
         # Per-run artifacts.
         run_dir = store.runs_dir / "1"
@@ -958,6 +1119,9 @@ async def test_comment_failure_releases_slot_and_preserves_decision(
         assert str(status_code) in meta["engagement_error"]
         assert meta["decision"]["outcome"] == ("blocked" if with_pr else "nonzero_exit")
         assert meta["decision"]["transition"] == "on_hold"
+        # Head evidence survives engagement failure alongside the decision/error.
+        assert "branch_before" in meta["heads"]
+        assert "branch_after" in meta["heads"]
         assert meta["pr_url"] == (PR.url if with_pr else None)
         assert meta["run_dir"] == str(store.runs_dir / "1")
         assert meta["exit_code"] == result.exit_code

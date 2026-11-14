@@ -179,6 +179,7 @@ def decide_implementer_outcome(
     result_line: str | None,
     pr_found: bool,
     silent: bool = False,
+    progress: bool = False,
 ) -> OutcomeDecision:
     """Apply the rules for implement/fix runs.
 
@@ -192,7 +193,9 @@ def decide_implementer_outcome(
        for Review.
     3. Only without a PR do a timeout or a non-zero exit count as a crash
        retry.
-    4. A run that exited 0 without writing anything and without a PR is
+    4. A successful run with a RESULT line and verified clean head movement
+       is progress, not finished delivery; it stays In Progress without a retry.
+    5. A run that exited 0 without writing anything and without a PR is
        ``no_result_line``, not ``no_pr``: the engine cannot tell whether the
        agent did nothing or the agent CLI swallowed its output.
     """
@@ -220,6 +223,8 @@ def decide_implementer_outcome(
         return OutcomeDecision(
             run_state=FAILED, outcome=NO_RESULT_LINE, crash_retry=True
         )
+    if progress and result_line is not None:
+        return OutcomeDecision(run_state=SUCCEEDED, outcome="progress_not_finished")
     return OutcomeDecision(run_state=FAILED, outcome="no_pr", crash_retry=True)
 
 
@@ -370,6 +375,12 @@ def escalation_comment(
         f"The agent run failed ({outcome}) and the crash retry cap is reached.",
         "Putting the ticket on hold for a human.",
     ]
+    if outcome == "no_pr":
+        lines.extend([
+            "",
+            "No progress: no ready PR or verified clean head advancement. "
+            "Progress, not finished runs do not consume the crash retry budget.",
+        ])
     if note:
         lines.extend(["", note])
     if detail:
