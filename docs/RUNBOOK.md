@@ -240,6 +240,24 @@ process groups only when the recorded process start time still matches
 `resume`/re-review runs. A clean `SIGTERM` stops polling, waits
 `STOP_GRACE_SECONDS`, then terminates the remaining groups.
 
+The running engine also reconciles stale rows before every poll cycle, even
+when paused or all slots are occupied. No restart is required: by the next
+poll interval, a row whose recorded process has gone (including PID reuse), or
+whose `meta.json` has `finished_at` with `state: running`, is marked
+`interrupted`. Poll-time reconciliation never signals processes and leaves
+live runs and rows still owned by an executing dispatcher alone (including
+pre-spawn preparation and post-process verification). Missing process metadata
+alone is not enough to interrupt a row.
+
+Each reconciled row emits one WARNING with its reason. The dashboard snapshot
+immediately excludes it from `engine.active_runs` and `active_sessions`; its
+recent session outcome records `reconciled_dead_pid`, `reconciled_pid_reused`
+or `reconciled_finished_meta`. Crash counters and `MAX_CRASH_RETRIES` are
+unchanged. Only normal status-based polling can resume the work package;
+`On Hold` work packages are never automatically requeued. This requires a
+release containing the fix; older deployments still need
+`docker restart op-agent-engine` to trigger startup recovery.
+
 A resume run normally finishes without starting the agent when the branch
 already has an open PR: the interrupted run had delivered its work. The
 exception is an unanswered rejection. When the last review run rejected

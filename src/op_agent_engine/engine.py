@@ -44,7 +44,7 @@ from op_agent_engine.provision import (
     TokenVerificationError,
     enforce_agent_tokens,
 )
-from op_agent_engine.recovery import recover_interrupted_runs
+from op_agent_engine.recovery import reconcile_stale_runs, recover_interrupted_runs
 from op_agent_engine.scheduler import ClaimedRun, Scheduler
 from op_agent_engine.store import EngineLock, Store
 
@@ -229,6 +229,7 @@ class Engine:
                 loop.add_signal_handler(sig, stop.set)
 
         in_flight: set[asyncio.Task[None]] = set()
+        executing: dict[int, asyncio.Task[None]] = {}
         # A run that finishes frees a slot; polling the very next interval would
         # waste a cycle, so completion wakes the loop immediately.
         wake = asyncio.Event()
@@ -246,6 +247,12 @@ class Engine:
             active_work_package_ids: frozenset[int] = frozenset()
             active_run_counts: dict[str, int] = {}
             if not dry_run:
+                # Run even when paused or capacity is full; otherwise stale
+                # slots could prevent polling (and recovery) indefinitely.
+                executing = {
+                    run_id: task for run_id, task in executing.items() if not task.done()
+                }
+                reconcile_stale_runs(store, executing_run_ids=frozenset(executing))
                 active_work_package_ids = store.active_work_package_ids()
                 active_run_counts = store.active_run_counts_by_agent()
 
@@ -317,6 +324,8 @@ class Engine:
                             self._execute_claimed(dispatcher, claimed)
                         )
                         in_flight.add(task)
+                        assert claimed.run_id is not None
+                        executing[claimed.run_id] = task
                         task.add_done_callback(_run_finished)
 
             if max_polls is not None and poll_number >= max_polls:
