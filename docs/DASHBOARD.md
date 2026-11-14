@@ -112,5 +112,10 @@ variables or prompts.
 - An agent card lists every running session for that agent. The JSON API
   exposes them as `agents[].current_sessions` (oldest first) and keeps
   `agents[].current_session` as the latest one for compatibility.
+- Poll-time stale-run reconciliation removes orphaned rows from
+  `engine.active_runs` and `active_sessions`. Their `recent_sessions[].state`
+  is `interrupted`; `outcome` records `reconciled_dead_pid`,
+  `reconciled_pid_reused` or `reconciled_finished_meta`. These are also included
+  in `counts.outcomes`. No snapshot fields or endpoints have changed.
 - The JSON API is `GET /api/status?limit=N`; `GET /healthz` returns
   `{"ok": true}` for uptime checks.

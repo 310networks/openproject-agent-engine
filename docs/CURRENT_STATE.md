@@ -271,7 +271,13 @@ without deleting the volume's clones.
 `meta.json` records the run identity, argv, cwd, redacted env, state, outcome,
 transition, PR URL and timings. Implementer runs also record `heads` with
 `branch_before`, `branch_after`, `pr_before`, `pr_after` (null when unavailable)
-and `worktree_clean`. The store keeps run history after the
+and `worktree_clean`. Engagement completion also records the original
+`decision` and any `engagement_error`, with `run_dir` identifying the full logs.
+A failed final transition/comment marks the completed run `failed` immediately
+instead of keeping a dead `running` row until restart; workflow eligibility still
+controls the next poll (in particular, On Hold requires human release). Engine
+comments are bounded by UTF-8 bytes and line length, retaining head/tail excerpts
+and explicit truncation markers. The store keeps run history after the
 artifacts are cleaned up; `cleanup` removes old run directories and stale
 worktrees.
 

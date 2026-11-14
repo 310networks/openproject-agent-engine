@@ -6,6 +6,10 @@ does not leave agents running. Killing is guarded by the process start
 identity recorded at launch: if the PID now belongs to a different process
 (PID reuse after a reboot or a long downtime) it is left alone.
 
+During polling, only orphaned rows are marked interrupted, without signalling
+processes. Live processes and rows still owned by executing dispatchers are
+preserved; a finished meta file is evidence of an abandoned run.
+
 The ``interrupted`` state never increments the crash counter; only a run that
 actually failed or timed out does.
 """
@@ -13,6 +17,7 @@ actually failed or timed out does.
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import signal
 import time
@@ -20,7 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from op_agent_engine.logging import get_logger
-from op_agent_engine.store import Store
+from op_agent_engine.store import RUNNING, Run, Store
 
 logger = get_logger(__name__)
 
@@ -102,6 +107,62 @@ class RecoveryReport:
             "killed_process_groups": list(self.killed_process_groups),
             "skipped_reused_pids": list(self.skipped_reused_pids),
         }
+
+
+def _has_finished_meta(run: Run) -> bool:
+    try:
+        meta = json.loads((Path(run.run_dir) / "meta.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return (
+        isinstance(meta, dict)
+        and meta.get("state") == RUNNING
+        and isinstance(meta.get("finished_at"), str)
+        and bool(meta["finished_at"].strip())
+    )
+
+
+def reconcile_stale_runs(
+    store: Store, *, executing_run_ids: frozenset[int] = frozenset()
+) -> int:
+    """Release orphaned slots without killing processes or counting crashes.
+
+    Unlike startup recovery, polling must preserve live runs. An executing
+    dispatcher owns its row even before spawn and after the agent exits (while
+    it verifies results and updates OpenProject). Missing process metadata alone
+    is not proof that a run is orphaned.
+
+    A reused PID means the *recorded* process is gone; the unrelated process is
+    never signalled. Reasons persist as outcomes in dashboard snapshots.
+    """
+    interrupted = 0
+    for run in store.active_runs():
+        if run.id in executing_run_ids:
+            continue
+        reason = None
+        if _has_finished_meta(run):
+            reason = "finished_meta"
+        elif run.pid is not None and run.proc_start:
+            current = process_start_identity(run.pid)
+            if current is None:
+                reason = "dead_pid"
+            elif current != run.proc_start:
+                reason = "pid_reused"
+        if reason is None:
+            continue
+        store.mark_interrupted(run.id, outcome=f"reconciled_{reason}")
+        interrupted += 1
+        logger.warning(
+            "reconciled stale run %d as interrupted: %s",
+            run.id,
+            reason,
+            extra={
+                "run_id": run.id,
+                "work_package_id": run.work_package_id,
+                "reason": reason,
+            },
+        )
+    return interrupted
 
 
 def recover_interrupted_runs(store: Store, *, kill: bool = True) -> RecoveryReport:

@@ -22,13 +22,13 @@ from pydantic import SecretStr
 from op_agent_engine.config import EngineSettings
 from op_agent_engine.dispatcher import Dispatcher
 from op_agent_engine.github import GitHubError, PullRequest
-from op_agent_engine.openproject.client import OpenProjectClient, OpenProjectError
+from op_agent_engine.openproject.client import OpenProjectClient
 from op_agent_engine.openproject.workpackage import parse_work_package
-from op_agent_engine.poller import DispatchItem
+from op_agent_engine.poller import DispatchItem, Poller
 from op_agent_engine.prompts import PromptRenderer
 from op_agent_engine.runners.base import OnSpawned, RunRequest, RunResult
-from op_agent_engine.scheduler import ClaimedRun
-from op_agent_engine.store import FAILED, RUNNING, SUCCEEDED, TIMEOUT, Store
+from op_agent_engine.scheduler import ClaimedRun, Scheduler
+from op_agent_engine.store import FAILED, SUCCEEDED, TIMEOUT, Store
 from op_agent_engine.workspace import Workspace, WorkspaceError
 from tests.fakes.openproject import FakeOpenProject
 from tests.test_poller import PRIORITIES, wp
@@ -390,6 +390,8 @@ async def test_clean_head_progress(
         elif expected == "ready_for_review":
             assert status_href(fake, 100) == f"/api/v3/statuses/{STATUS_READY_FOR_REVIEW}"
         meta = json.loads((Path(run.run_dir) / "meta.json").read_text())
+        assert meta["decision"]["outcome"] == expected
+        assert meta["engagement_error"] is None
         heads = meta["heads"]
         assert (heads["branch_before"] != heads["branch_after"]) is advance
         assert heads["worktree_clean"] is not dirty
@@ -1027,7 +1029,7 @@ async def test_transition_retries_once_on_conflict(
         store.close()
 
 
-async def test_openproject_error_after_run_leaves_run_active(
+async def test_openproject_error_after_run_finalizes_and_can_resume(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     runner = FakeRunner(make_result(tmp_path))
@@ -1039,19 +1041,156 @@ async def test_openproject_error_after_run_leaves_run_active(
     )
     try:
         claimed = claim(store, make_item(100))
+        # Model the assignment the scheduler made before the agent started.
+        fake.work_packages[0]["_links"]["assignee"] = {"href": "/api/v3/users/11"}
         # The transition PATCH fails with a transient error.
         fake.patch_error = (503, "Service Unavailable")
 
-        with pytest.raises(OpenProjectError):
-            await dispatcher.execute(claimed)
+        await dispatcher.execute(claimed)
 
-        # The run stays active so the next engine start can recover it.
         run = store.get_run(1)
         assert run is not None
-        assert run.state == RUNNING
+        assert run.state == FAILED
+        assert store.active_run_count() == 0
         meta = json.loads((store.runs_dir / "1" / "meta.json").read_text())
-        assert meta["state"] == "running"
-        assert meta["outcome"] == "error"
+        assert meta["state"] == FAILED
+        assert meta["outcome"] == "engagement_error"
+        assert "503" in meta["engagement_error"]
+        assert meta["decision"]["transition"] == "ready_for_review"
+        assert meta["pr_url"] == PR.url
+
+        # A later recovery claim succeeds without restarting the store.
+        fake.patch_error = None
+        config = make_config()
+        resolution = await resolve(fake, config)
+        poller = Poller(client, config, resolution)
+        scheduler = Scheduler(client, config, resolution, store, max_concurrent_runs=1)
+        report = await scheduler.schedule(
+            await poller.poll(global_slots_used=store.active_run_count())
+        )
+        assert report.claimed_count == 1
+        assert report.claimed[0].kind == "resume"
+        await dispatcher.execute(report.claimed[0])
+        assert store.active_run_count() == 0
+        assert status_href(fake, 100) == f"/api/v3/statuses/{STATUS_READY_FOR_REVIEW}"
+    finally:
+        await client.aclose()
+        store.close()
+
+
+@pytest.mark.parametrize("status_code", [413, 500])
+@pytest.mark.parametrize("with_pr", [False, True])
+async def test_comment_failure_releases_slot_and_preserves_decision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, status_code: int, with_pr: bool
+) -> None:
+    result = make_result(
+        tmp_path, exit_code=0 if with_pr else 1,
+        result_line="RESULT: BLOCKED need help" if with_pr else None,
+        stdout="x" * 1000000 + "\n" + ("界" * 20000 + "\n") * 40,
+    )
+    runner = FakeRunner(result)
+    fake = make_fake(
+        work_packages=[wp(100, status=STATUS_IN_PROGRESS, agent=11, assignee=11)],
+        priorities=PRIORITIES,
+    )
+    sent: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path.endswith("/activities"):
+            sent.append(json.loads(request.content)["comment"]["raw"])
+            return httpx.Response(status_code, text="comment rejected")
+        return fake.handle(request)
+
+    dispatcher, _, store, client, settings = await make_dispatcher(
+        tmp_path, monkeypatch, runner=runner, fake=fake,
+        gh=FakeGitHub(pr=PR if with_pr else None), max_crash_retries=0,
+        settings_overrides={"comment_max_bytes": 4096, "comment_line_max_bytes": 512},
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        await dispatcher.execute(claim(store, make_item(100)))
+        run = store.get_run(1)
+        assert run is not None and run.state == FAILED
+        assert run.outcome == "engagement_error"
+        assert run.finished_at is not None
+        assert store.active_run_count() == 0
+        meta = json.loads((store.runs_dir / "1" / "meta.json").read_text())
+        assert meta["state"] == FAILED
+        assert str(status_code) in meta["engagement_error"]
+        assert meta["decision"]["outcome"] == ("blocked" if with_pr else "nonzero_exit")
+        assert meta["decision"]["transition"] == "on_hold"
+        # Head evidence survives engagement failure alongside the decision/error.
+        assert "branch_before" in meta["heads"]
+        assert "branch_after" in meta["heads"]
+        assert meta["pr_url"] == (PR.url if with_pr else None)
+        assert meta["run_dir"] == str(store.runs_dir / "1")
+        assert meta["exit_code"] == result.exit_code
+        assert sent and len(sent[0].encode("utf-8")) <= settings.comment_max_bytes
+        if not with_pr:
+            assert "truncated" in sent[0]
+        config = make_config()
+        resolution = await resolve(fake, config)
+        poller = Poller(client, config, resolution)
+        scheduler = Scheduler(client, config, resolution, store, max_concurrent_runs=1)
+        # Successful On Hold transitions must not be silently undone just
+        # because the comment failed. Human release is still required.
+        assert not (await poller.poll(global_slots_used=store.active_run_count())).items
+        fake.work_packages[0]["_links"]["status"]["href"] = (
+            f"/api/v3/statuses/{STATUS_IN_PROGRESS}"
+        )
+        plan = await poller.poll(global_slots_used=store.active_run_count())
+        report = await scheduler.schedule(plan)
+        assert report.claimed_count == 1
+        resumed = report.claimed[0]
+        assert resumed.run_id == 2
+        assert resumed.kind == "resume"
+        await dispatcher.execute(resumed)
+        assert store.active_run_count() == 0
+    finally:
+        await client.aclose()
+        store.close()
+
+
+@pytest.mark.parametrize("status_code", [413, 500])
+@pytest.mark.parametrize("failure", ["workspace", "verification", "missing_pr"])
+async def test_other_engagement_failures_are_terminal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, status_code: int, failure: str
+) -> None:
+    fake = make_fake(
+        work_packages=[wp(100, status=STATUS_IN_PROGRESS, agent=11)],
+        priorities=PRIORITIES,
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path.endswith("/activities"):
+            return httpx.Response(status_code, text="comment rejected")
+        return fake.handle(request)
+
+    dispatcher, _, store, client, _ = await make_dispatcher(
+        tmp_path, monkeypatch, runner=FakeRunner(make_result(tmp_path)), fake=fake,
+        gh=FakeGitHub(error=GitHubError("lookup failed")) if failure == "verification" else None,
+        max_crash_retries=0, transport=httpx.MockTransport(handler),
+    )
+    if failure == "workspace":
+        async def fail_workspace(**kwargs: Any) -> Workspace:
+            raise WorkspaceError("clone failed")
+
+        monkeypatch.setattr("op_agent_engine.dispatcher.prepare_workspace", fail_workspace)
+    try:
+        if failure == "missing_pr":
+            fake.work_packages[0]["_links"]["status"]["href"] = (
+                f"/api/v3/statuses/{STATUS_IN_TESTING}"
+            )
+            claimed = claim(store, make_item(100), kind="review")
+        else:
+            claimed = claim(store, make_item(100))
+        await dispatcher.execute(claimed)
+        run = store.get_run(1)
+        assert run is not None and run.state == FAILED
+        assert store.active_run_count() == 0
+        meta = json.loads((store.runs_dir / "1" / "meta.json").read_text())
+        assert str(status_code) in meta["engagement_error"]
+        assert meta["decision"] is not None
     finally:
         await client.aclose()
         store.close()
