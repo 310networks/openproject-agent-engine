@@ -1,12 +1,16 @@
 """Tests for outcome verification."""
 
+import json
 from pathlib import Path
+
+import pytest
 
 from op_agent_engine.outcomes import (
     NO_RESULT_LINE_NOTE,
     already_open_pr_comment,
     blocked_comment,
     blocked_reason,
+    bound_comment,
     decide_implementer_outcome,
     decide_reviewer_outcome,
     escalation_comment,
@@ -511,3 +515,55 @@ def test_escalation_comment_carries_an_optional_note() -> None:
     assert "(run log is empty)" in comment
     without = escalation_comment(outcome="no_pr", exit_code=0, tail_lines=[])
     assert "wrote nothing" not in without
+
+
+@pytest.mark.parametrize("limit", [1024, 8192, 65536])
+def test_escalation_bounds_large_unicode_lines(limit: int) -> None:
+    comment = escalation_comment(
+        outcome="no_pr",
+        detail="start" + "界" * 350000 + "end",
+        tail_lines=[f"head{i}" + "界" * 20000 + f"tail{i}" for i in range(40)],
+        max_bytes=limit,
+        line_max_bytes=512,
+    )
+    assert len(comment.encode("utf-8")) <= limit
+    assert max(len(line.encode("utf-8")) for line in comment.splitlines()) <= 512
+    assert "… truncated " in comment
+    assert " lines …" in comment
+    assert comment.startswith("ENGINE: escalated")
+    assert comment.endswith("tail39")
+
+
+def test_escalation_shortens_one_line_retaining_both_ends() -> None:
+    comment = escalation_comment(
+        outcome="failure", detail="HEAD" + "x" * 1000000 + "TAIL",
+        max_bytes=4096, line_max_bytes=256,
+    )
+    assert "HEAD" in comment
+    assert "TAIL" in comment
+    assert "truncated 1 lines … (line shortened)" in comment
+    assert len(comment.encode("utf-8")) < 4096
+
+
+def test_comment_json_envelope_stays_below_default_proxy_limit() -> None:
+    # Control characters expand sixfold in JSON; non-ASCII may be escaped too.
+    comment = bound_comment(
+        ("\x00" * 20000 + "界" * 20000 + "\n") * 40,
+        max_bytes=131072, line_max_bytes=16384,
+    )
+    assert len(comment.encode("utf-8")) <= 131072
+    assert len(json.dumps({"comment": {"raw": comment}}).encode("utf-8")) < 1024 * 1024
+
+
+def test_comment_omission_marker_counts_dropped_lines() -> None:
+    lines = [f"{i:03d}: " + "x" * 95 for i in range(100)]
+    comment = bound_comment("\n".join(lines), max_bytes=1024, line_max_bytes=128)
+    retained = [line for line in comment.splitlines() if line in lines]
+    assert f"… truncated {100 - len(retained)} lines …" in comment
+    assert comment.startswith(lines[0])
+    assert comment.endswith(lines[-1])
+
+
+def test_comment_under_limit_is_unchanged() -> None:
+    text = "ENGINE: blocked\n\nMissing data is not zero. 界\n"
+    assert bound_comment(text) == text
