@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from op_agent_engine.github import GitHub, GitHubError, PullRequest
+from op_agent_engine.github import GitHub, GitHubError, PullRequest, head_advanced
 
 
 def _fake_gh(tmp_path: Path, *, body: str = "[]", exit_code: int = 0) -> Path:
@@ -94,6 +94,27 @@ async def test_find_pr_reports_draft_flag(tmp_path: Path) -> None:
     pr = await gh.find_pr("acme/thing", "op-4-101")
     assert pr is not None
     assert pr.is_draft is True
+
+
+@pytest.mark.parametrize("draft", [True, False])
+async def test_find_pr_captures_head_oid(tmp_path: Path, draft: bool) -> None:
+    body = json.dumps([{
+        "number": 7, "url": "https://github.com/acme/thing/pull/7",
+        "headRefName": "op-4-100", "isDraft": draft, "headRefOid": "abc123",
+    }])
+    gh = GitHub(executable=str(_fake_gh(tmp_path, body=body)))
+    pr = await gh.find_pr("acme/thing", "op-4-100")
+    assert pr is not None
+    assert pr.head_oid == "abc123"
+    assert pr.is_draft is draft
+
+
+@pytest.mark.parametrize(("before", "after", "advanced"), [
+    ("a", "b", True), ("a", "a", False), (None, "a", False),
+    ("a", None, False), (None, None, False), ("", "a", False),
+])
+def test_head_comparison(before: str | None, after: str | None, advanced: bool) -> None:
+    assert head_advanced(before, after) is advanced
 
 
 async def test_find_pr_without_is_draft_is_not_a_draft(tmp_path: Path) -> None:

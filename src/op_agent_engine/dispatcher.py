@@ -49,7 +49,7 @@ from op_agent_engine.config import (
     ProjectConfig,
     WorkflowConfig,
 )
-from op_agent_engine.github import GitHub, GitHubError, PullRequest
+from op_agent_engine.github import GitHub, GitHubError, PullRequest, head_advanced
 from op_agent_engine.gitlab import GitLab
 from op_agent_engine.logging import get_logger, redact_mapping
 from op_agent_engine.openproject.activities import (
@@ -78,7 +78,7 @@ from op_agent_engine.outcomes import (
     NO_RESULT_LINE_NOTE,
     OutcomeDecision,
     already_open_pr_comment,
-    bound_engine_comment,
+    bound_comment,
     decide_implementer_outcome,
     decide_reviewer_outcome,
     escalation_comment,
@@ -98,6 +98,7 @@ from op_agent_engine.workspace import (
     WorkspaceError,
     WorktreeArchive,
     archive_failed_worktree,
+    branch_snapshot,
     capture_worktree_state,
     cleanup_workspace,
     prepare_workspace,
@@ -196,9 +197,8 @@ class Dispatcher:
     async def execute(self, claimed: ClaimedRun) -> None:
         """Execute one claimed run; record the outcome in the store.
 
-        Raises on infrastructure failures that should leave the run
-        ``running`` (e.g. a transient OpenProject API error during the
-        transition), so the next engine start recovers it.
+        Engagement transition/comment failures finalize the run immediately.
+        Earlier infrastructure failures may still require startup recovery.
         """
         item = claimed.item
         wp = item.work_package
@@ -334,7 +334,10 @@ class Dispatcher:
             f"ENGINE: run {run_id} interrupted by engine restart at {meta['finished_at']}; "
             f"branch head {head}; artefact at {run_dir}; the next run resumes."
         )
-        comment = bound_engine_comment(comment, self._settings.engine_comment_max_bytes)
+        comment = bound_comment(
+            comment, max_bytes=self._settings.comment_max_bytes,
+            line_max_bytes=self._settings.comment_line_max_bytes,
+        )
         try:
             async with asyncio.timeout(5):
                 await self._post_comment(claimed.item.work_package.id, comment)
@@ -472,6 +475,24 @@ class Dispatcher:
                 claimed, workspace, fix_context=fix_context, attempt=attempt
             ),
         )
+        try:
+            before_head, _ = await branch_snapshot(workspace)
+        except WorkspaceError as error:
+            await self._fail_before_run(
+                run_id, claimed, detail=f"cannot capture initial head: {error}",
+                workspace=workspace,
+            )
+            return
+        try:
+            before_pr = await self._gh.find_pr(
+                self._repo_github(wp.project_id), workspace.branch
+            )
+        except GitHubError as error:
+            # A missing baseline cannot prove PR progress, but the local
+            # branch comparison remains available. Verification after the
+            # run is still required, just as before.
+            logger.warning("could not capture initial PR head: %s", error)
+            before_pr = None
         result = await self._run(request, run_id)
 
         # External check: open PR for the branch?
@@ -479,7 +500,8 @@ class Dispatcher:
             pr = await self._gh.find_pr(
                 self._repo_github(wp.project_id), workspace.branch
             )
-        except GitHubError as error:
+            after_head, clean = await branch_snapshot(workspace)
+        except (GitHubError, WorkspaceError) as error:
             archive = await self._archive_workspace(
                 workspace, run_dir, failed=True
             )
@@ -499,6 +521,13 @@ class Dispatcher:
             started_at,
             workspace=workspace,
             run_dir=run_dir,
+            heads={
+                "branch_before": before_head,
+                "branch_after": after_head,
+                "pr_before": before_pr.head_oid if before_pr else None,
+                "pr_after": pr.head_oid if pr else None,
+                "worktree_clean": clean,
+            },
         )
 
     # -- review runs (M5) ---------------------------------------------------
@@ -631,20 +660,27 @@ class Dispatcher:
         *,
         workspace: Workspace | None = None,
         run_dir: Path | None = None,
+        heads: dict[str, Any] | None = None,
     ) -> None:
+        heads = heads or {}
+        moved = head_advanced(heads.get("branch_before"), heads.get("branch_after"))
+        pr_moved = pr is not None and head_advanced(
+            heads.get("pr_before"), heads.get("pr_after")
+        )
         decision = decide_implementer_outcome(
             exit_code=result.exit_code,
             timed_out=result.timed_out,
             result_line=result.result_line,
             pr_found=pr is not None and not pr.is_draft,
             silent=result.is_silent(),
+            progress=bool(heads.get("worktree_clean")) and (moved or pr_moved),
         )
         archive = await self._finish_workspace(
             claimed, workspace, run_dir, decision=decision
         )
         await self._apply_decision(
             run_id, claimed, request, result, decision, pr=pr,
-            started_at=started_at, archive=archive,
+            started_at=started_at, archive=archive, heads=heads,
         )
 
     async def _finish_review_run(
@@ -770,6 +806,7 @@ class Dispatcher:
         pr: PullRequest | None,
         started_at: datetime,
         archive: WorktreeArchive | None = None,
+        heads: dict[str, Any] | None = None,
     ) -> None:
         wp = claimed.item.work_package
         expected_status_key = EXPECTED_STATUS_KEY_BY_KIND[claimed.kind]
@@ -795,6 +832,8 @@ class Dispatcher:
                     or read_tail(result.stderr_path)
                 )
                 comment = escalation_comment(
+                    max_bytes=self._settings.comment_max_bytes,
+                    line_max_bytes=self._settings.comment_line_max_bytes,
                     outcome=outcome,
                     exit_code=result.exit_code,
                     tail_lines=tail,
@@ -825,6 +864,12 @@ class Dispatcher:
                     extra={**log_extra, "crash_count": crash_count},
                 )
 
+        engagement_error: str | None = None
+        recorded_decision = {
+            "run_state": state, "outcome": outcome,
+            "transition": transition, "comment": comment,
+            "crash_retry": decision.crash_retry,
+        }
         try:
             if transition is not None:
                 await self._transition(
@@ -842,20 +887,17 @@ class Dispatcher:
                 extra=log_extra,
             )
         except OpenProjectError as error:
-            # Transient API failure: leave the run 'running' so the next
-            # engine start recovers it (interrupted -> resume/re-review).
-            self._write_meta(
-                claimed, request, result, state="running", outcome="error",
-                transition=transition, pr=pr, started_at=started_at,
-                archive=archive,
-            )
+            # The process has exited. Release its slot even if the transition
+            # succeeded but its explanatory comment did not. Unchanged active
+            # tickets are eligible next poll; On Hold still needs a human.
+            engagement_error = str(error)
+            state, outcome = FAILED, "engagement_error"
             logger.error(
-                "OpenProject error after run %d finished; run left active: %s",
+                "OpenProject error after run %d finished; run finalized: %s",
                 run_id,
                 error,
                 extra=log_extra,
             )
-            raise
 
         self._store.finish_run(
             run_id,
@@ -867,7 +909,8 @@ class Dispatcher:
         self._write_meta(
             claimed, request, result, state=state, outcome=outcome,
             transition=transition, pr=pr, started_at=started_at,
-            archive=archive,
+            archive=archive, heads=heads, decision=recorded_decision,
+            engagement_error=engagement_error,
         )
         logger.info(
             "run finished: state=%s outcome=%s transition=%s",
@@ -911,18 +954,18 @@ class Dispatcher:
                 "transition aborted for run %d: %s", run_id, error, extra=log_extra
             )
         except OpenProjectError as error:
+            self._store.finish_run(run_id, state=FAILED, outcome="engagement_error")
             self._write_meta(
-                claimed, None, None, state="running", outcome="error",
+                claimed, None, None, state=FAILED, outcome="engagement_error",
                 transition=transition, pr=pr, started_at=started_at,
+                engagement_error=str(error),
+                decision={
+                    "run_state": SUCCEEDED, "outcome": "ready_for_review_existing_pr",
+                    "transition": transition,
+                },
             )
-            logger.error(
-                "OpenProject error finishing a resume with an already open PR "
-                "for run %d; run left active: %s",
-                run_id,
-                error,
-                extra=log_extra,
-            )
-            raise
+            logger.error("engagement failed for run %d: %s", run_id, error, extra=log_extra)
+            return
         else:
             state, outcome = SUCCEEDED, "ready_for_review_existing_pr"
             logger.info(
@@ -1026,18 +1069,18 @@ class Dispatcher:
                 "transition aborted for run %d: %s", run_id, error, extra=log_extra
             )
         except OpenProjectError as error:
+            self._store.finish_run(run_id, state=FAILED, outcome="engagement_error")
             self._write_meta(
-                claimed, None, None, state="running", outcome="error",
+                claimed, None, None, state=FAILED, outcome="engagement_error",
                 transition=transition, pr=None, started_at=started_at,
+                engagement_error=str(error),
+                decision={
+                    "run_state": FAILED, "outcome": "no_pr_for_branch",
+                    "transition": transition,
+                },
             )
-            logger.error(
-                "OpenProject error while handling a missing PR for run %d; "
-                "run left active: %s",
-                run_id,
-                error,
-                extra=log_extra,
-            )
-            raise
+            logger.error("engagement failed for run %d: %s", run_id, error, extra=log_extra)
+            return
 
         outcome = (
             "no_pr_for_branch" if transition is not None else "transition_aborted"
@@ -1072,7 +1115,7 @@ class Dispatcher:
         if workspace is not None:
             await cleanup_workspace(workspace)
         wp = claimed.item.work_package
-        await self._crash_escalate(
+        engagement_error = await self._crash_escalate(
             wp.id,
             outcome=outcome,
             detail=detail,
@@ -1085,6 +1128,8 @@ class Dispatcher:
         self._write_meta(
             claimed, None, None, state=FAILED, outcome=outcome,
             transition=None, pr=None, started_at=datetime.now(UTC),
+            engagement_error=engagement_error,
+            decision={"run_state": FAILED, "outcome": outcome, "detail": detail},
         )
 
     async def _fail_after_run(
@@ -1102,7 +1147,7 @@ class Dispatcher:
         tail: list[str] | None = None
         if result is not None:
             tail = read_tail(result.stdout_path) or read_tail(result.stderr_path)
-        await self._crash_escalate(
+        engagement_error = await self._crash_escalate(
             wp.id,
             outcome="pr_verification_error",
             detail=detail,
@@ -1127,6 +1172,10 @@ class Dispatcher:
             claimed, request, result, state=FAILED,
             outcome="pr_verification_error", transition=None, pr=None,
             started_at=datetime.now(UTC), archive=archive,
+            engagement_error=engagement_error,
+            decision={
+                "run_state": FAILED, "outcome": "pr_verification_error", "detail": detail,
+            },
         )
 
     async def _crash_escalate(
@@ -1140,8 +1189,8 @@ class Dispatcher:
         run_id: int,
         expected_status_key: str,
         artefact_path: str | None = None,
-    ) -> None:
-        """Increment the crash counter; escalate to On Hold at the cap."""
+    ) -> str | None:
+        """Escalate at the cap; return API failure detail for run forensics."""
         crash_count = self._store.increment_crash_count(work_package_id)
         if crash_count <= self._settings.max_crash_retries:
             logger.warning(
@@ -1157,18 +1206,25 @@ class Dispatcher:
                     "crash_count": crash_count,
                 },
             )
-            return
+            return None
         comment = escalation_comment(
+            max_bytes=self._settings.comment_max_bytes,
+            line_max_bytes=self._settings.comment_line_max_bytes,
             outcome=outcome,
             exit_code=exit_code,
             tail_lines=tail_lines,
             detail=detail,
             artefact_path=artefact_path,
         )
-        await self._transition(
-            work_package_id, "on_hold", expected_status_key=expected_status_key
-        )
-        await self._post_comment(work_package_id, comment)
+        try:
+            await self._transition(
+                work_package_id, "on_hold", expected_status_key=expected_status_key
+            )
+            await self._post_comment(work_package_id, comment)
+        except OpenProjectError as error:
+            logger.error("engagement failed for run %d: %s", run_id, error)
+            return str(error)
+        return None
 
     # -- OpenProject actions --------------------------------------------------
 
@@ -1246,6 +1302,11 @@ class Dispatcher:
                     ) from None
 
     async def _post_comment(self, work_package_id: int, comment: str) -> None:
+        comment = bound_comment(
+            comment,
+            max_bytes=self._settings.comment_max_bytes,
+            line_max_bytes=self._settings.comment_line_max_bytes,
+        )
         # Verified live: comments are created through the activities
         # collection with a nested ``raw`` comment.
         # ``/work_packages/<id>/comments`` does not exist (HTTP 404).
@@ -1592,6 +1653,9 @@ class Dispatcher:
         pr: PullRequest | None,
         started_at: datetime | None,
         archive: WorktreeArchive | None = None,
+        heads: dict[str, Any] | None = None,
+        decision: dict[str, Any] | None = None,
+        engagement_error: str | None = None,
     ) -> None:
         run_dir = claimed.run_dir or (self._store.runs_dir / str(claimed.run_id or 0))
         run_dir.mkdir(parents=True, exist_ok=True)
@@ -1604,6 +1668,9 @@ class Dispatcher:
             pass
         meta: dict[str, Any] = {
             "branch_head": head,
+            "run_dir": str(run_dir),
+            "decision": decision,
+            "engagement_error": engagement_error,
             "run_id": claimed.run_id,
             "work_package_id": claimed.item.work_package.id,
             "agent": claimed.item.agent_key,
@@ -1629,6 +1696,8 @@ class Dispatcher:
             ),
             "worktree_kept": bool(archive.kept) if archive is not None else False,
         }
+        if heads is not None:
+            meta["heads"] = heads
         if archive is not None:
             meta["worktree"] = archive.as_dict()
         if result is not None:

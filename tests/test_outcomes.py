@@ -1,13 +1,16 @@
 """Tests for outcome verification."""
 
+import json
 from pathlib import Path
+
+import pytest
 
 from op_agent_engine.outcomes import (
     NO_RESULT_LINE_NOTE,
     already_open_pr_comment,
     blocked_comment,
     blocked_reason,
-    bound_engine_comment,
+    bound_comment,
     decide_implementer_outcome,
     decide_reviewer_outcome,
     escalation_comment,
@@ -20,15 +23,48 @@ from op_agent_engine.outcomes import (
 )
 from op_agent_engine.store import FAILED, SUCCEEDED, TIMEOUT, Run
 
+
+@pytest.mark.parametrize(("ready_pr", "advanced", "expected", "retry"), [
+    (False, True, "progress_not_finished", False),
+    (False, False, "no_pr", True),
+    (True, True, "ready_for_review", False),
+    (True, False, "ready_for_review", False),
+])
+def test_partial_progress(ready_pr: bool, advanced: bool, expected: str, retry: bool) -> None:
+    decision = decide_implementer_outcome(
+        exit_code=0, timed_out=False, result_line="RESULT: PR_OPENED https://example.org/pr",
+        pr_found=ready_pr, progress=advanced,
+    )
+    assert decision.outcome == expected
+    assert decision.crash_retry is retry
+    assert decision.transition == ("ready_for_review" if ready_pr else None)
+
+
+@pytest.mark.parametrize(("exit_code", "timed_out", "result_line", "expected"), [
+    (1, False, "RESULT: PR_OPENED url", "nonzero_exit"),
+    (0, True, "RESULT: PR_OPENED url", "timeout"),
+    (0, False, None, "no_pr"),
+    (0, False, "RESULT: BLOCKED needs help", "blocked"),
+])
+def test_progress_does_not_mask_failure(
+    exit_code: int, timed_out: bool, result_line: str | None, expected: str,
+) -> None:
+    decision = decide_implementer_outcome(
+        exit_code=exit_code, timed_out=timed_out, result_line=result_line,
+        pr_found=False, progress=True,
+    )
+    assert decision.outcome == expected
+
+
 # -- decide_implementer_outcome -------------------------------------------
 
 
 def test_restart_comment_cap_is_utf8_byte_bounded() -> None:
     short = "ENGINE: run interrupted"
-    assert bound_engine_comment(short, 512) == short
-    text = bound_engine_comment("ENGINE: " + "🙂" * 300000, 512)
-    assert len(text.encode("utf-8")) <= 512
-    assert text.endswith(" … truncated")
+    assert bound_comment(short, max_bytes=1024) == short
+    text = bound_comment("ENGINE: " + "🙂" * 300000, max_bytes=1024)
+    assert len(text.encode("utf-8")) <= 1024
+    assert "truncated" in text
 
 
 def test_timeout_without_pr_is_crash_retry() -> None:
@@ -520,3 +556,57 @@ def test_escalation_comment_carries_an_optional_note() -> None:
     assert "(run log is empty)" in comment
     without = escalation_comment(outcome="no_pr", exit_code=0, tail_lines=[])
     assert "wrote nothing" not in without
+    assert "No progress" in without
+    assert "Progress, not finished" in without
+
+
+@pytest.mark.parametrize("limit", [1024, 8192, 65536])
+def test_escalation_bounds_large_unicode_lines(limit: int) -> None:
+    comment = escalation_comment(
+        outcome="no_pr",
+        detail="start" + "界" * 350000 + "end",
+        tail_lines=[f"head{i}" + "界" * 20000 + f"tail{i}" for i in range(40)],
+        max_bytes=limit,
+        line_max_bytes=512,
+    )
+    assert len(comment.encode("utf-8")) <= limit
+    assert max(len(line.encode("utf-8")) for line in comment.splitlines()) <= 512
+    assert "… truncated " in comment
+    assert " lines …" in comment
+    assert comment.startswith("ENGINE: escalated")
+    assert comment.endswith("tail39")
+
+
+def test_escalation_shortens_one_line_retaining_both_ends() -> None:
+    comment = escalation_comment(
+        outcome="failure", detail="HEAD" + "x" * 1000000 + "TAIL",
+        max_bytes=4096, line_max_bytes=256,
+    )
+    assert "HEAD" in comment
+    assert "TAIL" in comment
+    assert "truncated 1 lines … (line shortened)" in comment
+    assert len(comment.encode("utf-8")) < 4096
+
+
+def test_comment_json_envelope_stays_below_default_proxy_limit() -> None:
+    # Control characters expand sixfold in JSON; non-ASCII may be escaped too.
+    comment = bound_comment(
+        ("\x00" * 20000 + "界" * 20000 + "\n") * 40,
+        max_bytes=131072, line_max_bytes=16384,
+    )
+    assert len(comment.encode("utf-8")) <= 131072
+    assert len(json.dumps({"comment": {"raw": comment}}).encode("utf-8")) < 1024 * 1024
+
+
+def test_comment_omission_marker_counts_dropped_lines() -> None:
+    lines = [f"{i:03d}: " + "x" * 95 for i in range(100)]
+    comment = bound_comment("\n".join(lines), max_bytes=1024, line_max_bytes=128)
+    retained = [line for line in comment.splitlines() if line in lines]
+    assert f"… truncated {100 - len(retained)} lines …" in comment
+    assert comment.startswith(lines[0])
+    assert comment.endswith(lines[-1])
+
+
+def test_comment_under_limit_is_unchanged() -> None:
+    text = "ENGINE: blocked\n\nMissing data is not zero. 界\n"
+    assert bound_comment(text) == text

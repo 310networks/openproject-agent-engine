@@ -26,6 +26,7 @@ class _MergeRequest(BaseModel):
     target_project_id: int
     draft: bool | None = None
     work_in_progress: bool | None = None
+    sha: str | None = None
 
 
 class GitLab:
@@ -85,6 +86,7 @@ class GitLab:
                             number=mr.iid, url=mr.web_url, head_branch=mr.source_branch,
                             state="open" if mr.state == "opened" else mr.state,
                             is_draft=bool(mr.draft or mr.work_in_progress),
+                            head_oid=mr.sha,
                         )
                     next_page = response.headers.get("x-next-page", "")
                     if not next_page:

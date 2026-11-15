@@ -59,11 +59,13 @@ async def test_lookup_hosts_states(host: str, state: str) -> None:
             f"https://{host}/api/v4/projects/{quote(REPO, safe='')}/merge_requests",
             params__contains={"source_branch": BRANCH, "state": gitlab_state},
         ).respond(200, json=[mr(
-            state=gitlab_state, web_url=f"https://{host}/{REPO}/-/merge_requests/7"
+            state=gitlab_state, web_url=f"https://{host}/{REPO}/-/merge_requests/7",
+            sha="abc123",
         )])
         result = await GitLab(host=host, token="secret").find_pr(REPO, BRANCH, state=state)
         assert result is not None
         assert result.state == state and result.number == 7 and not result.is_draft
+        assert result.head_oid == "abc123"
         assert route.calls[0].request.headers["PRIVATE-TOKEN"] == "secret"
         assert b"group%2Fsubgroup%2Fdemo" in route.calls[0].request.url.raw_path
 

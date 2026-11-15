@@ -35,6 +35,7 @@ comment summarising the cap instead of applying ``Rejected``.
 from __future__ import annotations
 
 import re
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -53,6 +54,55 @@ REJECTED_RE = re.compile(r"^REJECTED\b\s*(?P<reason>.*)$", re.IGNORECASE)
 
 #: How many tail lines of the run log go into an escalation comment.
 ESCALATION_TAIL_LINES = 40
+DEFAULT_COMMENT_MAX_BYTES = 64 * 1024
+DEFAULT_COMMENT_LINE_MAX_BYTES = 2048
+
+
+def bound_comment(
+    text: str,
+    *,
+    max_bytes: int = DEFAULT_COMMENT_MAX_BYTES,
+    line_max_bytes: int = DEFAULT_COMMENT_LINE_MAX_BYTES,
+) -> str:
+    """Bound UTF-8 text, preserving the head and tail with explicit markers.
+
+    Limits apply to the raw comment, not its JSON envelope. The 64 KiB default
+    leaves room even for JSON escaping under a proxy's usual 1 MiB body limit.
+    """
+    if max_bytes < 256 or line_max_bytes < 128:
+        raise ValueError("comment limits must be at least 256/128 bytes")
+    line_max_bytes = min(line_max_bytes, (max_bytes - 80) // 2 - 1)
+    lines = []
+    for line in text.split("\n"):
+        encoded = line.encode("utf-8")
+        if len(encoded) > line_max_bytes:
+            marker = " … truncated 1 lines … (line shortened) "
+            budget = (line_max_bytes - len(marker.encode("utf-8"))) // 2
+            line = (
+                encoded[:budget].decode("utf-8", errors="ignore")
+                + marker
+                + encoded[-budget:].decode("utf-8", errors="ignore")
+            )
+        lines.append(line)
+    bounded = "\n".join(lines)
+    if len(bounded.encode("utf-8")) <= max_bytes:
+        return bounded
+
+    # Reserve enough space for the omission marker and both newlines. Select
+    # complete lines from each end so a JSON event never consumes the budget.
+    budget = (max_bytes - 80) // 2
+    head: list[str] = []
+    tail: list[str] = []
+    for source, selected in ((lines, head), (list(reversed(lines)), tail)):
+        used = 0
+        for line in source:
+            size = len(line.encode("utf-8")) + 1
+            if used + size > budget:
+                break
+            selected.append(line)
+            used += size
+    omitted = len(lines) - len(head) - len(tail)
+    return "\n".join([*head, f"… truncated {omitted} lines …", *reversed(tail)])
 
 
 @dataclass(frozen=True)
@@ -72,19 +122,6 @@ class OutcomeDecision:
     transition: str | None = None
     comment: str | None = None
     crash_retry: bool = False
-
-
-def bound_engine_comment(comment: str, max_bytes: int) -> str:
-    """Limit a comment by UTF-8 bytes, including an explicit truncation marker."""
-    encoded = comment.encode("utf-8")
-    if len(encoded) <= max_bytes:
-        return comment
-    marker = " … truncated"
-    return (
-        encoded[:max(0, max_bytes - len(marker.encode("utf-8")))].decode(
-            "utf-8", errors="ignore"
-        ) + marker
-    )
 
 
 def parse_result_line(result_line: str | None) -> str | None:
@@ -142,6 +179,7 @@ def decide_implementer_outcome(
     result_line: str | None,
     pr_found: bool,
     silent: bool = False,
+    progress: bool = False,
 ) -> OutcomeDecision:
     """Apply the rules for implement/fix runs.
 
@@ -155,7 +193,9 @@ def decide_implementer_outcome(
        for Review.
     3. Only without a PR do a timeout or a non-zero exit count as a crash
        retry.
-    4. A run that exited 0 without writing anything and without a PR is
+    4. A successful run with a RESULT line and verified clean head movement
+       is progress, not finished delivery; it stays In Progress without a retry.
+    5. A run that exited 0 without writing anything and without a PR is
        ``no_result_line``, not ``no_pr``: the engine cannot tell whether the
        agent did nothing or the agent CLI swallowed its output.
     """
@@ -183,6 +223,8 @@ def decide_implementer_outcome(
         return OutcomeDecision(
             run_state=FAILED, outcome=NO_RESULT_LINE, crash_retry=True
         )
+    if progress and result_line is not None:
+        return OutcomeDecision(run_state=SUCCEEDED, outcome="progress_not_finished")
     return OutcomeDecision(run_state=FAILED, outcome="no_pr", crash_retry=True)
 
 
@@ -318,6 +360,8 @@ def escalation_comment(
     detail: str | None = None,
     artefact_path: str | None = None,
     note: str | None = None,
+    max_bytes: int = DEFAULT_COMMENT_MAX_BYTES,
+    line_max_bytes: int = DEFAULT_COMMENT_LINE_MAX_BYTES,
 ) -> str:
     """Engine comment posted when the crash retry cap is reached.
 
@@ -331,6 +375,12 @@ def escalation_comment(
         f"The agent run failed ({outcome}) and the crash retry cap is reached.",
         "Putting the ticket on hold for a human.",
     ]
+    if outcome == "no_pr":
+        lines.extend([
+            "",
+            "No progress: no ready PR or verified clean head advancement. "
+            "Progress, not finished runs do not consume the crash retry budget.",
+        ])
     if note:
         lines.extend(["", note])
     if detail:
@@ -349,12 +399,16 @@ def escalation_comment(
     if tail_lines is not None:
         lines.extend(["", f"Last {len(tail_lines)} lines of the run log:"])
         lines.extend(tail_lines if tail_lines else ["(run log is empty)"])
-    return "\n".join(lines)
+    return bound_comment(
+        "\n".join(lines), max_bytes=max_bytes, line_max_bytes=line_max_bytes
+    )
 
 
 def read_tail(path: Path | None, max_lines: int = ESCALATION_TAIL_LINES) -> list[str]:
     """The last *max_lines* lines of a log file (empty list if missing)."""
     if path is None or not path.is_file():
         return []
-    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    return lines[-max_lines:]
+    if max_lines <= 0:
+        return []
+    with path.open(encoding="utf-8", errors="replace") as stream:
+        return [line.rstrip("\r\n") for line in deque(stream, maxlen=max_lines)]

@@ -35,6 +35,12 @@ class PullRequest:
     #: A draft PR is not finished work: the engine does not treat it as an
     #: authoritative implementation result.
     is_draft: bool = False
+    head_oid: str | None = None
+
+
+def head_advanced(before: str | None, after: str | None) -> bool:
+    """Only observed, different heads prove progress (missing is not a head)."""
+    return bool(before) and bool(after) and before != after
 
 
 class GitHub:
@@ -66,7 +72,7 @@ class GitHub:
             "--state",
             state,
             "--json",
-            "number,url,headRefName,isDraft",
+            "number,url,headRefName,isDraft,headRefOid",
         ]
         try:
             process = await asyncio.create_subprocess_exec(
@@ -106,4 +112,5 @@ class GitHub:
             head_branch=str(entry.get("headRefName", branch)),
             state=state,
             is_draft=bool(entry.get("isDraft", False)),
+            head_oid=entry.get("headRefOid"),
         )

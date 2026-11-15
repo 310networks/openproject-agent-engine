@@ -108,8 +108,26 @@ the ticket. Branch names are
 A rejection accepted past `MAX_REJECTIONS` moves the ticket to `On Hold` with a
 summary comment instead of `Rejected`. A run that keeps failing increments the
 crash counter; past `MAX_CRASH_RETRIES` the ticket moves to `On Hold` with the
-log tail in an escalation comment. An existing open PR is authoritative for
-implement/fix runs (no retry), and a merged PR is authoritative for reviews.
+log tail in an escalation comment. An existing **non-draft** open PR is authoritative
+for implement/fix runs (no retry), and a merged PR is authoritative for reviews.
+
+Implement/fix/resume runs capture the task branch head and open PR head before
+and after running. A successful run with a `RESULT:` line, a clean worktree
+(including untracked files), and a changed observed branch or PR head records
+`progress_not_finished` when there is no ready PR. This leaves the ticket
+`In Progress` for the next poll's resume, without incrementing or resetting its
+crash count. Drafts are never made ready by the engine. Missing baseline heads
+do not prove movement; unchanged heads, missing results, nonzero exits and
+timeouts still follow the crash path. Ready PR and reviewer precedence is
+unchanged. An existing local task head survives workspace preparation on the
+next poll even before it has been pushed and even if the default branch has
+advanced independently. Default-branch updates are fetched but are not
+automatically integrated into an existing task branch. For a remote task branch,
+preparation retains local-ahead commits or fast-forwards to a remote-ahead head.
+Divergent local/remote task heads stop preparation with a workspace error before
+reclaiming any worktree or resetting the branch. The error identifies both head
+OIDs and the clone path; both refs remain available for explicit reconciliation.
+Automatic merge/rebase of divergent task branches is not attempted.
 
 ## Concurrency
 
@@ -251,7 +269,15 @@ without deleting the volume's clones.
 - `engine.lock` — single-instance `flock`.
 
 `meta.json` records the run identity, argv, cwd, redacted env, state, outcome,
-transition, PR URL and timings. The store keeps run history after the
+transition, PR URL and timings. Implementer runs also record `heads` with
+`branch_before`, `branch_after`, `pr_before`, `pr_after` (null when unavailable)
+and `worktree_clean`. Engagement completion also records the original
+`decision` and any `engagement_error`, with `run_dir` identifying the full logs.
+A failed final transition/comment marks the completed run `failed` immediately
+instead of keeping a dead `running` row until restart; workflow eligibility still
+controls the next poll (in particular, On Hold requires human release). Engine
+comments are bounded by UTF-8 bytes and line length, retaining head/tail excerpts
+and explicit truncation markers. The store keeps run history after the
 artifacts are cleaned up; `cleanup` removes old run directories and stale
 worktrees.
 

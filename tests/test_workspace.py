@@ -140,6 +140,96 @@ async def _prepare(root: Path, git_repo: GitFixture, **overrides: object) -> Wor
     return await prepare_workspace(**kwargs)  # type: ignore[arg-type]
 
 
+@pytest.mark.parametrize("published", [True, False])
+@pytest.mark.parametrize("default_advanced", [True, False])
+async def test_next_poll_preserves_clean_local_progress(
+    tmp_path: Path, git_repo: GitFixture, published: bool, default_advanced: bool,
+) -> None:
+    root = _workspace_root(tmp_path)
+    first = await _prepare(root, git_repo)
+    if published:
+        _git(["push", "origin", first.branch], cwd=first.repo_dir)
+    (first.repo_dir / "batch.txt").write_text("verified batch\n")
+    _git(["add", "batch.txt"], cwd=first.repo_dir)
+    _git(["-c", "user.name=t", "-c", "user.email=t@example.com", "commit",
+          "--no-gpg-sign", "-m", "batch"], cwd=first.repo_dir)
+    head = _git(["rev-parse", "HEAD"], cwd=first.repo_dir)
+    await cleanup_workspace(first)
+    if default_advanced:
+        git_repo.push_default("unrelated.txt")
+    resumed = await _prepare(root, git_repo)
+    try:
+        assert _git(["rev-parse", "HEAD"], cwd=resumed.repo_dir) == head
+        assert (resumed.repo_dir / "batch.txt").read_text() == "verified batch\n"
+        _git(["merge-base", "--is-ancestor", head.strip(), "HEAD"], cwd=resumed.repo_dir)
+        assert not _git(["status", "--porcelain=v1", "-uall"], cwd=resumed.repo_dir)
+    finally:
+        await cleanup_workspace(resumed)
+
+
+@pytest.mark.parametrize("published", [True, False])
+@pytest.mark.parametrize("cleaned_up", [True, False])
+async def test_divergent_remote_task_head_stops_without_losing_local_progress(
+    tmp_path: Path, git_repo: GitFixture, published: bool, cleaned_up: bool,
+) -> None:
+    root = _workspace_root(tmp_path)
+    first = await _prepare(root, git_repo)
+    if published:
+        _git(["push", "origin", first.branch], cwd=first.repo_dir)
+    (first.repo_dir / "batch.txt").write_text("local progress\n")
+    _git(["add", "batch.txt"], cwd=first.repo_dir)
+    _git(["-c", "user.name=t", "-c", "user.email=t@example.com", "commit",
+          "--no-gpg-sign", "-m", "local batch"], cwd=first.repo_dir)
+    head = _git(["rev-parse", "HEAD"], cwd=first.repo_dir).strip()
+    if cleaned_up:
+        await cleanup_workspace(first)
+    git_repo.push_branch(first.branch, "remote-batch.txt")
+    remote_head = _git(
+        ["rev-parse", f"refs/heads/{first.branch}"], cwd=git_repo.origin
+    ).strip()
+
+    with pytest.raises(WorkspaceError, match="has diverged") as caught:
+        await _prepare(root, git_repo)
+
+    assert head in str(caught.value)
+    assert remote_head in str(caught.value)
+    assert str(first.base_repo_dir) in str(caught.value)
+    assert _git(
+        ["rev-parse", f"refs/heads/{first.branch}"], cwd=first.base_repo_dir
+    ).strip() == head
+    assert _git(
+        ["rev-parse", f"origin/{first.branch}"], cwd=first.base_repo_dir
+    ).strip() == remote_head
+    assert _git(
+        ["show", f"{head}:batch.txt"], cwd=first.base_repo_dir
+    ) == "local progress\n"
+    assert _git(
+        ["show", f"{remote_head}:remote-batch.txt"], cwd=first.base_repo_dir
+    ) == "remote-batch.txt"
+    assert first.repo_dir.exists() is (not cleaned_up)
+    if not cleaned_up:
+        assert (first.repo_dir / "batch.txt").read_text() == "local progress\n"
+        await cleanup_workspace(first)
+
+
+async def test_next_poll_fast_forwards_to_remote_task_head(
+    tmp_path: Path, git_repo: GitFixture,
+) -> None:
+    root = _workspace_root(tmp_path)
+    first = await _prepare(root, git_repo)
+    _git(["push", "origin", first.branch], cwd=first.repo_dir)
+    await cleanup_workspace(first)
+    git_repo.push_branch(first.branch, "remote-batch.txt")
+    resumed = await _prepare(root, git_repo)
+    try:
+        assert _git(["rev-parse", "HEAD"], cwd=resumed.repo_dir) == _git(
+            ["rev-parse", f"origin/{first.branch}"], cwd=resumed.repo_dir
+        )
+        assert (resumed.repo_dir / "remote-batch.txt").read_text() == "remote-batch.txt"
+    finally:
+        await cleanup_workspace(resumed)
+
+
 async def test_gitlab_clone_push_fetch_and_token_rotation(
     tmp_path: Path, git_repo: GitFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:

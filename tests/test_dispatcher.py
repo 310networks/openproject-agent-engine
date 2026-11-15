@@ -24,11 +24,11 @@ from op_agent_engine.dispatcher import Dispatcher
 from op_agent_engine.github import GitHubError, PullRequest
 from op_agent_engine.openproject.client import OpenProjectClient, OpenProjectError
 from op_agent_engine.openproject.workpackage import parse_work_package
-from op_agent_engine.poller import DispatchItem
+from op_agent_engine.poller import DispatchItem, Poller
 from op_agent_engine.prompts import PromptRenderer
 from op_agent_engine.runners.base import OnSpawned, RunRequest, RunResult
-from op_agent_engine.scheduler import ClaimedRun
-from op_agent_engine.store import FAILED, RUNNING, SUCCEEDED, TIMEOUT, Store
+from op_agent_engine.scheduler import ClaimedRun, Scheduler
+from op_agent_engine.store import FAILED, SUCCEEDED, TIMEOUT, Store
 from op_agent_engine.workspace import Workspace, WorkspaceError
 from tests.fakes.openproject import FakeOpenProject
 from tests.test_poller import PRIORITIES, wp
@@ -226,6 +226,13 @@ async def make_dispatcher(
         repo_dir=repo_dir, branch="op-4-100", standard_path=standard
     )
 
+    async def fake_branch_snapshot(workspace: Workspace) -> tuple[str, bool]:
+        return "unchanged", True
+
+    monkeypatch.setattr(
+        "op_agent_engine.dispatcher.branch_snapshot", fake_branch_snapshot
+    )
+
     async def fake_prepare_workspace(**kwargs: Any) -> Workspace:
         return workspace
 
@@ -315,6 +322,160 @@ def posted_comments(fake: FakeOpenProject, work_package_id: int) -> list[str]:
     ]
 
 
+@pytest.mark.parametrize("kind", ["implement", "resume", "fix"])
+@pytest.mark.parametrize(("draft", "advance", "dirty", "expected"), [
+    (True, True, False, "progress_not_finished"),
+    (True, False, False, "no_pr"),
+    (False, True, False, "ready_for_review"),
+    (False, False, False, "ready_for_review"),
+    (True, True, True, "no_pr"),
+    (None, True, False, "progress_not_finished"),
+])
+async def test_clean_head_progress(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    kind: str, draft: bool | None, advance: bool, dirty: bool, expected: str,
+) -> None:
+    from dataclasses import replace
+
+    from op_agent_engine.workspace import branch_snapshot
+
+    gh = FakeGitHub(pr=replace(PR, is_draft=bool(draft), head_oid="before")
+                    if draft is not None else None)
+    holder: dict[str, Workspace] = {}
+
+    def commit_batch() -> None:
+        workspace = holder["ws"]
+        if advance:
+            _git(["-C", str(workspace.repo_dir), "commit", "--allow-empty",
+                  "--no-gpg-sign", "--quiet", "-m", "batch"])
+            if gh.pr is not None:
+                gh.pr = replace(gh.pr, head_oid="after")
+        if dirty:
+            (workspace.repo_dir / "untracked.txt").write_text("unfinished")
+
+    runner = FakeRunner(make_result(
+        tmp_path, result_line=f"RESULT: PR_OPENED {PR.url}",
+        stdout=f"RESULT: PR_OPENED {PR.url}\n",
+    ), on_run=commit_batch)
+    fake = make_fake(
+        work_packages=[wp(100, status=STATUS_IN_PROGRESS, agent=11)],
+        priorities=PRIORITIES,
+        activities=[activity_comment(100, "Fix this", author_id=REVIEWER_USER_ID)],
+    )
+    dispatcher, fake, store, client, _ = await make_dispatcher(
+        tmp_path, monkeypatch, runner=runner, gh=gh, fake=fake,
+    )
+    try:
+        workspace = make_real_workspace(tmp_path)
+        holder["ws"] = workspace
+        use_workspace(monkeypatch, workspace)
+        monkeypatch.setattr("op_agent_engine.dispatcher.branch_snapshot", branch_snapshot)
+        store.increment_crash_count(100)
+        claimed = claim(store, make_item(100), kind=kind)
+        await dispatcher.execute(claimed)
+        run = store.get_run(claimed.run_id)
+        assert run is not None
+        # Resume with an already-ready PR short-circuits exactly as before.
+        if kind == "resume" and draft is False:
+            assert run.outcome == "ready_for_review_existing_pr"
+            assert not runner.requests
+            return
+        assert run.outcome == expected
+        assert store.crash_count(100) == (2 if expected == "no_pr" else 1)
+        if expected == "progress_not_finished":
+            assert run.state == SUCCEEDED
+            assert status_href(fake, 100) == f"/api/v3/statuses/{STATUS_IN_PROGRESS}"
+            assert not fake.patches
+            assert not posted_comments(fake, 100)
+        elif expected == "ready_for_review":
+            assert status_href(fake, 100) == f"/api/v3/statuses/{STATUS_READY_FOR_REVIEW}"
+        meta = json.loads((Path(run.run_dir) / "meta.json").read_text())
+        assert meta["decision"]["outcome"] == expected
+        assert meta["engagement_error"] is None
+        heads = meta["heads"]
+        assert (heads["branch_before"] != heads["branch_after"]) is advance
+        assert heads["worktree_clean"] is not dirty
+        assert heads["pr_before"] == ("before" if draft is not None else None)
+        assert heads["pr_after"] == (
+            ("after" if advance else "before") if draft is not None else None
+        )
+    finally:
+        await client.aclose()
+        store.close()
+
+
+@pytest.mark.parametrize(("exit_code", "timed_out", "result_line", "expected"), [
+    (0, False, "RESULT: PR_OPENED url", "progress_not_finished"),
+    (1, False, "RESULT: PR_OPENED url", "nonzero_exit"),
+    (0, True, "RESULT: PR_OPENED url", "timeout"),
+    (0, False, None, "no_pr"),
+])
+async def test_pr_head_progress_requires_successful_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    exit_code: int, timed_out: bool, result_line: str | None, expected: str,
+) -> None:
+    from dataclasses import replace
+
+    gh = FakeGitHub(pr=replace(PR, is_draft=True, head_oid="before"))
+
+    def push() -> None:
+        gh.pr = replace(PR, is_draft=True, head_oid="after")
+
+    runner = FakeRunner(make_result(
+        tmp_path, exit_code=exit_code, timed_out=timed_out,
+        result_line=result_line, stdout="agent output\n",
+    ), on_run=push)
+    dispatcher, fake, store, client, _ = await make_dispatcher(
+        tmp_path, monkeypatch, runner=runner, gh=gh,
+    )
+    try:
+        claimed = claim(store, make_item(100))
+        await dispatcher.execute(claimed)
+        run = store.get_run(claimed.run_id)
+        assert run is not None
+        assert run.outcome == expected
+        assert store.crash_count(100) == (0 if expected == "progress_not_finished" else 1)
+        assert status_href(fake, 100) == f"/api/v3/statuses/{STATUS_IN_PROGRESS}"
+    finally:
+        await client.aclose()
+        store.close()
+
+
+@pytest.mark.parametrize("fail_after_run", [True, False])
+async def test_head_snapshot_error_uses_crash_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fail_after_run: bool,
+) -> None:
+    runner = FakeRunner(make_result(
+        tmp_path, result_line="RESULT: PR_OPENED url", stdout="batch output\n",
+    ))
+    dispatcher, fake, store, client, _ = await make_dispatcher(
+        tmp_path, monkeypatch, runner=runner,
+    )
+    calls = 0
+
+    async def broken_snapshot(workspace: Workspace) -> tuple[str, bool]:
+        nonlocal calls
+        calls += 1
+        if not fail_after_run or calls > 1:
+            raise WorkspaceError("cannot read task branch")
+        return "before", True
+
+    monkeypatch.setattr("op_agent_engine.dispatcher.branch_snapshot", broken_snapshot)
+    try:
+        claimed = claim(store, make_item(100))
+        await dispatcher.execute(claimed)
+        run = store.get_run(claimed.run_id)
+        assert run is not None
+        assert run.state == FAILED
+        assert run.outcome == ("pr_verification_error" if fail_after_run else "workspace_error")
+        assert calls == (2 if fail_after_run else 1)
+        assert store.crash_count(100) == 1
+        assert status_href(fake, 100) == f"/api/v3/statuses/{STATUS_IN_PROGRESS}"
+    finally:
+        await client.aclose()
+        store.close()
+
+
 # -- success path ---------------------------------------------------------------
 
 
@@ -352,7 +513,7 @@ async def test_implement_success_with_pr(
         assert posted_comments(fake, 100) == []
 
         # GitHub was checked with the project repo and the run branch.
-        assert gh.calls == [("owner/demo", "op-4-100")]
+        assert gh.calls == [("owner/demo", "op-4-100")] * 2
 
         # Per-run artifacts.
         run_dir = store.runs_dir / "1"
@@ -868,7 +1029,7 @@ async def test_transition_retries_once_on_conflict(
         store.close()
 
 
-async def test_openproject_error_after_run_leaves_run_active(
+async def test_openproject_error_after_run_finalizes_and_can_resume(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     runner = FakeRunner(make_result(tmp_path))
@@ -880,19 +1041,156 @@ async def test_openproject_error_after_run_leaves_run_active(
     )
     try:
         claimed = claim(store, make_item(100))
+        # Model the assignment the scheduler made before the agent started.
+        fake.work_packages[0]["_links"]["assignee"] = {"href": "/api/v3/users/11"}
         # The transition PATCH fails with a transient error.
         fake.patch_error = (503, "Service Unavailable")
 
-        with pytest.raises(OpenProjectError):
-            await dispatcher.execute(claimed)
+        await dispatcher.execute(claimed)
 
-        # The run stays active so the next engine start can recover it.
         run = store.get_run(1)
         assert run is not None
-        assert run.state == RUNNING
+        assert run.state == FAILED
+        assert store.active_run_count() == 0
         meta = json.loads((store.runs_dir / "1" / "meta.json").read_text())
-        assert meta["state"] == "running"
-        assert meta["outcome"] == "error"
+        assert meta["state"] == FAILED
+        assert meta["outcome"] == "engagement_error"
+        assert "503" in meta["engagement_error"]
+        assert meta["decision"]["transition"] == "ready_for_review"
+        assert meta["pr_url"] == PR.url
+
+        # A later recovery claim succeeds without restarting the store.
+        fake.patch_error = None
+        config = make_config()
+        resolution = await resolve(fake, config)
+        poller = Poller(client, config, resolution)
+        scheduler = Scheduler(client, config, resolution, store, max_concurrent_runs=1)
+        report = await scheduler.schedule(
+            await poller.poll(global_slots_used=store.active_run_count())
+        )
+        assert report.claimed_count == 1
+        assert report.claimed[0].kind == "resume"
+        await dispatcher.execute(report.claimed[0])
+        assert store.active_run_count() == 0
+        assert status_href(fake, 100) == f"/api/v3/statuses/{STATUS_READY_FOR_REVIEW}"
+    finally:
+        await client.aclose()
+        store.close()
+
+
+@pytest.mark.parametrize("status_code", [413, 500])
+@pytest.mark.parametrize("with_pr", [False, True])
+async def test_comment_failure_releases_slot_and_preserves_decision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, status_code: int, with_pr: bool
+) -> None:
+    result = make_result(
+        tmp_path, exit_code=0 if with_pr else 1,
+        result_line="RESULT: BLOCKED need help" if with_pr else None,
+        stdout="x" * 1000000 + "\n" + ("界" * 20000 + "\n") * 40,
+    )
+    runner = FakeRunner(result)
+    fake = make_fake(
+        work_packages=[wp(100, status=STATUS_IN_PROGRESS, agent=11, assignee=11)],
+        priorities=PRIORITIES,
+    )
+    sent: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path.endswith("/activities"):
+            sent.append(json.loads(request.content)["comment"]["raw"])
+            return httpx.Response(status_code, text="comment rejected")
+        return fake.handle(request)
+
+    dispatcher, _, store, client, settings = await make_dispatcher(
+        tmp_path, monkeypatch, runner=runner, fake=fake,
+        gh=FakeGitHub(pr=PR if with_pr else None), max_crash_retries=0,
+        settings_overrides={"comment_max_bytes": 4096, "comment_line_max_bytes": 512},
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        await dispatcher.execute(claim(store, make_item(100)))
+        run = store.get_run(1)
+        assert run is not None and run.state == FAILED
+        assert run.outcome == "engagement_error"
+        assert run.finished_at is not None
+        assert store.active_run_count() == 0
+        meta = json.loads((store.runs_dir / "1" / "meta.json").read_text())
+        assert meta["state"] == FAILED
+        assert str(status_code) in meta["engagement_error"]
+        assert meta["decision"]["outcome"] == ("blocked" if with_pr else "nonzero_exit")
+        assert meta["decision"]["transition"] == "on_hold"
+        # Head evidence survives engagement failure alongside the decision/error.
+        assert "branch_before" in meta["heads"]
+        assert "branch_after" in meta["heads"]
+        assert meta["pr_url"] == (PR.url if with_pr else None)
+        assert meta["run_dir"] == str(store.runs_dir / "1")
+        assert meta["exit_code"] == result.exit_code
+        assert sent and len(sent[0].encode("utf-8")) <= settings.comment_max_bytes
+        if not with_pr:
+            assert "truncated" in sent[0]
+        config = make_config()
+        resolution = await resolve(fake, config)
+        poller = Poller(client, config, resolution)
+        scheduler = Scheduler(client, config, resolution, store, max_concurrent_runs=1)
+        # Successful On Hold transitions must not be silently undone just
+        # because the comment failed. Human release is still required.
+        assert not (await poller.poll(global_slots_used=store.active_run_count())).items
+        fake.work_packages[0]["_links"]["status"]["href"] = (
+            f"/api/v3/statuses/{STATUS_IN_PROGRESS}"
+        )
+        plan = await poller.poll(global_slots_used=store.active_run_count())
+        report = await scheduler.schedule(plan)
+        assert report.claimed_count == 1
+        resumed = report.claimed[0]
+        assert resumed.run_id == 2
+        assert resumed.kind == "resume"
+        await dispatcher.execute(resumed)
+        assert store.active_run_count() == 0
+    finally:
+        await client.aclose()
+        store.close()
+
+
+@pytest.mark.parametrize("status_code", [413, 500])
+@pytest.mark.parametrize("failure", ["workspace", "verification", "missing_pr"])
+async def test_other_engagement_failures_are_terminal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, status_code: int, failure: str
+) -> None:
+    fake = make_fake(
+        work_packages=[wp(100, status=STATUS_IN_PROGRESS, agent=11)],
+        priorities=PRIORITIES,
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path.endswith("/activities"):
+            return httpx.Response(status_code, text="comment rejected")
+        return fake.handle(request)
+
+    dispatcher, _, store, client, _ = await make_dispatcher(
+        tmp_path, monkeypatch, runner=FakeRunner(make_result(tmp_path)), fake=fake,
+        gh=FakeGitHub(error=GitHubError("lookup failed")) if failure == "verification" else None,
+        max_crash_retries=0, transport=httpx.MockTransport(handler),
+    )
+    if failure == "workspace":
+        async def fail_workspace(**kwargs: Any) -> Workspace:
+            raise WorkspaceError("clone failed")
+
+        monkeypatch.setattr("op_agent_engine.dispatcher.prepare_workspace", fail_workspace)
+    try:
+        if failure == "missing_pr":
+            fake.work_packages[0]["_links"]["status"]["href"] = (
+                f"/api/v3/statuses/{STATUS_IN_TESTING}"
+            )
+            claimed = claim(store, make_item(100), kind="review")
+        else:
+            claimed = claim(store, make_item(100))
+        await dispatcher.execute(claimed)
+        run = store.get_run(1)
+        assert run is not None and run.state == FAILED
+        assert store.active_run_count() == 0
+        meta = json.loads((store.runs_dir / "1" / "meta.json").read_text())
+        assert str(status_code) in meta["engagement_error"]
+        assert meta["decision"] is not None
     finally:
         await client.aclose()
         store.close()
@@ -1826,7 +2124,7 @@ async def test_cancel_checkpoints_dirty_worktree_and_resumes_with_evidence(
     runner = WaitingRunner(make_result(tmp_path))
     dispatcher, fake, store, client, settings = await make_dispatcher(
         tmp_path, monkeypatch, runner=runner, gh=FakeGitHub(pr=PR),
-        settings_overrides={"drain_seconds": 1, "engine_comment_max_bytes": 512},
+        settings_overrides={"drain_seconds": 1, "comment_max_bytes": 1024},
         prompts_template="{{ interruption.run_dir if interruption else 'none' }} "
         "{{ interruption.branch_head if interruption else 'none' }}",
     )
@@ -1863,7 +2161,7 @@ async def test_cancel_checkpoints_dirty_worktree_and_resumes_with_evidence(
         artefact = Path(meta["worktree_artefact"])
         assert (artefact / "untracked" / "notes.md").read_text() == "partial work\n"
         assert len(attempts) == 1
-        assert len(attempts[0].encode()) <= settings.engine_comment_max_bytes
+        assert len(attempts[0].encode()) <= settings.comment_max_bytes
         assert bool(meta["interruption_errors"]) == comment_fails
         assert len(posted_comments(fake, 100)) == (0 if comment_fails else 1)
         resumed = claim(store, make_item(100), kind="resume")

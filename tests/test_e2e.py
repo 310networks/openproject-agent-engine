@@ -114,6 +114,13 @@ async def make_engine(
     standard = tmp_path / "ws" / "impl" / "AGENTS.md"
     standard.write_text("STANDARD CONTENT", encoding="utf-8")
 
+    async def fake_branch_snapshot(workspace: Workspace) -> tuple[str, bool]:
+        return "unchanged", True
+
+    monkeypatch.setattr(
+        "op_agent_engine.dispatcher.branch_snapshot", fake_branch_snapshot
+    )
+
     async def fake_prepare_workspace(**kwargs: Any) -> Workspace:
         return Workspace(repo_dir=repo_dir, branch=BRANCH, standard_path=standard)
 

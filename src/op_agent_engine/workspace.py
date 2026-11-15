@@ -223,6 +223,17 @@ async def run_git(
     return _stdout.decode("utf-8", errors="replace")
 
 
+async def branch_snapshot(workspace: Workspace) -> tuple[str, bool]:
+    """Observe the task branch head and cleanliness, including untracked files."""
+    head = await run_git(
+        ["rev-parse", "--verify", f"refs/heads/{workspace.branch}"], cwd=workspace.repo_dir
+    )
+    status = await run_git(
+        ["status", "--porcelain", "--untracked-files=all"], cwd=workspace.repo_dir
+    )
+    return head.strip(), not status.strip()
+
+
 async def remote_default_branch(repo_dir: Path) -> str | None:
     """Return the remote default branch, preferring local tracking data.
 
@@ -443,6 +454,47 @@ async def prepare_workspace(
         base = f"origin/{branch}"
     else:
         raise WorkspaceError(f"unknown agent kind {role!r}")
+
+    if role == "implementer":
+        # A clean progress run need not have pushed or opened a PR yet.
+        # Default-branch advancement must never reset an existing task head.
+        # A remote task head can replace it only via a safe fast-forward.
+        local_ref = f"refs/heads/{branch}"
+        try:
+            await run_git(["show-ref", "--verify", "--quiet", local_ref], cwd=repo_dir)
+        except GitError as error:
+            if error.returncode != 1:
+                raise
+        else:
+            local_head = (await run_git(["rev-parse", local_ref], cwd=repo_dir)).strip()
+            if not remote_branch_exists:
+                base = local_head
+            else:
+                try:
+                    await run_git(
+                        ["merge-base", "--is-ancestor", base, local_head], cwd=repo_dir
+                    )
+                except GitError as error:
+                    if error.returncode != 1:
+                        raise
+                    try:
+                        await run_git(
+                            ["merge-base", "--is-ancestor", local_head, base], cwd=repo_dir
+                        )
+                    except GitError as error:
+                        if error.returncode != 1:
+                            raise
+                        remote_head = (
+                            await run_git(["rev-parse", base], cwd=repo_dir)
+                        ).strip()
+                        raise WorkspaceError(
+                            f"task branch {branch} has diverged: {local_ref} at "
+                            f"{local_head}, {base} at {remote_head}; both heads "
+                            f"are preserved in {repo_dir}. Reconcile the branches "
+                            "before retrying; no worktree was reclaimed or branch reset."
+                        ) from error
+                else:
+                    base = local_head
 
     # Every run gets its own working tree so checkouts (and the agents'
     # edits) cannot collide. The shared clone stays detached so every run

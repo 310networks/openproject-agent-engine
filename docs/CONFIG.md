@@ -367,12 +367,13 @@ Docker network.
 | `MAX_RUNS_PER_AGENT` | `1` | concurrent runs per agent; each run gets its own worktree |
 | `MAX_REJECTIONS` | `3` | rejections before an agent stops retrying a work package |
 | `MAX_CRASH_RETRIES` | `2` | retries after a crashed run |
+| `COMMENT_MAX_BYTES` | `65536` | maximum raw engine comment UTF-8 bytes (1024–131072); includes truncation markers, reserves room for JSON escaping under a 1 MiB proxy limit |
+| `COMMENT_LINE_MAX_BYTES` | `2048` | maximum UTF-8 bytes per comment line (128–16384); reduced further when needed to fit head/tail within the total cap |
 | `RUN_TIMEOUT_SECONDS` | `3600` | hard limit per run |
 | `AGENT_TIMEOUT_SECONDS` | `3600` | hard limit per agent run (wins over the above) |
 | `STOP_GRACE_SECONDS` | `60` | legacy shutdown wait when drain is disabled |
 | `DRAIN_SECONDS` | `900` | drain active runs with fresh heartbeat; 0 selects legacy shutdown |
 | `CONTAINER_STOP_GRACE_SECONDS` | `1020` | numeric Docker stop deadline; must exceed drain (or legacy wait) + 20s kill + 55s checkpoint/log budget; used by compose and startup warning |
-| `ENGINE_COMMENT_MAX_BYTES` | `16000` | restart-comment UTF-8 byte cap (512–64000); general engagement comments tracked separately in OP#487 |
 | `RUN_RETENTION_DAYS` | `30` | `cleanup` removes older run directories and stale worktrees |
 | `KEEP_FAILED_WORKTREES` | `true` | keep a failed run's worktree until `cleanup` expires it; `false` removes it right after its state is captured under the run directory |
 | `FAILED_WORKTREE_MAX_MB` | `2048` | size cap for a kept failed-run worktree (MiB); a bigger one is removed after capture, `0` disables keeping |

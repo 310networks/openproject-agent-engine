@@ -63,7 +63,7 @@ Never blindly apply a patch to a newer HEAD. The next resume prompt points at
 this evidence and the pre-restart HEAD, even when a PR already exists.
 
 There is one bounded comment **attempt** per affected ticket, capped by
-`ENGINE_COMMENT_MAX_BYTES` (default 16000 UTF-8 bytes). A proxy/network failure
+the shared `COMMENT_MAX_BYTES` / `COMMENT_LINE_MAX_BYTES` limits (default 65536 / 2048 UTF-8 bytes). A proxy/network failure
 is recorded in metadata and is not retried during shutdown: delivery cannot be
 guaranteed, and retrying an uncertain response could duplicate the comment.
 OP#487's general escalation-comment handling remains a separate change.
@@ -188,7 +188,7 @@ always an explicit human decision.
 | `ENGINE: blocked` | agent reported a blocker | remove it, move to `Rejected` or `New` |
 | `ENGINE: blocked by dependency` | unfinished OpenProject blocker relation; ticket is in `Blocked` | finish/close the blocker; the engine unblocks and assigns automatically (within `BLOCKER_REFRESH_SECONDS`, default 5 min) |
 | `ENGINE: no PR found` | `Ready for Review` without a PR for `op-<project>-<wp>` | push the PR, move back to `Ready for Review` |
-| `ENGINE: escalated` | crash/timeout retry cap; comment has exit code + last 40 log lines | fix the cause, move back to `In Progress`/`New` |
+| `ENGINE: escalated` | crash/timeout retry cap; comment has exit code + bounded excerpt of last 40 log lines | fix the cause, move back to `In Progress`/`New` |
 | `ENGINE: escalated` with `(no_result_line)` | the run exited 0 and wrote nothing at all, so there is no RESULT line and no evidence | read `runs/<id>/meta.json`; the worktree is gone (#365), so re-run with a narrower scope |
 | `ENGINE: rejection cap reached` | next rejection would exceed `MAX_REJECTIONS` | review the feedback, move to `Rejected`/`New` when ready |
 
@@ -285,6 +285,43 @@ When an old image has blocked a ticket on an unconditional flash cap:
 
 The policy update resolves instruction conflicts; it does not waive independent
 review, device testing or scene/shipping safety gates.
+
+## Run stayed running after an engagement failure
+
+Older releases can leave a completed run `running` when the final OpenProject
+transition or comment fails (notably HTTP 413 or 500). Symptoms: a busy dashboard
+slot with no agent process, or `ClaimConflictError: ... already has an active run`.
+
+1. Inspect `status --json`, container process listings and engine logs. Match the
+   run ID, `finished`/engagement error, exit code and `RESULT:` line; do not assume
+   a quiet log means the process has exited. Preserve `runs/<id>/meta.json`,
+   stdout/stderr and worktree captures before cleanup. Check OpenProject's actual
+   status and the branch's existing PR: the transition may already have succeeded.
+2. Check the API/proxy cause. A single pi JSON tool-result line can be megabytes;
+   increasing nginx `client_max_body_size` only mitigates that trigger. Fix 500s
+   or permissions independently. Do not repeatedly requeue or delete `engine.db`.
+3. Pause new claims and let real active agents finish. Deploy the released fix
+   from the compose directory: `docker compose pull && docker compose up -d`.
+   Recreating the engine restarts it; if already running that image, use
+   `docker compose restart engine`. Startup marks legacy zombie rows
+   `interrupted`, releasing `one_active_per_wp`. This one-time restart is needed
+   for rows left by older code (including incident runs 1137 and 1150).
+4. Verify the rows are no longer active and the heartbeat/dashboard advance.
+   `In Progress`/`In Testing` tickets recover on the next poll. `Ready for Review`
+   follows the normal review flow. **On Hold remains terminal**: after inspecting
+   the recorded decision, an operator must explicitly release it (see above).
+   Never undo a successful hold automatically just because its comment failed.
+5. Remove the pause and verify one claim per ticket, not duplicate agents or PRs.
+
+New engagement failures finalize the row immediately as `failed`; normal run
+completion records `outcome: engagement_error`. `meta.json` preserves `decision`
+(original outcome, intended transition and comment), `engagement_error`, `pr_url`,
+`run_dir` and process result. Pre-run/PR-verification failures retain their original
+failure outcome with the engagement error alongside it. Full logs remain on disk;
+posted excerpts are not the full forensic record. Comments use UTF-8 head/tail
+truncation with `… truncated N lines …` markers, default 64 KiB total / 2048 bytes
+per line (`COMMENT_MAX_BYTES` / `COMMENT_LINE_MAX_BYTES`, see CONFIG.md).
+For a smaller proxy limit, lower the raw cap to leave room for JSON escaping.
 
 ## Recovery and shutdown
 
