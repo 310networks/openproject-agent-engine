@@ -2107,8 +2107,10 @@ def use_workspace(monkeypatch: pytest.MonkeyPatch, workspace: Workspace) -> None
 
 
 @pytest.mark.parametrize("comment_fails", [False, True])
+@pytest.mark.parametrize("archive_fails", [False, True])
 async def test_cancel_checkpoints_dirty_worktree_and_resumes_with_evidence(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, comment_fails: bool
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, comment_fails: bool,
+    archive_fails: bool,
 ) -> None:
     import asyncio
 
@@ -2146,7 +2148,17 @@ async def test_cancel_checkpoints_dirty_worktree_and_resumes_with_evidence(
         task = asyncio.create_task(dispatcher.execute(claimed))
         await asyncio.wait_for(entered.wait(), 2)
         await dispatcher.checkpoint_before_stop(1)
-        assert (store.runs_dir / "1" / "meta.json").exists()
+        preliminary_meta = json.loads((store.runs_dir / "1" / "meta.json").read_text())
+        assert len(preliminary_meta["branch_head"]) == 40
+        preliminary = store.runs_dir / "1" / "worktree-preliminary"
+        assert (preliminary / "untracked" / "notes.md").read_text() == "partial work\n"
+        # The agent can change files between the pre-TERM and final captures.
+        (workspace.repo_dir / "notes.md").write_text("final work\n")
+        original_archive = dispatcher._archive_workspace
+        if archive_fails:
+            async def fail_archive(*args: Any, **kwargs: Any) -> None:
+                raise OSError("simulated final archive failure")
+            monkeypatch.setattr(dispatcher, "_archive_workspace", fail_archive)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
@@ -2157,17 +2169,29 @@ async def test_cancel_checkpoints_dirty_worktree_and_resumes_with_evidence(
         meta = json.loads((store.runs_dir / "1" / "meta.json").read_text())
         assert meta["argv"] == ["fake-runner"]
         assert meta["pr_url"] == PR.url
-        assert len(meta["branch_head"]) == 40
-        artefact = Path(meta["worktree_artefact"])
-        assert (artefact / "untracked" / "notes.md").read_text() == "partial work\n"
+        if archive_fails:
+            assert meta["branch_head"] is None  # No final HEAD was captured.
+        else:
+            assert len(meta["branch_head"]) == 40
+        assert meta["preliminary_worktree_artefact"] == str(preliminary)
+        assert (preliminary / "untracked" / "notes.md").read_text() == "partial work\n"
+        if archive_fails:
+            assert meta["worktree_artefact"] is None
+            assert not (store.runs_dir / "1" / "worktree").exists()
+            assert "simulated final archive failure" in str(meta["interruption_errors"])
+        else:
+            artefact = Path(meta["worktree_artefact"])
+            assert artefact != preliminary
+            assert (artefact / "untracked" / "notes.md").read_text() == "final work\n"
         assert len(attempts) == 1
         assert len(attempts[0].encode()) <= settings.comment_max_bytes
-        assert bool(meta["interruption_errors"]) == comment_fails
+        assert bool(meta["interruption_errors"]) == (comment_fails or archive_fails)
         assert len(posted_comments(fake, 100)) == (0 if comment_fails else 1)
+        monkeypatch.setattr(dispatcher, "_archive_workspace", original_archive)
         resumed = claim(store, make_item(100), kind="resume")
         prompt = dispatcher._render_prompt(resumed, workspace)
         assert str(store.runs_dir / "1") in prompt
-        assert meta["branch_head"] in prompt
+        assert str(meta["branch_head"]) in prompt
         resumed_runner = FakeRunner(make_result(tmp_path))
         dispatcher._runner = resumed_runner
         await dispatcher.execute(resumed)

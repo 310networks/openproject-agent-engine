@@ -55,6 +55,15 @@ fails; no crash retry is charged. `stdout.log`/`stderr.log` remain available,
 with the last 64 KiB of each saved as `stdout.log.tail`/`stderr.log.tail`.
 `last_message.txt` is retained when the runner produced one.
 
+The pre-TERM snapshot lives separately in `worktree-preliminary/`; after
+interruption handling its path is also recorded as `preliminary_worktree_artefact`.
+It may reflect concurrent writes and is **not** the final state. `worktree/` is
+built in a fresh staging directory and published after final capture completes,
+never merged with earlier evidence. If final capture fails or times out, the
+preliminary directory remains available, explicitly labelled, rather than being
+promoted as final. Inspect metadata and manifest errors for partial git captures;
+do not recover preliminary files over final state without reconciling deletions.
+
 Inspect `worktree/head.txt`, `status.txt`, `diff.patch`, `diff_cached.patch`,
 `commits.txt`, `commits.patch`, `untracked/` and `MANIFEST.txt`. Existing
 `KEEP_FAILED_WORKTREES`, `FAILED_WORKTREE_MAX_MB` and capture/retention limits

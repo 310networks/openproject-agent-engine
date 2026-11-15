@@ -270,14 +270,18 @@ class Dispatcher:
         if workspace is not None:
             try:
                 async with asyncio.timeout(10):
-                    await capture_worktree_state(workspace, run_dir / "worktree")
+                    capture = await capture_worktree_state(
+                        workspace, run_dir / "worktree-preliminary"
+                    )
                     current = self._store.get_run(run_id)
                     if current is not None and current.state == "running":
                         self._write_meta(
                             claimed, self._active_requests.get(run_id), None,
                             state="interrupted", outcome="drained", transition=None, pr=None,
                             started_at=started_at,
-                            archive=WorktreeArchive(artefact=run_dir / "worktree", kept=True),
+                            archive=WorktreeArchive(
+                                artefact=capture.path, kept=True, errors=capture.errors,
+                            ),
                         )
             except Exception:
                 logger.exception("pre-stop checkpoint failed for run %s", run_id)
@@ -328,6 +332,11 @@ class Dispatcher:
         meta_path = run_dir / "meta.json"
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
         head = meta["branch_head"]
+        preliminary = run_dir / "worktree-preliminary"
+        if preliminary.is_dir():
+            # Keep pre-TERM evidence separate even if final capture failed.
+            # Never advertise it as the authoritative post-termination state.
+            meta["preliminary_worktree_artefact"] = str(preliminary)
         meta["interruption_errors"] = errors
         meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
         comment = (
@@ -1660,8 +1669,10 @@ class Dispatcher:
         run_dir = claimed.run_dir or (self._store.runs_dir / str(claimed.run_id or 0))
         run_dir.mkdir(parents=True, exist_ok=True)
         head = None
+        head_dir = archive.artefact if archive is not None else run_dir / "worktree"
         try:
-            for line in (run_dir / "worktree" / "head.txt").read_text().splitlines():
+            lines = (head_dir / "head.txt").read_text().splitlines() if head_dir else []
+            for line in lines:
                 if line.startswith("HEAD: "):
                     head = line.removeprefix("HEAD: ")
         except OSError:
