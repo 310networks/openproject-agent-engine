@@ -343,6 +343,7 @@ tbody tr:hover { background: rgba(148, 163, 184, 0.035); }
   color: var(--muted);
 }
 .state-pill.running { color: #7dd3fc; border-color: rgba(56, 189, 248, 0.4); background: rgba(56, 189, 248, 0.09); }
+.state-pill.progress { color: #f9a8d4; border-color: rgba(244, 114, 182, 0.4); background: rgba(244, 114, 182, 0.09); }
 .state-pill.good { color: #86efac; border-color: rgba(74, 222, 128, 0.35); background: rgba(74, 222, 128, 0.08); }
 .state-pill.bad { color: #fca5a5; border-color: rgba(248, 113, 113, 0.35); background: rgba(248, 113, 113, 0.08); }
 .state-pill.warn { color: #fcd34d; border-color: rgba(251, 191, 36, 0.4); background: rgba(251, 191, 36, 0.09); }

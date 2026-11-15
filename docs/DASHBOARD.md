@@ -19,11 +19,13 @@ glance:
   blocked and failed counts, plus a breakdown of every recorded outcome.
 
 The outcome breakdown distinguishes **No progress** (stored legacy outcome
-`no_pr`) from **Progress not finished** (`progress_not_finished`). Partial
+`no_pr`) from **Still In Progress** (`progress_not_finished`). The dashboard
+uses this label in run history, agent session summaries and the outcome breakdown;
+finished-session outcome pills are pink rather than failure red. Partial
 progress is not a delivered result or a failure: the JSON headline counts
 include a separate `progress_not_finished` bucket, excluded from both
 `completed` and `failed`. The existing page displays the distinction in its
-outcome breakdown; run history retains the original recorded outcome.
+outcome breakdown; stored run history and JSON API outcome keys remain unchanged.
 
 ## Run it
 
@@ -89,6 +91,12 @@ The dashboard reads `DATA_DIR/engine.db`, `DATA_DIR/heartbeat` and the
 `meta.json` of each run. It never writes to the store, OpenProject or a
 workspace, so it is safe to start, stop or refresh while a run is in flight.
 If the database does not exist yet it renders an empty state.
+
+## Dashboard presentation tests
+
+Run `node --test tests/dashboard.test.cjs` for dependency-free JavaScript tests
+of outcome labels and tones, alongside the Python dashboard/API tests
+(`pytest tests/test_dashboard.py`).
 
 ## Security
 
