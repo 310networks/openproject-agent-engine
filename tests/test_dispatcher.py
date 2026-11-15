@@ -22,7 +22,7 @@ from pydantic import SecretStr
 from op_agent_engine.config import EngineSettings
 from op_agent_engine.dispatcher import Dispatcher
 from op_agent_engine.github import GitHubError, PullRequest
-from op_agent_engine.openproject.client import OpenProjectClient
+from op_agent_engine.openproject.client import OpenProjectClient, OpenProjectError
 from op_agent_engine.openproject.workpackage import parse_work_package
 from op_agent_engine.poller import DispatchItem, Poller
 from op_agent_engine.prompts import PromptRenderer
@@ -2104,6 +2104,102 @@ def use_workspace(monkeypatch: pytest.MonkeyPatch, workspace: Workspace) -> None
     monkeypatch.setattr(
         "op_agent_engine.dispatcher.prepare_workspace", fake_prepare_workspace
     )
+
+
+@pytest.mark.parametrize("comment_fails", [False, True])
+@pytest.mark.parametrize("archive_fails", [False, True])
+async def test_cancel_checkpoints_dirty_worktree_and_resumes_with_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, comment_fails: bool,
+    archive_fails: bool,
+) -> None:
+    import asyncio
+
+    entered = asyncio.Event()
+
+    class WaitingRunner(FakeRunner):
+        async def run(self, request: RunRequest, *, on_spawned=None) -> RunResult:
+            (workspace.repo_dir / "notes.md").write_text("partial work\n")
+            entered.set()
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+    runner = WaitingRunner(make_result(tmp_path))
+    dispatcher, fake, store, client, settings = await make_dispatcher(
+        tmp_path, monkeypatch, runner=runner, gh=FakeGitHub(pr=PR),
+        settings_overrides={"drain_seconds": 1, "comment_max_bytes": 1024},
+        prompts_template="{{ interruption.run_dir if interruption else 'none' }} "
+        "{{ interruption.branch_head if interruption else 'none' }}",
+    )
+    try:
+        workspace = make_real_workspace(tmp_path)
+        use_workspace(monkeypatch, workspace)
+        claimed = claim(store, make_item(100))
+        store.increment_crash_count(100)
+        attempts = []
+        original_post = dispatcher._post_comment
+
+        async def post(wp_id: int, text: str) -> None:
+            attempts.append(text)
+            if comment_fails:
+                raise OpenProjectError("simulated 413")
+            await original_post(wp_id, text)
+
+        monkeypatch.setattr(dispatcher, "_post_comment", post)
+        task = asyncio.create_task(dispatcher.execute(claimed))
+        await asyncio.wait_for(entered.wait(), 2)
+        await dispatcher.checkpoint_before_stop(1)
+        preliminary_meta = json.loads((store.runs_dir / "1" / "meta.json").read_text())
+        assert len(preliminary_meta["branch_head"]) == 40
+        preliminary = store.runs_dir / "1" / "worktree-preliminary"
+        assert (preliminary / "untracked" / "notes.md").read_text() == "partial work\n"
+        # The agent can change files between the pre-TERM and final captures.
+        (workspace.repo_dir / "notes.md").write_text("final work\n")
+        original_archive = dispatcher._archive_workspace
+        if archive_fails:
+            async def fail_archive(*args: Any, **kwargs: Any) -> None:
+                raise OSError("simulated final archive failure")
+            monkeypatch.setattr(dispatcher, "_archive_workspace", fail_archive)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        run = store.get_run(1)
+        assert run and run.state == "interrupted" and run.outcome == "drained"
+        assert store.crash_count(100) == 1
+        assert store.active_work_package_ids() == frozenset()
+        meta = json.loads((store.runs_dir / "1" / "meta.json").read_text())
+        assert meta["argv"] == ["fake-runner"]
+        assert meta["pr_url"] == PR.url
+        if archive_fails:
+            assert meta["branch_head"] is None  # No final HEAD was captured.
+        else:
+            assert len(meta["branch_head"]) == 40
+        assert meta["preliminary_worktree_artefact"] == str(preliminary)
+        assert (preliminary / "untracked" / "notes.md").read_text() == "partial work\n"
+        if archive_fails:
+            assert meta["worktree_artefact"] is None
+            assert not (store.runs_dir / "1" / "worktree").exists()
+            assert "simulated final archive failure" in str(meta["interruption_errors"])
+        else:
+            artefact = Path(meta["worktree_artefact"])
+            assert artefact != preliminary
+            assert (artefact / "untracked" / "notes.md").read_text() == "final work\n"
+        assert len(attempts) == 1
+        assert len(attempts[0].encode()) <= settings.comment_max_bytes
+        assert bool(meta["interruption_errors"]) == (comment_fails or archive_fails)
+        assert len(posted_comments(fake, 100)) == (0 if comment_fails else 1)
+        monkeypatch.setattr(dispatcher, "_archive_workspace", original_archive)
+        resumed = claim(store, make_item(100), kind="resume")
+        prompt = dispatcher._render_prompt(resumed, workspace)
+        assert str(store.runs_dir / "1") in prompt
+        assert str(meta["branch_head"]) in prompt
+        resumed_runner = FakeRunner(make_result(tmp_path))
+        dispatcher._runner = resumed_runner
+        await dispatcher.execute(resumed)
+        assert len(resumed_runner.requests) == 1  # An existing PR must not skip recovery.
+        assert store.get_run(resumed.run_id).state == SUCCEEDED
+    finally:
+        await client.aclose()
+        store.close()
 
 
 async def test_failed_run_captures_worktree_state(

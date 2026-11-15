@@ -959,6 +959,9 @@ class EngineSettings(BaseSettings):
     comment_line_max_bytes: int = Field(default=2048, ge=128, le=16384)
     run_timeout_seconds: int = Field(default=3600, gt=0)
     stop_grace_seconds: int = Field(default=60, ge=0)
+    drain_seconds: int = Field(default=900, ge=0)
+    # Must match the Docker stop_grace_period; Docker does not expose it internally.
+    container_stop_grace_seconds: int = Field(default=1020, ge=0)
     run_retention_days: int = Field(default=30, ge=0)
     # Failed-run post-mortem: a failed run's worktree is kept on disk (its
     # state is always captured under the run directory first) until `cleanup`

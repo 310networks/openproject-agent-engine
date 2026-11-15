@@ -19,6 +19,70 @@ The heartbeat (`DATA_DIR/heartbeat`) is written after every poll; a stale one
 means the container is stopped or stuck — check
 `docker compose logs --since 10m engine`.
 
+## How to restart the engine without losing a run
+
+1. Set `DRAIN_SECONDS=900` and `CONTAINER_STOP_GRACE_SECONDS=1020` in
+   `docker/.env`, then `docker compose up -d engine` to apply them. Deploy this
+   release before relying on checkpoints: an older engine cannot create them.
+2. Use `docker compose restart engine` (or `docker compose pull && docker compose
+   up -d engine` for a release). Avoid `kill -9`, `docker kill` and short
+   `docker stop -t` overrides. Host shutdown must allow the same deadline.
+3. On the first SIGTERM/SIGINT, claiming stops immediately. The engine logs
+   `draining N run(s) for up to Ds`, keeps heartbeat fresh, and the dashboard
+   status API reports `draining`. Runs finishing in time complete normally.
+4. At expiry, a bounded, non-destructive preliminary snapshot is written before
+   TERM. The runner then sends TERM once, escalating to KILL after 20 seconds.
+   A final snapshot is taken **after** the process stops, so it is no longer
+   modifying files. A second SIGTERM/SIGINT skips the remaining drain window;
+   it does not skip checkpoint/termination or repeatedly signal the process.
+
+The Docker `stop_grace_period` must exceed `DRAIN_SECONDS + 20` seconds;
+allow **another 55 seconds** for preliminary/final checkpoints, log flushing,
+PR lookup and comment posting. Compose uses numeric seconds from
+`CONTAINER_STOP_GRACE_SECONDS`; startup warns if that configured budget is too
+small. A bare engine cannot inspect Docker's actual deadline: keep custom
+orchestrator/CLI overrides in sync. `DRAIN_SECONDS=0` preserves the legacy
+`STOP_GRACE_SECONDS` wait and cancellation behavior (no new checkpoint/comment).
+With no active runs, exit is immediate. Draining can delay deploys by 15 minutes;
+for a zero-loss planned restart, pause first and wait for all runs to finish.
+
+### Reading a drained run
+
+`DATA_DIR/runs/<id>/meta.json` records `state=interrupted`, `outcome=drained`,
+`branch_head`, PR URL (best effort), redacted argv/env, `worktree_artefact`,
+and `interruption_errors`. The row is terminal even if posting the comment
+fails; no crash retry is charged. `stdout.log`/`stderr.log` remain available,
+with the last 64 KiB of each saved as `stdout.log.tail`/`stderr.log.tail`.
+`last_message.txt` is retained when the runner produced one.
+
+The pre-TERM snapshot lives separately in `worktree-preliminary/`; after
+interruption handling its path is also recorded as `preliminary_worktree_artefact`.
+It may reflect concurrent writes and is **not** the final state. `worktree/` is
+built in a fresh staging directory and published after final capture completes,
+never merged with earlier evidence. If final capture fails or times out, the
+preliminary directory remains available, explicitly labelled, rather than being
+promoted as final. Inspect metadata and manifest errors for partial git captures;
+do not recover preliminary files over final state without reconciling deletions.
+
+Inspect `worktree/head.txt`, `status.txt`, `diff.patch`, `diff_cached.patch`,
+`commits.txt`, `commits.patch`, `untracked/` and `MANIFEST.txt`. Existing
+`KEEP_FAILED_WORKTREES`, `FAILED_WORKTREE_MAX_MB` and capture/retention limits
+still apply; skipped files/errors are listed, not silently represented as saved.
+Never blindly apply a patch to a newer HEAD. The next resume prompt points at
+this evidence and the pre-restart HEAD, even when a PR already exists.
+
+There is one bounded comment **attempt** per affected ticket, capped by
+the shared `COMMENT_MAX_BYTES` / `COMMENT_LINE_MAX_BYTES` limits (default 65536 / 2048 UTF-8 bytes). A proxy/network failure
+is recorded in metadata and is not retried during shutdown: delivery cannot be
+guaranteed, and retrying an uncertain response could duplicate the comment.
+OP#487's general escalation-comment handling remains a separate change.
+
+These are filesystem checkpoints, not pi/model-session snapshots (`--no-session`
+is unchanged). A hard power loss/SIGKILL, an unresponsive filesystem, or a
+failed archive can still lose edits. Preliminary snapshots may reflect concurrent
+writes. Read the archive manifest/errors before treating any checkpoint as complete.
+No schema migration is needed.
+
 ## Configuration changes
 
 - **Added or updated an OpenProject project** (`GIT_REPO`, `AGENT`, eligible

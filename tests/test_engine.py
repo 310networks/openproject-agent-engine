@@ -167,6 +167,7 @@ def make_settings(tmp_path: Path, **overrides: Any) -> EngineSettings:
         "max_concurrent_runs": 1,
         "run_timeout_seconds": 360,
         "stop_grace_seconds": 5,
+        "drain_seconds": 0,
     }
     base.update(overrides)
     return EngineSettings(**base)
@@ -1168,6 +1169,80 @@ async def test_interrupted_run_does_not_count_as_a_crash_but_the_resume_failure_
             assert any(run.kind == "resume" and run.state == FAILED for run in runs)
         finally:
             store.close()
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.parametrize("second_signal", [False, True])
+async def test_restart_drain_deadline_and_second_signal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, second_signal: bool,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import signal
+
+    from op_agent_engine.dashboard import _engine_status
+    from op_agent_engine.engine import read_heartbeat
+
+    handlers: dict[int, Callable[[], None]] = {}
+    loop = asyncio.get_running_loop()
+    monkeypatch.setattr(loop, "add_signal_handler", lambda sig, cb: handlers.update({sig: cb}))
+    monkeypatch.setattr(loop, "remove_signal_handler", lambda sig: True)
+    runner = FakeRunner(make_result(tmp_path), delay=30.0)
+    engine, fake, client, store_path = await make_engine(
+        tmp_path, monkeypatch,
+        work_packages=[wp(100, status=STATUS_NEW, agent=11)],
+        runner=runner, gh=FakeGitHub(pr=PR),
+        settings_overrides={
+            "drain_seconds": 60 if second_signal else 1,
+            "container_stop_grace_seconds": 1,
+        },
+    )
+    try:
+        task = asyncio.create_task(engine.run())
+        async with asyncio.timeout(3):
+            while not runner.requests:
+                await asyncio.sleep(0.01)
+        started = loop.time()
+        handlers[signal.SIGTERM]()
+        async with asyncio.timeout(2):
+            while not (store_path.parent / "DRAINING").exists():
+                await asyncio.sleep(0.01)
+        raw, age = read_heartbeat(engine._settings)
+        assert raw and age is not None and age < 2
+        assert _engine_status(engine._settings, heartbeat_age=age)[0] == "draining"
+        if second_signal:
+            handlers[signal.SIGTERM]()
+        assert await asyncio.wait_for(task, 4) == 0
+        assert loop.time() - started < 4
+        with contextlib.closing(Store(store_path)) as store:
+            run = runs_for(store, 100)[0]
+            assert run.state == INTERRUPTED and run.outcome == "drained"
+            assert store.crash_count(100) == 0
+            meta = json.loads((store.runs_dir / str(run.id) / "meta.json").read_text())
+            assert meta["state"] == "interrupted" and meta["outcome"] == "drained"
+        assert len(fake.comments) == 1
+        assert "stop_grace_period" in caplog.text
+        assert not (store_path.parent / "DRAINING").exists()
+    finally:
+        await client.aclose()
+
+
+async def test_run_finishes_inside_drain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = FakeRunner(make_result(tmp_path), delay=0.05)
+    engine, fake, client, store_path = await make_engine(
+        tmp_path, monkeypatch,
+        work_packages=[wp(100, status=STATUS_NEW, agent=11)],
+        runner=runner, gh=FakeGitHub(pr=PR),
+        settings_overrides={"drain_seconds": 2},
+    )
+    try:
+        assert await engine.run(max_polls=1) == 0
+        with contextlib.closing(Store(store_path)) as store:
+            assert runs_for(store, 100)[0].state == SUCCEEDED
+            assert store.crash_count(100) == 0
+        assert fake.comments == []
     finally:
         await client.aclose()
 

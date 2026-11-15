@@ -696,9 +696,12 @@ def test_docs_explain_provisioning_instead_of_the_installer() -> None:
 
 def test_stop_grace_period_covers_the_engine_shutdown_budget() -> None:
     env = _env_file(DOCKER_DIR / ".env.example")
-    budget = int(env["STOP_GRACE_SECONDS"]) + 20 # SIGKILL grace
-    assert _service("engine")["stop_grace_period"] == "90s"
-    assert budget <= 90
+    wait = int(env["DRAIN_SECONDS"]) or int(env["STOP_GRACE_SECONDS"])
+    budget = wait + 20 + 55  # kill grace, checkpoints and log pumps
+    assert _service("engine")["stop_grace_period"] == (
+        "${CONTAINER_STOP_GRACE_SECONDS:-1020}s"
+    )
+    assert budget < int(env["CONTAINER_STOP_GRACE_SECONDS"])
 
 
 # -- publishing --------------------------------------------------------------

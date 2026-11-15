@@ -43,6 +43,23 @@ def _context() -> dict:
     }
 
 
+def test_resume_includes_restart_evidence() -> None:
+    renderer = PromptRenderer(Path(__file__).parents[1] / "prompts")
+    context = _context() | {
+        "project": {"identifier": "demo"}, "repo_dir": "/worktrees/op-4-100",
+        "interruption": {
+            "run_dir": "/runs/7", "worktree_artefact": "/runs/7/worktree",
+            "branch_head": "abc123",
+        },
+    }
+    prompt = renderer.render("resume", context)
+    assert "/runs/7/worktree" in prompt
+    assert "Pre-restart branch head: abc123" in prompt
+    assert "HEAD or an open PR" in prompt
+    context["interruption"] = None
+    assert "Pre-restart branch head" not in renderer.render("resume", context)
+
+
 def test_render_implement(template_dir: Path) -> None:
     renderer = PromptRenderer(template_dir)
     prompt = renderer.render("implement", _context())

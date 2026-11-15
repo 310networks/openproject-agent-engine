@@ -728,6 +728,99 @@ async def test_capture_records_commits_that_were_never_pushed(
     assert "op-4-100" in (dest / "head.txt").read_text()
 
 
+@pytest.mark.parametrize("change", ["deleted", "tracked", "oversized", "total_cap", "symlink"])
+async def test_recapture_removes_obsolete_untracked_entries(
+    tmp_path: Path, git_repo: GitFixture, change: str
+) -> None:
+    workspace = await _prepare(_workspace_root(tmp_path), git_repo)
+    source = workspace.repo_dir / "partial.txt"
+    source.write_text("preliminary\n")
+    run_dir = tmp_path / "run"
+    dest = run_dir / WORKTREE_ARTEFACT_DIR_NAME
+    await capture_worktree_state(workspace, dest)
+    assert (dest / "untracked" / source.name).exists()
+
+    if change == "deleted":
+        source.unlink()
+    elif change == "tracked":
+        _git(["-C", str(workspace.repo_dir), "add", source.name])
+    elif change == "oversized":
+        source.write_bytes(b"x" * 64)
+    elif change == "symlink":
+        source.unlink()
+        source.symlink_to("README.md")
+
+    if change in {"deleted", "tracked"}:
+        archive = await archive_failed_worktree(workspace, run_dir=run_dir)
+        assert archive.artefact == dest
+        assert not archive.errors
+    else:
+        capture = await capture_worktree_state(
+            workspace, dest, max_file_bytes=32,
+            max_total_bytes=0 if change == "total_cap" else 1024,
+        )
+        assert not capture.errors
+        assert any(source.name in item for item in capture.skipped_files)
+    assert not (dest / "untracked" / source.name).exists()
+    manifest = (dest / "MANIFEST.txt").read_text()
+    assert "  untracked/partial.txt:" not in manifest
+    for path in dest.rglob("*"):
+        if path.is_file() and path.name != "MANIFEST.txt":
+            assert f"  {path.relative_to(dest)}: {path.stat().st_size} bytes" in manifest
+    if change == "deleted":
+        assert source.name not in manifest
+        assert (dest / "status.txt").read_text() == ""
+    elif change == "tracked":
+        assert source.name in (dest / "diff_cached.patch").read_text()
+
+
+async def test_cancelled_recapture_does_not_publish_staging_files(
+    tmp_path: Path, git_repo: GitFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import asyncio
+
+    workspace = await _prepare(_workspace_root(tmp_path), git_repo)
+    dest = tmp_path / "run" / WORKTREE_ARTEFACT_DIR_NAME
+    await capture_worktree_state(workspace, dest)
+    original = {p.relative_to(dest): p.read_bytes() for p in dest.rglob("*") if p.is_file()}
+    entered = asyncio.Event()
+
+    async def interrupted_capture(workspace, dest_dir, **kwargs):
+        (dest_dir / "incomplete.txt").write_text("not a completed snapshot")
+        entered.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr("op_agent_engine.workspace._capture_worktree_state", interrupted_capture)
+    task = asyncio.create_task(capture_worktree_state(workspace, dest))
+    await asyncio.wait_for(entered.wait(), 2)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert {p.relative_to(dest): p.read_bytes() for p in dest.rglob("*") if p.is_file()} == original
+    assert list(dest.parent.iterdir()) == [dest]
+
+
+async def test_recapture_removes_obsolete_optional_commit_patch(
+    tmp_path: Path, git_repo: GitFixture
+) -> None:
+    workspace = await _prepare(_workspace_root(tmp_path), git_repo)
+    repo = workspace.repo_dir
+    base = _git(["-C", str(repo), "rev-parse", "HEAD"]).strip()
+    (repo / "README.md").write_text("local commit\n")
+    _git(["-C", str(repo), "add", "README.md"])
+    _git(["-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@example.com",
+          "commit", "--no-gpg-sign", "-qm", "temporary commit"])
+    dest = tmp_path / "run" / WORKTREE_ARTEFACT_DIR_NAME
+    await capture_worktree_state(workspace, dest)
+    assert (dest / "commits.patch").is_file()
+    _git(["-C", str(repo), "reset", "--hard", base])
+    archive = await archive_failed_worktree(workspace, run_dir=dest.parent)
+    assert not archive.errors
+    assert not (dest / "commits.patch").exists()
+    assert "  commits.patch:" not in (dest / "MANIFEST.txt").read_text()
+    assert "no commits" in (dest / "commits.txt").read_text()
+
+
 async def test_capture_on_a_missing_worktree_is_recorded_not_raised(
     tmp_path: Path, git_repo: GitFixture
 ) -> None:

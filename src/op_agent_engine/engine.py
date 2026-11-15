@@ -16,9 +16,9 @@ On startup, leftover process groups from a crashed engine are terminated (PID
 reuse safe) and every ``running`` row is marked ``interrupted``; In Progress
 and In Testing work packages are then recovered by the poller (M7).
 
-At a clean stop the engine waits for in-flight runs up to
-``STOP_GRACE_SECONDS``; runs still going are terminated and their rows are
-marked ``interrupted`` so the next start resumes them.
+At a clean stop the engine drains in-flight runs for ``DRAIN_SECONDS``,
+then checkpoints and terminates remaining runs. A second signal skips the wait.
+With drain disabled, the legacy ``STOP_GRACE_SECONDS`` path is used.
 """
 
 from __future__ import annotations
@@ -54,6 +54,7 @@ LOCK_FILE_NAME = "engine.lock"
 STORE_FILE_NAME = "engine.db"
 HEARTBEAT_FILE_NAME = "heartbeat"
 PAUSE_FILE_NAME = "PAUSE"
+DRAIN_FILE_NAME = "DRAINING"
 
 DispatcherFactory = Callable[
     [OpenProjectResolution, Store, OpenProjectClient], Dispatcher
@@ -223,10 +224,27 @@ class Engine:
         )
 
         stop = asyncio.Event()
+        stop_now = asyncio.Event()
+
+        def request_stop() -> None:
+            if stop.is_set():
+                stop_now.set()
+            stop.set()
+
+        drain_marker = self._settings.data_dir / DRAIN_FILE_NAME
+        if not dry_run:
+            drain_marker.unlink(missing_ok=True)
+        budget = self._settings.drain_seconds or self._settings.stop_grace_seconds
+        if self._settings.container_stop_grace_seconds <= budget + 20 + 55:
+            logger.warning(
+                "container stop_grace_period (%ds) must exceed drain/grace (%ds) "
+                "+ KILL_GRACE_SECONDS (20s) + checkpoint/log budget (55s)",
+                self._settings.container_stop_grace_seconds, budget,
+            )
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
             with contextlib.suppress(NotImplementedError):
-                loop.add_signal_handler(sig, stop.set)
+                loop.add_signal_handler(sig, request_stop)
 
         in_flight: set[asyncio.Task[None]] = set()
         executing: dict[int, asyncio.Task[None]] = {}
@@ -338,22 +356,58 @@ class Engine:
                 len(in_flight),
                 self._settings.stop_grace_seconds,
             )
-            _, pending = await asyncio.wait(
-                in_flight, timeout=self._settings.stop_grace_seconds
-            )
+            if self._settings.drain_seconds:
+                logger.info("draining %d run(s) for up to %ds", len(in_flight), budget)
+                drain_marker.parent.mkdir(parents=True, exist_ok=True)
+                drain_marker.touch()
+                deadline = loop.time() + budget
+                pending = set(in_flight)
+                while pending and not stop_now.is_set() and loop.time() < deadline:
+                    self._write_heartbeat()
+                    urgent = asyncio.create_task(stop_now.wait())
+                    try:
+                        await asyncio.wait(
+                            {*pending, urgent},
+                            timeout=min(1.0, max(0.0, deadline - loop.time())),
+                            return_when=asyncio.FIRST_COMPLETED,
+                        )
+                    finally:
+                        urgent.cancel()
+                        await asyncio.gather(urgent, return_exceptions=True)
+                    pending = {task for task in pending if not task.done()}
+            else:
+                _, pending = await asyncio.wait(
+                    in_flight, timeout=self._settings.stop_grace_seconds
+                )
             if pending:
                 logger.warning(
                     "grace period expired; terminating %d run(s)",
                     len(pending),
                 )
+                if self._settings.drain_seconds and dispatcher is not None:
+                    await asyncio.gather(*(
+                        dispatcher.checkpoint_before_stop(run_id)
+                        for run_id, task in executing.items() if task in pending
+                    ), return_exceptions=True)
                 for task in pending:
-                    task.cancel()
-                await asyncio.wait(pending)
+                    if not task.done():
+                        task.cancel()
+                while any(not task.done() for task in pending):
+                    if self._settings.drain_seconds:
+                        self._write_heartbeat()
+                    await asyncio.wait(
+                        {task for task in pending if not task.done()}, timeout=1.0
+                    )
             # Runs cancelled here were terminated by the runner and are still
             # ``running`` in the store; mark them so the next start recovers
             # them instead of treating them as live.
             store.mark_all_running_interrupted()
 
+        if not dry_run:
+            drain_marker.unlink(missing_ok=True)
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            with contextlib.suppress(NotImplementedError):
+                loop.remove_signal_handler(sig)
         logger.info("engine stopped", extra={"polls": poll_number})
         return 0
 
