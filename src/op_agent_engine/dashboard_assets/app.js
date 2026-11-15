@@ -53,6 +53,7 @@ function clear(node) {
 
 function humanize(value) {
   if (!value) return "unknown";
+  if (value === "progress_not_finished") return "Still In Progress";
   return String(value).replaceAll("_", " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
@@ -88,6 +89,7 @@ function shortId(value) {
 
 function stateTone(state, outcome) {
   if (state === "running") return "running";
+  if (outcome === "progress_not_finished") return "progress";
   if (outcome === "rejected") return "declined";
   if (outcome === "blocked" || outcome === "rejection_cap_reached" || outcome === "no_pr_for_branch") {
     return "warn";
