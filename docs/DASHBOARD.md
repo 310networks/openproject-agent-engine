@@ -13,8 +13,12 @@ glance:
   runner/model, project scope, every current session (an agent can run more
   than one ticket at once) and last session.
 - **What is running, and what ran before?** Active sessions plus the most
-  recent finished sessions, with ticket id, agent, kind, duration, outcome
-  and PR link.
+  recent finished sessions grouped into one row per OpenProject ticket, with
+  ticket id, agent, kind, duration, outcome and PR link. Each row shows the
+  newest started session (run ID breaks ties). The ↶ history button reveals
+  earlier sessions for that ticket, newest first, and works with keyboard
+  navigation. Expanded history stays open across automatic refreshes.
+  Active sessions and all-run totals are unchanged.
 - **How are the totals trending?** Total, running, completed, declined,
   blocked and failed counts, plus a breakdown of every recorded outcome.
 
@@ -98,7 +102,7 @@ If the database does not exist yet it renders an empty state.
 ## Dashboard presentation tests
 
 Run `node --test tests/dashboard.test.cjs` for dependency-free JavaScript tests
-of outcome labels and tones, alongside the Python dashboard/API tests
+of outcome labels, tones, ticket grouping and history interactions, alongside the Python dashboard/API tests
 (`pytest tests/test_dashboard.py`).
 
 ## Security
@@ -131,5 +135,12 @@ variables or prompts.
   is `interrupted`; `outcome` records `reconciled_dead_pid`,
   `reconciled_pid_reused` or `reconciled_finished_meta`. These are also included
   in `counts.outcomes`. No snapshot fields or endpoints have changed.
+- Recent ticket rows and their history use only the finished sessions in the
+  current snapshot, not the complete stored ticket history. `--limit` still
+  limits sessions, not distinct tickets; repeated CI checkpoints can therefore
+  reduce the number of tickets shown. The displayed counts distinguish tickets
+  from sessions, and expanded history labels this limit explicitly. Increase
+  `--limit` (up to 500) to include more sessions. Grouping is browser-only;
+  the JSON API and stored run history are unchanged.
 - The JSON API is `GET /api/status?limit=N`; `GET /healthz` returns
   `{"ok": true}` for uptime checks.
