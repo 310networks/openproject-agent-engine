@@ -22,8 +22,31 @@ from op_agent_engine.dashboard import (
 )
 from op_agent_engine.engine import write_heartbeat
 from op_agent_engine.store import FAILED, SUCCEEDED, Store
+from op_agent_engine.work_package_counts import FILE_NAME
 
 RUNS_TEMPLATE = "{root}/{id}"
+
+
+def test_current_counts_are_additive_and_independent_of_history(
+    snapshot: tuple[dict[str, Any], Path],
+) -> None:
+    before, data_dir = snapshot
+    assert before["current_work_packages"]["status"] == "unavailable"
+    now = datetime.now(UTC).isoformat()
+    (data_dir / FILE_NAME).write_text(json.dumps({
+        "source": "https://openproject.example",
+        "projects": ["demo"],
+        "checked_at": now,
+        "observed_at": now,
+        "blocked": 41,
+        "on_hold": 7,
+    }))
+    after = DashboardData(_config(), _settings(data_dir)).snapshot(limit=1)
+    assert after["current_work_packages"]["status"] == "fresh"
+    assert after["current_work_packages"]["blocked"] == 41
+    assert after["current_work_packages"]["on_hold"] == 7
+    assert after["counts"] == before["counts"]
+    assert [a["counts"] for a in after["agents"]] == [a["counts"] for a in before["agents"]]
 
 
 def _config() -> WorkflowConfig:

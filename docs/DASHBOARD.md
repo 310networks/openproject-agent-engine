@@ -104,9 +104,69 @@ check `docker compose logs dashboard`. Remember to update the reverse-proxy
 upstream as well if the dashboard is published through it.
 
 The dashboard reads `DATA_DIR/engine.db`, `DATA_DIR/heartbeat` and the
-`meta.json` of each run. It never writes to the store, OpenProject or a
+`meta.json` of each run, plus the current work-package observation described
+below. It never writes to the store, OpenProject or a
 workspace, so it is safe to start, stop or refresh while a run is in flight.
 If the database does not exist yet it renders an empty state.
+
+## Current work-package counts API (backend prerequisite for OP#502)
+
+`GET /api/status?limit=N` additionally returns `current_work_packages`, separate
+from the unchanged historical `counts` and `agents[].counts` run totals:
+
+```json
+{
+  "status": "fresh",
+  "source": "https://openproject.example",
+  "projects": ["demo"],
+  "checked_at": "2026-11-16T17:00:01+00:00",
+  "observed_at": "2026-11-16T17:00:00+00:00",
+  "age_seconds": 12.0,
+  "stale_after_seconds": 135.0,
+  "blocked": 2,
+  "on_hold": 0
+}
+```
+
+The example is illustrative, not deployment data. Semantics:
+
+- `blocked`: work packages currently in the configured **Blocked** status
+  (waiting on dependencies). `on_hold`: work packages currently in configured
+  **On Hold** (human intervention). Status IDs come from startup resolution,
+  not hardcoded names or historical run outcomes.
+- Scope is **all work packages in enabled monitored projects**, including
+  human-assigned tickets and tickets without runs, regardless of AGENT or
+  eligible type. Disabled/unmonitored projects are excluded. `projects` lists
+  the engine's resolved identifiers (also for `OP_PROJECT=*`). Counts are
+  independent of dashboard session `limit` and OpenProject pagination.
+- The engine makes two filtered, read-only OpenProject collection requests
+  (`pageSize=1`, using `total`) each loop cycle, including when paused or slots
+  are full. This adds two lightweight requests to otherwise idle cycles.
+  Dry runs do not collect or persist these observations.
+- `observed_at` is the UTC start of the successful observation, `checked_at`
+  is its completion/latest attempt, and `age_seconds` is computed by the
+  dashboard. The two queries are not an atomic OpenProject transaction;
+  concurrent status changes can appear in the following cycle.
+- `status` is `fresh`, `stale` or `unavailable`. Counts are integers **only
+  when fresh**, including genuine zero. After
+  `max(2 * POLL_INTERVAL_SECONDS + 15, 45)` seconds, status becomes `stale`
+  and **both counts are null**; observation timestamp/age remain visible.
+- Missing/corrupt observations, missing resolution, source/project scope
+  mismatch, invalid provider totals, or either request failing produce
+  `unavailable` with **both counts null**, never partial totals or fake zero.
+  An unsuccessful refresh replaces the previous observation; `observed_at`
+  and `age_seconds` are then null, with `checked_at` recording the attempt.
+  Before any usable observation, timestamps are null and `projects` is empty.
+  Failures to persist leave the old observation to expire normally.
+- Provenance is the configured OpenProject base URL and resolved scope. The
+  dashboard reads `DATA_DIR/work-package-counts.json`, atomically replaced by
+  the engine; it does not make remote requests, require provider credentials,
+  or write data. No SQLite schema migration is needed. Removing the sidecar
+  rolls back persisted observations; older engines leave it to expire.
+- Consumers must display an unknown/stale indication, not coerce null to zero.
+  Existing `counts.blocked` still means historical human-intervention run
+  outcomes; it must not be used for current dependency counts. The separate
+  card presentation remains OP#502; this backend change does not alter the UI.
 
 ## Dashboard presentation tests
 
