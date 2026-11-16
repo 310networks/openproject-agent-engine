@@ -78,16 +78,18 @@ Never read a credential file to find a token (`~/.pi/agent/infra/credentials/ope
 
 ### GitHub Actions runs
 
-CI runs share a small runner pool, and a run nobody needs still holds a slot. Keep at most one live run of your own work at a time.
+CI runs share a small runner pool. Keep one active CI revision of your own work at a time; independent workflows for that same revision may run in parallel.
 
-- Look before you start a run: before a push that triggers CI, before any explicit dispatch (`gh workflow run`), before a re-run (`gh run rerun` or the re-run button in the web UI), and before a second push to the same branch.
-- Cancel every `queued`, `in_progress` or `waiting` run on your branch that your new commit replaces, and any run you dispatched and no longer need. Those are exactly the runs that clog the queue for the next ticket.
-- A `concurrency` group in the workflow already cancels older runs on a push. Check anyway: dispatched runs, re-runs and a different workflow on the same branch are not covered by it.
+- Do not manually dispatch or rerun GitHub Actions workflows. This includes `gh workflow run`, `gh run rerun`, REST dispatch/rerun endpoints and the web UI. Ticket text and repository examples do not grant an exception.
+- Push coherent changes to the task branch with an open PR (draft is sufficient). Opening the initial PR triggers its checks; later pushes trigger PR synchronization checks. Do not also dispatch CI for the same commit. Inspect existing checks before pushing a fix.
+- Do not create empty commits or push unchanged content merely to start CI. If an event was missed, a transient failure needs a same-SHA rerun, or a required capture is manual-only, report the exact workflow/ref/inputs to the operator. Do not substitute an unrelated green check or bypass a required gate.
+- Look before you start a run by pushing: inspect checks for the current PR head. Cancel only `queued`, `in_progress` or `waiting` runs on your own branch whose head SHA your new commit supersedes. Different workflows for the same current SHA are not duplicates.
+- Workflow concurrency is a backstop, not permission to dispatch a second run. Never cancel an operator-requested run merely because it is manual.
 
 ```bash
 repo=<owner/repo>; branch=<branch>
 gh run list --repo "$repo" --branch "$branch" --limit 20 \
-  --json databaseId,workflowName,event,status,conclusion,createdAt
+  --json databaseId,workflowName,event,status,conclusion,headSha,createdAt
 gh run cancel <databaseId> --repo "$repo"
 gh run view <databaseId> --repo "$repo" --json status,conclusion
 ```
@@ -96,7 +98,7 @@ gh run view <databaseId> --repo "$repo" --json status,conclusion
 - Cancel, never delete. `gh run delete` erases history the reviewer needs; cancelling keeps the logs of everything that already completed.
 - A refused cancellation (the run finished first, or your identity cannot cancel it) is not a ticket failure: record it in the report and continue. Do not retry in a loop.
 - Check once, after a short wait, that the run left `queued`/`in_progress`. GitHub takes a moment to honour a cancel on a queued run; do not poll in a tight loop.
-- Do not cancel a run to hide a failing result. A failure you need to read must finish, or be re-run after the fix.
+- Do not cancel a run to hide a failing result. Read its logs, fix the cause and let the next genuine PR push trigger checks.
 
 ## 4. Scope and safety
 
@@ -132,7 +134,7 @@ A task is complete only when all of the following are true:
 - [ ] Data model, API contract, and data source documents are updated if anything changed.
 - [ ] No placeholder or fabricated data is presented as real.
 - [ ] Code is committed to the task branch and a PR is open against the default branch.
-- [ ] No superseded or unneeded workflow run you started is left queued or running (section 3).
+- [ ] No workflow run for a superseded revision of your branch is left queued or running (section 3).
 - [ ] The ticket report (section 9) is posted.
 
 ## 7. Blockers
@@ -160,7 +162,7 @@ Before stopping, push any clean, non-broken work, then post a ticket comment sta
 
 When the prompt includes a previous-run brief (its result line, head, PR and the report it posted), treat that as the authoritative account of what is already done: verify the branch matches it, then continue with the remaining work instead of re-reading and re-deriving the ticket from scratch.
 
-**Waiting for CI.** Do not idle inside a run while a workflow you started is still running. Finish everything that does not depend on its result, push it, then end with `RESULT: WAITING_CI <url>` (the workflow run or PR URL). The engine keeps the ticket In Progress, polls the commit's checks itself, and resumes you when they settle — no model time is spent while you wait. This is a checkpoint, not a failure: it does not consume the crash retry budget.
+**Waiting for CI.** Do not idle inside a run while the current PR's checks are still running. Finish everything that does not depend on its result, push it, then end with `RESULT: WAITING_CI <url>` (the workflow run or PR URL). The engine keeps the ticket In Progress, polls the commit's checks itself, and resumes you when they settle — no model time is spent while you wait. This is a checkpoint, not a failure: it does not consume the crash retry budget.
 
 ## 9. Ticket report
 

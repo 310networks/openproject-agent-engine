@@ -201,6 +201,22 @@ the commit's checks settle, polling them itself so the wait costs no model time
 (`CHECKPOINT_WAIT_SECONDS`, `MAX_CHECKPOINT_WAITS`). A checkpoint is not a
 failure and does not consume the crash retry budget.
 
+### PR-triggered CI only
+
+All six agent standards prohibit manual GitHub Actions dispatches and reruns
+(CLI, API or web UI). Implementers open a PR, which may remain draft, and push
+coherent changes to that same branch; reviewers consume those checks without
+pushing. Parallel workflows on one current revision are allowed. Agents cancel
+only superseded revisions on their own task/PR branch, never current checks,
+other tickets, default-branch runs or a run merely because an operator started it.
+
+Missing events, same-SHA transient reruns and manual-only captures go to the
+operator with the exact workflow/ref/inputs. Agents do not manufacture empty
+commits to start CI. This is an instruction policy, not a token-permission or
+shell-command sandbox; packaging tests do not prove model obedience. It needs
+normal review/release/deployment before a running engine uses it. Existing CI
+polling, status transitions and required checks are unchanged.
+
 ## Documentation
 
 | Doc | Contents |
