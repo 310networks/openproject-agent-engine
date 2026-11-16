@@ -14,6 +14,7 @@ class Element {
     this.attributes = {};
     this.listeners = {};
     this.textContent = "";
+    this.style = {};
   }
   get firstChild() { return this.children[0]; }
   append(...nodes) { this.children.push(...nodes); }
@@ -152,6 +153,55 @@ test("active sessions stay ungrouped and snapshot counts distinguish tickets fro
   assert.equal(rows(elements.get("active-sessions").children[0]).length, 2);
   assert.equal(elements.get("active-count").textContent, "2 running");
   assert.equal(elements.get("recent-count").textContent, "1 tickets · 2 sessions in snapshot");
+});
+
+function renderOutcomes(outcomes) {
+  context.outcomeSnapshot = { counts: { outcomes } };
+  evaluate("renderOutcomes(outcomeSnapshot)");
+  return elements.get("outcomes");
+}
+
+test("outcome breakdown ignores historical and future aborted claims without mutating data", () => {
+  const outcomes = {
+    "claim aborted: work package 503 status changed before the claim": 100,
+    "Claim Aborted: Work Package 504 status changed before the claim": 50,
+    approved: 4,
+    nonzero_exit: 2,
+  };
+  const before = JSON.stringify(outcomes);
+  const list = renderOutcomes(outcomes);
+  assert.equal(list.children.length, 2);
+  assert.doesNotMatch(text(list), /Claim Aborted/i);
+  assert.match(text(list), /Approved.*4/);
+  assert.match(text(list), /Nonzero Exit.*2/);
+  assert.equal(list.children[0].children[1].children[0].style.width, "100%");
+  assert.equal(list.children[1].children[1].children[0].style.width, "50%");
+  assert.equal(JSON.stringify(outcomes), before);
+
+  outcomes["claim aborted: work package 505 no longer exists"] = 200;
+  assert.equal(renderOutcomes(outcomes).children.length, 2);
+});
+
+test("empty and claim-only breakdowns show the empty state and clear previous rows", () => {
+  renderOutcomes({ approved: 1 });
+  for (const outcomes of [{ "claim aborted: work package 503 conflict": 3 }, {}, undefined]) {
+    const list = renderOutcomes(outcomes);
+    assert.equal(list.children.length, 1);
+    assert.equal(list.children[0].className, "empty");
+    assert.match(text(list), /No completed outcomes recorded yet/);
+  }
+});
+
+test("unrelated failures and non-prefix claim text remain visible", () => {
+  const list = renderOutcomes({
+    "transition_aborted: status changed": 2,
+    engagement_error: 1,
+    "error: claim aborted: unexpected failure": 1,
+    claim_aborted_other: 1,
+  });
+  assert.equal(list.children.length, 4);
+  assert.match(text(list), /Transition Aborted/);
+  assert.match(text(list), /Engagement Error/);
 });
 
 test("progress pills have a pink foreground, border and background", () => {

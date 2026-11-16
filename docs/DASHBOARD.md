@@ -20,7 +20,8 @@ glance:
   navigation. Expanded history stays open across automatic refreshes.
   Active sessions and all-run totals are unchanged.
 - **How are the totals trending?** Total, running, completed, declined,
-  blocked and failed counts, plus a breakdown of every recorded outcome.
+  blocked and failed counts, plus a breakdown of recorded outcomes (excluding
+  aborted claim attempts).
 
 The outcome breakdown distinguishes **No progress** (stored legacy outcome
 `no_pr`) from the checkpoints: **Still In Progress** (`progress_not_finished`),
@@ -33,6 +34,14 @@ failure: the JSON headline counts include all three in the separate
 Stored run history and JSON API outcome keys keep their original names.
 `checkpoint_wait_cap_reached` (the ticket stopped converging) is shown with the
 warning tone next to `rejection_cap_reached`.
+
+The browser omits outcomes beginning with `claim aborted:` (case-insensitive)
+from the outcome breakdown, including existing records and new poll results.
+These cancelled claim attempts can occur during status-transition races before
+an agent starts; their per-ticket messages otherwise flood the breakdown.
+This is presentation-only: stored records, JSON API data, headline totals,
+agent cards and session history remain unchanged for diagnosis. Other errors,
+including `transition_aborted:`, remain visible in the breakdown.
 
 ## Run it
 
