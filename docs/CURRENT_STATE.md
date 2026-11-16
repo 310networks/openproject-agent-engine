@@ -98,6 +98,9 @@ change often.
 | `Ready for Review`, open PR | claim, `In Testing` | review | `REJECTED` + reviewer comment | `Rejected` |
 | `Ready for Review`, no PR | — | — | — | `On Hold` + comment |
 | `Rejected`, eligible | claim, `In Progress` | fix | open PR | `Ready for Review` |
+| implement/fix/resume reports `WAITING_CI` | claim, `In Progress` | implement/fix/resume | — | stays `In Progress`, hold until checks settle |
+| review reports `WAITING_CI` | claim, `In Testing` | review | — | stays `In Testing`, hold until checks settle |
+| checkpoint run, CI still running | — | — | `waiting_ci` / `progress_not_finished` | resume held; engine polls checks itself |
 
 Polling pauses while every slot is busy or the engine is paused, so the
 `New` → `Blocked` bookkeeping for a ticket with unfinished blockers happens on
@@ -115,11 +118,33 @@ Implement/fix/resume runs capture the task branch head and open PR head before
 and after running. A successful run with a `RESULT:` line, a clean worktree
 (including untracked files), and a changed observed branch or PR head records
 `progress_not_finished` when there is no ready PR. This leaves the ticket
-`In Progress` for the next poll's resume, without incrementing or resetting its
-crash count. Drafts are never made ready by the engine. Missing baseline heads
-do not prove movement; unchanged heads, missing results, nonzero exits and
+`In Progress` for the next poll's resume, without incrementing its crash count;
+it also resets a stale counter, because a healthy run is evidence the ticket is
+not crash-looping. Drafts are never made ready by the engine. Missing baseline
+heads do not prove movement; unchanged heads, missing results, nonzero exits and
 timeouts still follow the crash path. Ready PR and reviewer precedence is
-unchanged. An existing local task head survives workspace preparation on the
+unchanged.
+
+**Checkpoints (long tasks).** `RESULT: WAITING_CI <url>` from an implementer or
+a reviewer is a checkpoint: the ticket keeps its status, the crash counter is
+not touched, a short `ENGINE: waiting on CI` comment is posted, and the next
+resume is parked. A clean implementer run that pushed nothing while a **draft**
+PR's checks are still running is recorded as `checkpoint_no_progress` for the
+same reason; once those checks settle the same run is an ordinary `no_pr`
+failure, because then the agent was not waiting for anything. The engine polls
+the held commit's checks itself (`gh api .../check-commits/<sha>/check-runs` on
+GitHub, pipelines on GitLab) every `CHECKPOINT_WAIT_SECONDS`, so a long CI wait
+costs no model time; a hold that cannot read the CI state is released instead of
+blocking. `MAX_CHECKPOINT_WAITS` bounds both the CI re-checks and the number of
+consecutive checkpoint runs before the ticket goes to `On Hold` with a
+"checkpoint wait cap" comment. A checkpoint keeps its worktree (unless
+`KEEP_CHECKPOINT_WORKTREES=false`) and the next run reuses it when it is clean
+and still on the branch head, so build caches survive the hand-over. Each resume
+prompt carries a brief of the previous run (result line, head, PR, hold reason
+and the agent's own ticket report), and the agent standards require the
+`WAITING_CI` token instead of idling inside a run.
+
+An existing local task head survives workspace preparation on the
 next poll even before it has been pushed and even if the default branch has
 advanced independently. Default-branch updates are fetched but are not
 automatically integrated into an existing task branch. For a remote task branch,
@@ -143,12 +168,14 @@ Every run gets its own git worktree under the agent workspace
 (`worktrees/<branch>`); the agent's shared clone stays detached, so a killed
 run cannot leave uncommitted changes in the clone used by later runs. Workspace
 preparation is serialized per agent. A verified, successful run removes its
-worktree; a failed run's state is captured into `runs/<runId>/worktree`
-(status, diffs, unpushed commits, untracked files) and the worktree itself is
-kept until `cleanup` expires it (`KEEP_FAILED_WORKTREES`,
-`FAILED_WORKTREE_MAX_MB`). A dirty worktree on a reused branch is moved aside
-as `<branch>.kept-<utc>`. `cleanup` also sweeps worktrees left behind by an
-engine crash.
+worktree; a checkpoint keeps it and the next run **reuses** it when it is
+clean and still on the branch head, so build caches (a Unity `Library/`, an
+installed toolchain) survive the hand-over (`KEEP_CHECKPOINT_WORKTREES`). A
+failed run's state is captured into `runs/<runId>/worktree` (status, diffs,
+unpushed commits, untracked files) and the worktree itself is kept until
+`cleanup` expires it (`KEEP_FAILED_WORKTREES`, `FAILED_WORKTREE_MAX_MB`). A
+dirty worktree on a reused branch is moved aside as `<branch>.kept-<utc>`.
+`cleanup` also sweeps worktrees left behind by an engine crash.
 
 ## Agents and pi runner
 
@@ -262,7 +289,7 @@ without deleting the volume's clones.
 
 `DATA_DIR` (volume `engine-data`) contains:
 
-- `engine.db` — `runs` and `crash_counts` tables;
+- `engine.db` — `runs`, `crash_counts` and `resume_holds` tables;
 - `runs/<id>/` — `prompt.txt`, `stdout.log`, `stderr.log`, `meta.json`;
 - `heartbeat` — last completed poll timestamp (dashboard staleness);
 - `PAUSE` — present means no new claims;
@@ -271,15 +298,17 @@ without deleting the volume's clones.
 `meta.json` records the run identity, argv, cwd, redacted env, state, outcome,
 transition, PR URL and timings. Implementer runs also record `heads` with
 `branch_before`, `branch_after`, `pr_before`, `pr_after` (null when unavailable)
-and `worktree_clean`. Engagement completion also records the original
-`decision` and any `engagement_error`, with `run_dir` identifying the full logs.
+and `worktree_clean`; a checkpoint also records `worktree_checkpoint: true`
+(the worktree was kept for the next run). Engagement completion also records
+the original `decision` and any `engagement_error`, with `run_dir`
+identifying the full logs.
 A failed final transition/comment marks the completed run `failed` immediately
 instead of keeping a dead `running` row until restart; workflow eligibility still
 controls the next poll (in particular, On Hold requires human release). Engine
 comments are bounded by UTF-8 bytes and line length, retaining head/tail excerpts
 and explicit truncation markers. The store keeps run history after the
-artifacts are cleaned up; `cleanup` removes old run directories and stale
-worktrees.
+artifacts are cleaned up; `cleanup` removes old run directories, stale
+worktrees and orphaned resume holds.
 
 Crash recovery kills leftover process groups (using PID + start-time identity
 to survive PID reuse), marks their runs interrupted, and lets the normal

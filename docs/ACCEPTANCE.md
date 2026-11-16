@@ -79,6 +79,13 @@ cycle, or back the run with a real branch/PR when testing live.
       `ENGINE: no PR found`.
 - [ ] Kill the engine mid-run and restart: the ticket resumes; the
       interrupted run does not consume a crash retry.
+- [ ] A run that ends with `RESULT: WAITING_CI <url>` keeps the ticket
+      `In Progress` and posts `ENGINE: waiting on CI`; no new run is claimed
+      until the head commit's checks finish (check the run history for a
+      single `waiting_ci` run while a long workflow is still running).
+- [ ] A `waiting_ci` checkpoint reuses its worktree on the next run (a file
+      in the ignored `Library/` directory is still there), and
+      `KEEP_CHECKPOINT_WORKTREES=false` recreates it instead.
 - [ ] `PAUSE` stops new claims; `status` shows heartbeat, active runs and
       recent outcomes.
 - [ ] `docker compose logs engine` and `DATA_DIR/runs/*` contain no token
