@@ -460,11 +460,10 @@ function renderSessions(snapshot) {
 
 function renderOutcomes(snapshot) {
   const outcomes = snapshot.counts.outcomes || {};
-  // Claim attempts can be cancelled before an agent starts (e.g. a status
-  // transition race). Keep their audit records, but not the noisy breakdown
-  // rows whose keys include a unique work-package/error message.
+  // Aborted claims and work-package transition races produce noisy per-ticket
+  // rows. Hide those in the breakdown only; preserve audit data and other errors.
   const entries = Object.entries(outcomes).filter(
-    ([name]) => !/^claim aborted:/i.test(name.trim()),
+    ([name]) => !/^(?:claim aborted:|transition[ _]aborted:\s*work package\b)/i.test(name.trim()),
   );
   clear(els.outcomes);
   if (!entries.length) {
