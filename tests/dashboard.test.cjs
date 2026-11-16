@@ -182,9 +182,36 @@ test("outcome breakdown ignores historical and future aborted claims without mut
   assert.equal(renderOutcomes(outcomes).children.length, 2);
 });
 
-test("empty and claim-only breakdowns show the empty state and clear previous rows", () => {
+test("outcome breakdown hides existing and future work-package transition aborts only", () => {
+  const outcomes = {
+    "transition_aborted: Work package 505 status changed": 100,
+    " Transition Aborted: Work Package 506 no longer exists ": 50,
+    "TRANSITION_ABORTED: WORK PACKAGE 507 conflict": 20,
+    approved: 4,
+    nonzero_exit: 2,
+  };
+  const before = JSON.stringify(outcomes);
+  const list = renderOutcomes(outcomes);
+  assert.equal(list.children.length, 2);
+  assert.doesNotMatch(text(list), /Transition Aborted/i);
+  assert.match(text(list), /Approved.*4/);
+  assert.match(text(list), /Nonzero Exit.*2/);
+  assert.equal(list.children[0].children[1].children[0].style.width, "100%");
+  assert.equal(list.children[1].children[1].children[0].style.width, "50%");
+  assert.equal(JSON.stringify(outcomes), before);
+
+  outcomes["transition_aborted: Work package 508 changed before transition"] = 200;
+  assert.equal(renderOutcomes(outcomes).children.length, 2);
+});
+
+test("empty and abort-only breakdowns show the empty state and clear previous rows", () => {
   renderOutcomes({ approved: 1 });
-  for (const outcomes of [{ "claim aborted: work package 503 conflict": 3 }, {}, undefined]) {
+  for (const outcomes of [
+    { "claim aborted: work package 503 conflict": 3 },
+    { "transition_aborted: Work package 505 changed": 2 },
+    { "claim aborted: work package 503 conflict": 3, "Transition Aborted: Work Package 505 changed": 2 },
+    {}, undefined,
+  ]) {
     const list = renderOutcomes(outcomes);
     assert.equal(list.children.length, 1);
     assert.equal(list.children[0].className, "empty");
@@ -192,14 +219,17 @@ test("empty and claim-only breakdowns show the empty state and clear previous ro
   }
 });
 
-test("unrelated failures and non-prefix claim text remain visible", () => {
+test("unrelated failures and non-prefix abort text remain visible", () => {
   const list = renderOutcomes({
     "transition_aborted: status changed": 2,
     engagement_error: 1,
     "error: claim aborted: unexpected failure": 1,
     claim_aborted_other: 1,
+    "error: transition_aborted: Work package 505 failed": 1,
+    "transition_aborted: Work packages unavailable": 1,
+    transition_aborted_other: 1,
   });
-  assert.equal(list.children.length, 4);
+  assert.equal(list.children.length, 7);
   assert.match(text(list), /Transition Aborted/);
   assert.match(text(list), /Engagement Error/);
 });

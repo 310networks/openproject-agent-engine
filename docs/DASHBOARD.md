@@ -21,7 +21,7 @@ glance:
   Active sessions and all-run totals are unchanged.
 - **How are the totals trending?** Historical total, running, completed,
   declined and failed session counts, plus a breakdown of recorded outcomes (excluding
-  aborted claim attempts).
+  aborted claim attempts and work-package transition races).
 
 The outcome breakdown distinguishes **No progress** (stored legacy outcome
 `no_pr`) from the checkpoints: **Still In Progress** (`progress_not_finished`),
@@ -35,13 +35,18 @@ Stored run history and JSON API outcome keys keep their original names.
 `checkpoint_wait_cap_reached` (the ticket stopped converging) is shown with the
 warning tone next to `rejection_cap_reached`.
 
-The browser omits outcomes beginning with `claim aborted:` (case-insensitive)
-from the outcome breakdown, including existing records and new poll results.
-These cancelled claim attempts can occur during status-transition races before
-an agent starts; their per-ticket messages otherwise flood the breakdown.
+The browser omits outcomes beginning with `claim aborted:` or
+`transition_aborted: Work package` (also `Transition Aborted: Work Package`,
+case-insensitive, ignoring leading whitespace) from the outcome breakdown,
+including existing records and new poll results. These aborted claims and
+work-package transition races produce per-ticket messages that otherwise flood
+the breakdown. No database cleanup is needed: existing rows disappear from the
+breakdown when the updated dashboard loads.
 This is presentation-only: stored records, JSON API data, headline totals,
 agent cards and session history remain unchanged for diagnosis. Other errors,
-including `transition_aborted:`, remain visible in the breakdown.
+including transition aborts without the `Work package` message prefix, remain
+visible in the breakdown. This filter does not change engine transitions or
+classify every transition abort as harmless.
 
 ## Run it
 
