@@ -204,6 +204,107 @@ test("unrelated failures and non-prefix claim text remain visible", () => {
   assert.match(text(list), /Engagement Error/);
 });
 
+function renderKpis(current, extra = {}, failed = false) {
+  context.kpiSnapshot = {
+    counts: { total: 100, running: 2, completed: 30, declined: 4, blocked: 90, failed: 5 },
+    current_work_packages: current,
+    generated_at: new Date().toISOString(),
+    ...extra,
+  };
+  context.kpiFailed = failed;
+  evaluate("renderKpis(kpiSnapshot, kpiFailed)");
+  return Object.fromEntries(elements.get("kpis").children.map((card) => [card.dataset.tone, card]));
+}
+const currentCounts = {
+  status: "fresh", blocked: 3, on_hold: 0, age_seconds: 10, stale_after_seconds: 45,
+  observed_at: "2026-11-16T17:00:00+00:00",
+};
+const kpiValue = (card) => card.children[1].textContent;
+
+test("current Blocked and On Hold cards use live ticket counts including zero, not historical outcomes", () => {
+  const cards = renderKpis(currentCounts);
+  assert.equal(Object.keys(cards).length, 7);
+  assert.equal(kpiValue(cards.blocked), "3");
+  assert.equal(kpiValue(cards.on_hold), "0");
+  assert.match(text(cards.blocked), /waiting on dependencies now/);
+  assert.match(text(cards.on_hold), /on hold.*needs a human now/);
+  assert.match(cards.blocked.title, /monitored projects.*Last observed/);
+  assert.equal(cards.on_hold.children[0].children[0].attributes["aria-hidden"], "true");
+  for (const [key, value] of Object.entries({ total: 100, running: 2, completed: 30, declined: 4, failed: 5 })) {
+    assert.equal(kpiValue(cards[key]), String(value));
+  }
+  const updated = renderKpis({ ...currentCounts, blocked: 0, on_hold: 2 });
+  assert.equal(kpiValue(updated.blocked), "0");
+  assert.equal(kpiValue(updated.on_hold), "2");
+});
+
+test("missing, stale, unavailable and invalid counts never fall back to zero or history", () => {
+  for (const current of [undefined, null, { ...currentCounts, status: "stale" },
+    { ...currentCounts, status: "unavailable" }, { ...currentCounts, blocked: null, on_hold: null },
+    { ...currentCounts, blocked: -1, on_hold: "2" }]) {
+    const cards = renderKpis(current);
+    for (const key of ["blocked", "on_hold"]) {
+      assert.equal(kpiValue(cards[key]), "—");
+      assert.match(text(cards[key]), /stale|unavailable/);
+    }
+  }
+});
+
+test("cached observations expire and failed updates hide current values until recovery", () => {
+  const expired = renderKpis(currentCounts, { generated_at: new Date(Date.now() - 60000).toISOString() });
+  assert.equal(kpiValue(expired.blocked), "—");
+  assert.match(text(expired.on_hold), /stale/);
+  const failed = renderKpis(currentCounts, {}, true);
+  assert.equal(kpiValue(failed.blocked), "—");
+  assert.match(text(failed.on_hold), /unavailable/);
+  assert.equal(kpiValue(failed.total), "100");
+  assert.equal(kpiValue(renderKpis(currentCounts).blocked), "3");
+});
+
+test("poll failures keep current counts unavailable on timer ticks and recover on success", async () => {
+  let tick;
+  let fail = false;
+  const snapshot = {
+    counts: { total: 100, blocked: 90 }, current_work_packages: currentCounts,
+    generated_at: new Date().toISOString(),
+  };
+  const isolated = vm.createContext({
+    document,
+    setInterval: (callback) => { tick = callback; },
+    setTimeout: () => 1,
+    clearTimeout: () => {},
+    fetch: () => new Promise(() => {}),
+  });
+  vm.runInContext(readFileSync(new URL("app.js", assets), "utf8"), isolated);
+  isolated.snapshot = snapshot;
+  isolated.fetch = async () => {
+    if (fail) throw new Error("network offline");
+    return { ok: true, json: async () => snapshot };
+  };
+  // Isolate poll/KPI behavior from unrelated panels, preserving production poll and tick.
+  vm.runInContext(`render = (snapshot) => { lastSnapshot = snapshot; renderKpis(snapshot); };
+    renderBanner = () => {}; renderAgents = () => {}; renderSessions = () => {};`, isolated);
+  const blocked = () => elements.get("kpis").children.find((card) => card.dataset.tone === "blocked");
+  await vm.runInContext("poll()", isolated);
+  assert.equal(kpiValue(blocked()), "3");
+  fail = true;
+  await vm.runInContext("poll()", isolated);
+  assert.equal(kpiValue(blocked()), "—");
+  tick();
+  assert.equal(kpiValue(blocked()), "—");
+  assert.match(text(blocked()), /unavailable/);
+  fail = false;
+  await vm.runInContext("poll()", isolated);
+  assert.equal(kpiValue(blocked()), "3");
+});
+
+test("KPI layout accommodates seven cards with tablet and mobile breakpoints", () => {
+  const css = readFileSync(new URL("style.css", assets), "utf8");
+  assert.match(css, /grid-template-columns: repeat\(7, minmax\(0, 1fr\)\)/);
+  assert.match(css, /@media \(max-width: 1080px\)[\s\S]*?repeat\(3, minmax\(0, 1fr\)\)/);
+  assert.match(css, /@media \(max-width: 720px\)[\s\S]*?repeat\(2, minmax\(0, 1fr\)\)/);
+});
+
 test("progress pills have a pink foreground, border and background", () => {
   const css = readFileSync(new URL("style.css", assets), "utf8");
   const rule = css.match(/\.state-pill\.progress\s*\{([^}]+)\}/)[1];

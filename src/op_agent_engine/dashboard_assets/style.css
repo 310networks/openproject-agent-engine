@@ -138,7 +138,7 @@ h1 { margin: 0; font-size: 21px; letter-spacing: -0.02em; }
 
 .kpis {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(7, minmax(0, 1fr));
   gap: 12px;
   margin-bottom: 18px;
 }
@@ -164,6 +164,7 @@ h1 { margin: 0; font-size: 21px; letter-spacing: -0.02em; }
 .kpi[data-tone="completed"]::before { background: var(--green); }
 .kpi[data-tone="declined"]::before { background: var(--violet); }
 .kpi[data-tone="blocked"]::before { background: var(--amber); }
+.kpi[data-tone="on_hold"]::before { background: var(--amber); }
 .kpi[data-tone="failed"]::before { background: var(--red); }
 .kpi[data-tone="total"]::before { background: var(--accent); }
 
