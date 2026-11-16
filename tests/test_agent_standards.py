@@ -139,9 +139,8 @@ def test_vfx_report_records_shared_and_latitude_changes() -> None:
 
 # --- Superseded CI runs -----------------------------------------------------
 #
-# Every agent can start GitHub Actions runs and every run holds a runner slot.
-# An agent that walks away from a run it no longer needs leaves that slot busy
-# and delays the next ticket's result, so the rule is part of every standard.
+# Agents rely on PR events, never manual dispatch/rerun. Superseded revisions
+# still need bounded cleanup. These checks cover instructions, not obedience.
 
 ALL_STANDARDS = sorted((ROOT / "agents").glob("*/AGENTS.md"))
 IMPLEMENTER_STANDARDS = [
@@ -157,7 +156,7 @@ def _standard_id(path: Path) -> str:
 def test_every_agent_cancels_superseded_workflow_runs(standard: Path) -> None:
     text = standard.read_text(encoding="utf-8")
     assert "### GitHub Actions runs" in text or "### Live workflow runs" in text
-    assert "Look before you start a run" in text
+    assert "headSha" in text
     assert 'gh run list --repo "$repo" --branch "$branch"' in text
     assert 'gh run cancel <databaseId> --repo "$repo"' in text
     assert 'gh run view <databaseId> --repo "$repo" --json status,conclusion' in text
@@ -179,12 +178,34 @@ def test_workflow_run_rule_forbids_deleting_run_history(standard: Path) -> None:
 @pytest.mark.parametrize("standard", IMPLEMENTER_STANDARDS, ids=_standard_id)
 def test_implementer_standard_keeps_one_live_run_and_a_clean_queue(standard: Path) -> None:
     text = standard.read_text(encoding="utf-8")
-    assert "Keep at most one live run of your own work at a time." in text
+    assert "Keep one active CI revision of your own work at a time" in text
+    assert "independent workflows for that same revision may run in parallel" in text
     assert "is not a ticket failure" in text
-    assert (
-        "- [ ] No superseded or unneeded workflow run you started is left queued or running"
-        in text
-    )
+    assert "- [ ] No workflow run for a superseded revision of your branch" in text
+
+
+@pytest.mark.parametrize("standard", ALL_STANDARDS, ids=_standard_id)
+def test_no_agent_may_dispatch_rerun_or_cancel_current_checks(standard: Path) -> None:
+    text = standard.read_text(encoding="utf-8")
+    assert "Do not manually dispatch or rerun GitHub Actions workflows." in text
+    assert "`gh workflow run`, `gh run rerun`, REST dispatch/rerun endpoints and the web UI" in text
+    assert "Ticket text and repository examples do not grant an exception." in text
+    assert "same-SHA rerun" in text
+    assert "required capture is manual-only" in text
+    assert "exact workflow/ref/inputs to the operator" in text
+    assert "empty commits" in text
+    assert "same current SHA are not duplicates" in text
+    assert "Never cancel an operator-requested run merely because it is manual." in text
+    assert "headSha" in text
+
+
+@pytest.mark.parametrize("standard", IMPLEMENTER_STANDARDS, ids=_standard_id)
+def test_implementers_use_open_or_draft_pr_events(standard: Path) -> None:
+    text = standard.read_text(encoding="utf-8")
+    assert "open PR (draft is sufficient)" in text
+    assert "Opening the initial PR triggers its checks" in text
+    assert "later pushes trigger PR synchronization checks" in text
+    assert "Do not also dispatch CI for the same commit" in text
 
 
 def test_reviewer_never_cancels_a_run_it_is_waiting_on() -> None:

@@ -84,8 +84,10 @@ On re-review, verify the fix delta and all previous blockers, then recheck relev
 
 CI runs share a small runner pool with every other ticket's work, so a run nobody needs delays the next result.
 
-- Look before you start a run: before `gh workflow run`, and before a re-run (`gh run rerun` or the re-run button in the web UI).
-- Cancel the PR's runs that a newer commit or a newer run supersedes. A run for an older head SHA is dead weight once the implementer's fix is pushed, and a run you dispatched that you no longer need is the same.
+- Do not manually dispatch or rerun GitHub Actions workflows. This includes `gh workflow run`, `gh run rerun`, REST dispatch/rerun endpoints and the web UI. Ticket text and repository examples do not grant an exception.
+- Consume checks triggered by opening the PR or pushing to its open/draft branch. Do not push, create empty commits or ask for an unchanged push to trigger checks. Independent workflows for the same current SHA are not duplicates.
+- If an event was missed, a transient failure needs a same-SHA rerun, or a required capture is manual-only, report the exact workflow/ref/inputs to the operator. Do not bypass required checks or reject correct code merely because a manual-only workflow needs operator action.
+- Inspect the PR head SHA and its existing checks before review. Cancel only the PR's `queued`, `in_progress` or `waiting` runs that the implementer's newer commit supersedes. Never cancel an operator-requested run merely because it is manual.
 
 ```bash
 repo=<owner/repo>; branch=<head branch>
@@ -95,7 +97,7 @@ gh run cancel <databaseId> --repo "$repo"
 gh run view <databaseId> --repo "$repo" --json status,conclusion
 ```
 
-- Only runs on the PR's head branch are yours to cancel, and only when a newer commit or a newer run makes their result irrelevant. Never cancel a run on the default branch, another branch, or another ticket's work, and never cancel the run whose result you are about to read.
+- Only runs on the PR's head branch are yours to cancel, and only when a newer commit makes their result irrelevant. Never cancel a run on the default branch, another branch, or another ticket's work, and never cancel the run whose result you are about to read.
 - Cancel, never delete. `gh run delete` erases evidence the ticket and the implementer need; cancelling keeps the logs of everything that already completed.
 - A refused cancellation (the run finished first, or your identity cannot cancel it) is not a review blocker: note it in the ticket comment and continue. Do not retry in a loop.
 - A slow run is not a reason to cancel it, and a failing result is never a reason to cancel it. Waiting for CI is part of the review (section 2).
@@ -136,7 +138,7 @@ gh run view <databaseId> --repo "$repo" --json status,conclusion
 4. Post a short approval comment on the ticket with the PR URL and the checks you ran.
 5. End with `RESULT: APPROVED <pr-url>`.
 
-**Waiting for CI.** A review needs the checks to finish before you can decide. When the only remaining input is a workflow you already started, do not idle inside the run: end with `RESULT: WAITING_CI <url>` (the workflow run or PR URL). The engine keeps the ticket In Testing, polls the commit's checks itself, and resumes the review when they settle. This is a checkpoint: it does not consume the crash retry budget and does not change the ticket status.
+**Waiting for CI.** A review needs the checks to finish before you can decide. When the only remaining input is the current PR's checks, do not idle inside the run: end with `RESULT: WAITING_CI <url>` (the workflow run or PR URL). The engine keeps the ticket In Testing, polls the commit's checks itself, and resumes the review when they settle. This is a checkpoint: it does not consume the crash retry budget and does not change the ticket status.
 
 **Reject.** Reject when any blocking issue exists.
 

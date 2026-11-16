@@ -41,5 +41,6 @@ branch state (git status, git log, any open PR) and continue from there. Do not
 repeat completed work and do not discard existing commits.
 {% endif %}
 Begin now. Use the bundled op CLI and read-only API requests described in the standard if you need more ticket context (comments, relations). External skill files are not required.
-If the only remaining input is CI that you already started, end with `RESULT: WAITING_CI <url>` instead of waiting inside this run; the engine resumes you when the checks finish.
+Never manually dispatch or rerun workflows; use the PR-triggered checks described in the standard.
+If the only remaining input is the current PR's CI, end with `RESULT: WAITING_CI <url>` instead of waiting inside this run; the engine resumes you when the checks finish.
 Finish with the RESULT line required by the standard.

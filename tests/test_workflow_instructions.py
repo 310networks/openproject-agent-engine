@@ -98,6 +98,10 @@ def test_every_real_run_kind_injects_complete_workflow(role: str, kind: str) -> 
     }
     prompt = with_standard(PromptRenderer(ROOT / "prompts").render(kind, context), standard)
     _assert_self_contained(prompt)
+    assert "Do not manually dispatch or rerun GitHub Actions workflows." in prompt
+    assert "Never manually dispatch or rerun workflows; use the PR-triggered checks" in prompt
+    assert "If the only remaining input is the current PR's CI" in prompt
+    assert "CI that you already started" not in prompt
     assert "Finish with the RESULT line required by the standard." in prompt
 
 
