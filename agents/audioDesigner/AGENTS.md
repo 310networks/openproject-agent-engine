@@ -38,6 +38,7 @@ This delegation never changes engine-owned status/assignee/routing, branch prote
 Your final message must end with exactly one of these lines:
 
 - `RESULT: PR_OPENED <pr-url>`
+- `RESULT: WAITING_CI <url>`
 - `RESULT: BLOCKED <one-line reason>`
 
 Use the bundled `op` CLI to read the ticket (`op work-package inspect <id> --format json`). For comments and relations, use read-only API requests with your own `$OP_CLI_HOST` and `$OP_CLI_TOKEN`: `GET /api/v3/work_packages/<id>/activities` and `GET /api/v3/relations?filters=[{"involved":{"operator":"=","values":["<id>"]}}]`. Do not edit status, assignee, or other fields, and do not create tickets.
@@ -191,7 +192,11 @@ Before stopping, push any clean work, then post a ticket comment stating what yo
 4. Post a new ticket comment summarizing what changed for each point.
 5. End with a `RESULT:` line.
 
-**Resumed run (after an interrupted run).** Inspect the branch (`git status`, `git log`, open PR) and continue from the existing state. Do not repeat completed work. Do not discard existing commits.
+**Resumed run (after a checkpoint or an interrupted run).** Inspect the branch (`git status`, `git log`, open PR) and continue from the existing state. Do not repeat completed work. Do not discard existing commits.
+
+When the prompt includes a previous-run brief (its result line, head, PR and the report it posted), treat that as the authoritative account of what is already done: verify the branch matches it, then continue with the remaining work instead of re-reading and re-deriving the ticket from scratch.
+
+**Waiting for CI.** Do not idle inside a run while a workflow you started is still running. Finish everything that does not depend on its result, push it, then end with `RESULT: WAITING_CI <url>` (the workflow run or PR URL). The engine keeps the ticket In Progress, polls the commit's checks itself, and resumes you when they settle — no model time is spent while you wait. This is a checkpoint, not a failure: it does not consume the crash retry budget.
 
 ## 9. Ticket report
 

@@ -10,8 +10,21 @@ Task
 Description:
 {{ wp.description }}
 
-A previous run on this ticket ended unexpectedly. Inspect the branch state (git status, git log, any open PR) and continue from there. Do not repeat completed work and do not discard existing commits.
+{% if continuation is defined and continuation %}
+Your previous run on this ticket ended at a {% if continuation.checkpoint %}deliberate checkpoint{% else %}stop that was not a delivered result{% endif %}. Continue from that state instead of re-deriving the ticket.
+- Previous run: #{{ continuation.run_id }} ({{ continuation.kind }}), outcome {{ continuation.outcome }}, finished {{ continuation.finished_at }}
+- Branch head when it ended: {{ continuation.branch_head or 'unknown' }}
+- Pull request: {{ continuation.pr_url or 'none recorded' }}{% if continuation.pr_draft %} (draft){% endif %}
+{% if continuation.hold_reason %}- Why this run waited: {{ continuation.hold_reason }}
+{% endif %}{% if continuation.worktree_kept %}- Its worktree was kept and is reused by this run: build caches and installed dependencies are warm.
+{% endif %}- Its RESULT line: {{ continuation.result_line or 'none' }}
+{% if continuation.report %}
+Its ticket report (what was done, what remains):
 
+{{ continuation.report }}
+{% endif %}
+Verify the current branch state (git status, git log, the open PR and its checks), then do the remaining work. Do not repeat completed work and do not discard existing commits.
+{% endif %}
 {% if interruption is defined and interruption %}
 The previous run was interrupted by an engine restart.
 - Interruption run directory: {{ interruption.run_dir }}
@@ -22,6 +35,11 @@ unpushed commits and the untracked files before continuing. HEAD or an open PR
 alone does not prove completion. Recover relevant partial/uncommitted work from
 the artefact or kept worktree; do not blindly apply patches or discard edits.
 {% endif %}
-
+{% if continuation is defined and not continuation %}
+A previous run on this ticket ended without delivering a result. Inspect the
+branch state (git status, git log, any open PR) and continue from there. Do not
+repeat completed work and do not discard existing commits.
+{% endif %}
 Begin now. Use the bundled op CLI and read-only API requests described in the standard if you need more ticket context (comments, relations). External skill files are not required.
+If the only remaining input is CI that you already started, end with `RESULT: WAITING_CI <url>` instead of waiting inside this run; the engine resumes you when the checks finish.
 Finish with the RESULT line required by the standard.

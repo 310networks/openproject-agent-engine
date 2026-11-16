@@ -1,6 +1,7 @@
 """Tests for outcome verification."""
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -11,15 +12,20 @@ from op_agent_engine.outcomes import (
     blocked_comment,
     blocked_reason,
     bound_comment,
+    checkpoint_comment,
+    checkpoint_wait_cap_comment,
     decide_implementer_outcome,
     decide_reviewer_outcome,
     escalation_comment,
     is_rejection,
+    is_waiting_ci,
     no_pr_comment,
     parse_result_line,
     read_tail,
     rejection_is_outstanding,
     rejection_reason,
+    waiting_ci_detail,
+    waiting_ci_hold_comment,
 )
 from op_agent_engine.store import FAILED, SUCCEEDED, TIMEOUT, Run
 
@@ -610,3 +616,115 @@ def test_comment_omission_marker_counts_dropped_lines() -> None:
 def test_comment_under_limit_is_unchanged() -> None:
     text = "ENGINE: blocked\n\nMissing data is not zero. 界\n"
     assert bound_comment(text) == text
+
+
+# -- checkpoints and CI waits -------------------------------------------------
+
+
+def test_waiting_ci_is_a_checkpoint_not_a_failure() -> None:
+    decision = decide_implementer_outcome(
+        exit_code=0,
+        timed_out=False,
+        result_line="RESULT: WAITING_CI https://github.com/acme/game/actions/runs/1",
+        pr_found=False,
+    )
+    assert decision.outcome == "waiting_ci"
+    assert decision.run_state == SUCCEEDED
+    assert decision.transition is None
+    assert decision.crash_retry is False
+
+
+def test_waiting_ci_does_not_override_a_ready_pr_or_a_blocker() -> None:
+    ready = decide_implementer_outcome(
+        exit_code=0, timed_out=False,
+        result_line="RESULT: WAITING_CI url", pr_found=True,
+    )
+    assert ready.outcome == "ready_for_review"
+    blocked = decide_implementer_outcome(
+        exit_code=0, timed_out=False,
+        result_line="RESULT: BLOCKED need access", pr_found=False,
+    )
+    assert blocked.outcome == "blocked"
+
+
+def test_a_failed_run_is_never_a_checkpoint() -> None:
+    nonzero = decide_implementer_outcome(
+        exit_code=1, timed_out=False,
+        result_line="RESULT: WAITING_CI url", pr_found=False,
+    )
+    assert nonzero.outcome == "nonzero_exit"
+    assert nonzero.crash_retry is True
+    timed_out = decide_implementer_outcome(
+        exit_code=0, timed_out=True,
+        result_line="RESULT: WAITING_CI url", pr_found=False,
+    )
+    assert timed_out.outcome == "timeout"
+
+
+def test_a_draft_pr_without_a_push_is_a_checkpoint_only_with_a_result() -> None:
+    waiting = decide_implementer_outcome(
+        exit_code=0, timed_out=False,
+        result_line="RESULT: PR_OPENED url", pr_found=False,
+        draft_pr_open=True,
+    )
+    assert waiting.outcome == "checkpoint_no_progress"
+    assert waiting.run_state == SUCCEEDED
+    assert waiting.crash_retry is False
+
+    silent = decide_implementer_outcome(
+        exit_code=0, timed_out=False, result_line=None,
+        pr_found=False, draft_pr_open=True,
+    )
+    assert silent.outcome == "no_pr"
+    assert silent.crash_retry is True
+
+
+def test_reviewer_waiting_ci_keeps_the_ticket_in_testing() -> None:
+    decision = decide_reviewer_outcome(
+        exit_code=0, timed_out=False,
+        result_line="RESULT: WAITING_CI https://example.org/run/1",
+        pr_merged=False, rejection_comment_found=False,
+    )
+    assert decision.outcome == "waiting_ci"
+    assert decision.run_state == SUCCEEDED
+    assert decision.transition is None
+    assert decision.crash_retry is False
+
+
+def test_waiting_ci_result_line_parsing() -> None:
+    assert is_waiting_ci("RESULT: WAITING_CI https://example.org/run/1")
+    assert is_waiting_ci("RESULT: waiting_ci")
+    assert waiting_ci_detail("RESULT: WAITING_CI https://example.org/run/1") == (
+        "https://example.org/run/1"
+    )
+    assert waiting_ci_detail("RESULT: WAITING_CI") is None
+    assert not is_waiting_ci("RESULT: PR_OPENED url")
+    assert not is_waiting_ci(None)
+
+
+def test_checkpoint_comments_stay_short_and_specific() -> None:
+    hold = waiting_ci_hold_comment(
+        head_sha="abcdef1234567890",
+        checks_detail="2 of 3 check(s) still running",
+        ready_at=datetime(2026, 1, 1, tzinfo=UTC),
+        detail="https://example.org/run/1",
+    )
+    assert hold.startswith("ENGINE: waiting on CI")
+    assert "abcdef123456" in hold
+    assert "2 of 3 check(s) still running" in hold
+    assert "https://example.org/run/1" in hold
+    assert "No agent run is started" in hold
+
+    checkpoint = checkpoint_comment(
+        outcome="progress_not_finished",
+        head_sha="abcdef1234567890",
+        pr_url="https://example.org/pr/1",
+    )
+    assert checkpoint.startswith("ENGINE: checkpoint")
+    assert "https://example.org/pr/1" in checkpoint
+
+    cap = checkpoint_wait_cap_comment(
+        waits=9, head_sha="abcdef1234567890", checks_detail="1 of 1 check(s) failed"
+    )
+    assert "checkpoint wait cap reached" in cap
+    assert "9 runs" in cap

@@ -16,7 +16,7 @@ import os
 import sqlite3
 import threading
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +30,12 @@ FAILED = "failed"
 TIMEOUT = "timeout"
 CANCELLED = "cancelled"
 INTERRUPTED = "interrupted"
+
+#: Outcomes that are deliberate checkpoints rather than delivery or failure.
+#: They never consume the crash retry budget and keep the ticket In Progress.
+CHECKPOINT_OUTCOMES = frozenset(
+    {"progress_not_finished", "waiting_ci", "checkpoint_no_progress"}
+)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
@@ -59,6 +65,22 @@ CREATE UNIQUE INDEX IF NOT EXISTS one_active_per_wp
 CREATE TABLE IF NOT EXISTS crash_counts (
   work_package_id INTEGER PRIMARY KEY,
   count INTEGER NOT NULL DEFAULT 0
+);
+
+-- A resume hold parks an In Progress ticket until an external event (the
+-- commit's CI checks settling) instead of spending an agent run to find out.
+-- The hold is advisory: the scheduler skips the ticket only while ready_at is
+-- in the future, and the engine's resume gate clears it when the checks
+-- finish or when the evidence is unusable.
+CREATE TABLE IF NOT EXISTS resume_holds (
+  work_package_id INTEGER PRIMARY KEY,
+  repo TEXT NOT NULL,
+  head_sha TEXT,
+  ready_at TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0
 );
 """
 
@@ -114,6 +136,44 @@ class Run:
 
 def _utcnow() -> str:
     return datetime.now(UTC).isoformat()
+
+
+@dataclass(frozen=True)
+class ResumeHold:
+    """A parked resume: the ticket is skipped until ``ready_at``."""
+
+    work_package_id: int
+    repo: str
+    head_sha: str | None
+    ready_at: str
+    reason: str
+    created_at: str
+    updated_at: str
+    attempts: int
+
+    def ready(self, now: datetime | None = None) -> bool:
+        """Whether the hold has expired (``ready_at`` is in the past)."""
+        current = now or datetime.now(UTC)
+        try:
+            ready_at = datetime.fromisoformat(self.ready_at)
+        except ValueError:
+            return True
+        if ready_at.tzinfo is None:
+            ready_at = ready_at.replace(tzinfo=UTC)
+        return ready_at <= current
+
+
+def _row_to_resume_hold(row: sqlite3.Row) -> ResumeHold:
+    return ResumeHold(
+        work_package_id=int(row["work_package_id"]),
+        repo=str(row["repo"]),
+        head_sha=row["head_sha"],
+        ready_at=str(row["ready_at"]),
+        reason=str(row["reason"]),
+        created_at=str(row["created_at"]),
+        updated_at=str(row["updated_at"]),
+        attempts=int(row["attempts"]),
+    )
 
 
 def _row_to_run(row: sqlite3.Row) -> Run:
@@ -408,6 +468,44 @@ class Store:
             ).fetchone()
         return None if row is None else _row_to_run(row)
 
+    def last_implementer_run(self, work_package_id: int) -> Run | None:
+        """The most recent finished implement/fix/resume run, or None.
+
+        Used to brief the next run: its result line, branch head, report and
+        whether it ended at a checkpoint. Unlike :meth:`last_code_run` this
+        includes checkpoints and failures, which is exactly what the resume
+        prompt needs to know.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM runs WHERE work_package_id = ? "
+                "AND kind IN ('implement', 'fix', 'resume') "
+                "AND state != ? AND outcome IS NOT NULL "
+                "ORDER BY id DESC LIMIT 1",
+                (work_package_id, RUNNING),
+            ).fetchone()
+        return None if row is None else _row_to_run(row)
+
+    def checkpoint_streak(self, work_package_id: int) -> int:
+        """How many consecutive finished runs ended as checkpoints.
+
+        The count stops at the first run with any other outcome, so a
+        checkpoint streak measures one uninterrupted wait, not the ticket's
+        whole history.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT outcome FROM runs WHERE work_package_id = ? "
+                "AND state != ? AND outcome IS NOT NULL ORDER BY id DESC LIMIT 100",
+                (work_package_id, RUNNING),
+            ).fetchall()
+        streak = 0
+        for row in rows:
+            if str(row["outcome"]) not in CHECKPOINT_OUTCOMES:
+                break
+            streak += 1
+        return streak
+
     def last_interrupted_run(self, work_package_id: int) -> Run | None:
         """Most recent restart checkpoint, separate from successful code runs."""
         with self._lock:
@@ -502,6 +600,118 @@ class Store:
             ).fetchone()
             self._conn.commit()
         return int(row["count"])
+
+    # -- resume holds ----------------------------------------------------
+
+    def set_resume_hold(
+        self,
+        work_package_id: int,
+        *,
+        repo: str,
+        ready_at: str,
+        reason: str,
+        head_sha: str | None = None,
+        attempts: int = 0,
+    ) -> ResumeHold:
+        """Create or replace the resume hold of one work package."""
+        now = _utcnow()
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO resume_holds (
+                  work_package_id, repo, head_sha, ready_at, reason,
+                  created_at, updated_at, attempts
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(work_package_id) DO UPDATE SET
+                  repo = excluded.repo,
+                  head_sha = excluded.head_sha,
+                  ready_at = excluded.ready_at,
+                  reason = excluded.reason,
+                  updated_at = excluded.updated_at,
+                  attempts = excluded.attempts
+                """,
+                (
+                    work_package_id,
+                    repo,
+                    head_sha,
+                    ready_at,
+                    reason,
+                    now,
+                    now,
+                    attempts,
+                ),
+            )
+            self._conn.commit()
+        hold = self.resume_hold(work_package_id)
+        assert hold is not None
+        return hold
+
+    def resume_hold(self, work_package_id: int) -> ResumeHold | None:
+        """The hold of one work package, or None."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM resume_holds WHERE work_package_id = ?",
+                (work_package_id,),
+            ).fetchone()
+        return None if row is None else _row_to_resume_hold(row)
+
+    def extend_resume_hold(
+        self, work_package_id: int, *, ready_at: str, reason: str | None = None
+    ) -> None:
+        """Push a hold's deadline back and count the attempt."""
+        assignments = "ready_at = ?, updated_at = ?, attempts = attempts + 1"
+        values: list[object] = [ready_at, _utcnow()]
+        if reason is not None:
+            assignments += ", reason = ?"
+            values.append(reason)
+        values.append(work_package_id)
+        with self._lock:
+            self._conn.execute(
+                f"UPDATE resume_holds SET {assignments} WHERE work_package_id = ?",
+                (*values,),
+            )
+            self._conn.commit()
+
+    def clear_resume_hold(self, work_package_id: int) -> bool:
+        """Drop a hold; return whether one existed."""
+        with self._lock:
+            cursor = self._conn.execute(
+                "DELETE FROM resume_holds WHERE work_package_id = ?",
+                (work_package_id,),
+            )
+            self._conn.commit()
+        return cursor.rowcount > 0
+
+    def resume_holds(self) -> list[ResumeHold]:
+        """Every resume hold, oldest deadline first."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM resume_holds ORDER BY ready_at, work_package_id"
+            ).fetchall()
+        return [_row_to_resume_hold(row) for row in rows]
+
+    def prune_resume_holds(
+        self, *, older_than_days: int, now: datetime | None = None
+    ) -> int:
+        """Drop holds that were never released or extended for a long time.
+
+        A hold is normally deleted as soon as the run resumes or the ticket
+        leaves In Progress. This sweep only catches leftovers (a ticket a
+        human moved to On Hold while it was held); it uses the same retention
+        window as the run directories.
+        """
+        if older_than_days < 0:
+            raise ValueError("older_than_days must not be negative")
+        current = now or datetime.now(UTC)
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=UTC)
+        cutoff = (current - timedelta(days=older_than_days)).isoformat()
+        with self._lock:
+            cursor = self._conn.execute(
+                "DELETE FROM resume_holds WHERE updated_at < ?", (cutoff,)
+            )
+            self._conn.commit()
+        return cursor.rowcount
 
     def reset_crash_count(self, work_package_id: int) -> int:
         """Delete the crash counter and return the value it had.

@@ -19,13 +19,16 @@ glance:
   blocked and failed counts, plus a breakdown of every recorded outcome.
 
 The outcome breakdown distinguishes **No progress** (stored legacy outcome
-`no_pr`) from **Still In Progress** (`progress_not_finished`). The dashboard
-uses this label in run history, agent session summaries and the outcome breakdown;
-finished-session outcome pills are pink rather than failure red. Partial
-progress is not a delivered result or a failure: the JSON headline counts
-include a separate `progress_not_finished` bucket, excluded from both
-`completed` and `failed`. The existing page displays the distinction in its
-outcome breakdown; stored run history and JSON API outcome keys remain unchanged.
+`no_pr`) from the checkpoints: **Still In Progress** (`progress_not_finished`),
+**Waiting On CI** (`waiting_ci`) and **Checkpointed**
+(`checkpoint_no_progress`). The dashboard uses these labels in run history,
+agent session summaries and the outcome breakdown; checkpoint outcome pills
+are pink rather than failure red. A checkpoint is not a delivered result or a
+failure: the JSON headline counts include all three in the separate
+`progress_not_finished` bucket, excluded from both `completed` and `failed`.
+Stored run history and JSON API outcome keys keep their original names.
+`checkpoint_wait_cap_reached` (the ticket stopped converging) is shown with the
+warning tone next to `rejection_cap_reached`.
 
 ## Run it
 

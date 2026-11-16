@@ -378,11 +378,19 @@ async def prepare_workspace(
     git_host: str = "github.com",
     clone_url: str | None = None,
     max_kept_worktree_bytes: int = DEFAULT_FAILED_WORKTREE_MAX_BYTES,
+    keep_existing_worktree: bool = False,
 ) -> Workspace:
     """Clone/fetch the repository and check out the run branch.
 
     ``clone_url`` overrides the derived GitHub URL (tests use ``file://``
     URLs for local bare repositories).
+
+    ``keep_existing_worktree`` reuses a clean worktree that is already on the
+    branch head (the normal case after a checkpoint run) instead of removing
+    and recreating it, which keeps build caches such as a Unity ``Library/``
+    directory warm across the hand-over. A dirty worktree, a different head or
+    a worktree that git no longer tracks still takes the old path: a dirty one
+    is moved aside, a stale one is recreated from the new base.
 
     Raises :class:`WorkspaceError` (or :class:`GitError`) when the workspace
     cannot be prepared; the caller records the run as failed.
@@ -501,27 +509,31 @@ async def prepare_workspace(
     # edits) cannot collide. The shared clone stays detached so every run
     # branch is free to use and a killed run cannot leave it dirty.
     worktree_dir = workspace_dir / "worktrees" / branch
-    await _reclaim_worktree(
-        repo_dir, worktree_dir, max_keep_bytes=max_kept_worktree_bytes
-    )
-    if not await _head_is_detached(repo_dir):
+    reused = False
+    if keep_existing_worktree:
+        reused = await _reuse_worktree(worktree_dir, base=base, branch=branch)
+    if not reused:
+        await _reclaim_worktree(
+            repo_dir, worktree_dir, max_keep_bytes=max_kept_worktree_bytes
+        )
+        if not await _head_is_detached(repo_dir):
+            await run_git(
+                ["checkout", "--quiet", "--detach", base],
+                cwd=repo_dir,
+            )
+        worktree_dir.parent.mkdir(parents=True, exist_ok=True)
         await run_git(
-            ["checkout", "--quiet", "--detach", base],
+            [
+                "worktree",
+                "add",
+                "--force",
+                "-B",
+                branch,
+                str(worktree_dir),
+                base,
+            ],
             cwd=repo_dir,
         )
-    worktree_dir.parent.mkdir(parents=True, exist_ok=True)
-    await run_git(
-        [
-            "worktree",
-            "add",
-            "--force",
-            "-B",
-            branch,
-            str(worktree_dir),
-            base,
-        ],
-        cwd=repo_dir,
-    )
     logger.info(
         "workspace ready: %s on branch %s (worktree of %s)",
         worktree_dir,
@@ -536,6 +548,49 @@ async def prepare_workspace(
         default_branch=resolved_default_branch,
         base_repo_dir=repo_dir,
     )
+
+
+async def _reuse_worktree(worktree_dir: Path, *, base: str, branch: str) -> bool:
+    """Whether an existing worktree can serve the next run unchanged.
+
+    Only a clean worktree that is checked out on *branch* at exactly *base*
+    is reused. Anything else (dirty edits, an advanced head, a detached or
+    wrong branch, a worktree git no longer tracks) returns False and the
+    caller takes the full reclamation path, so this can never hide or discard
+    uncommitted work.
+    """
+    if not worktree_dir.is_dir():
+        return False
+    if await _worktree_is_dirty(worktree_dir):
+        return False
+    try:
+        head = (
+            await run_git(["rev-parse", "--verify", "HEAD"], cwd=worktree_dir)
+        ).strip()
+        current = (
+            await run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=worktree_dir)
+        ).strip()
+    except GitError:
+        return False
+    if head != base or current != branch:
+        logger.info(
+            "not reusing the worktree %s: it is on %s at %s, the run needs %s at %s",
+            worktree_dir,
+            current,
+            head[:12],
+            branch,
+            base[:12],
+            extra={"repo_dir": str(worktree_dir)},
+        )
+        return False
+    logger.info(
+        "reusing the existing worktree %s on %s at %s",
+        worktree_dir,
+        branch,
+        base[:12],
+        extra={"repo_dir": str(worktree_dir), "branch": branch},
+    )
+    return True
 
 
 async def _head_is_detached(repo_dir: Path) -> bool:

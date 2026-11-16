@@ -122,6 +122,46 @@ docker compose exec engine tail -n 80 runs/$RID/stdout.log
 docker compose logs --since 24h engine | grep "\"run_id\": $RID"
 ```
 
+## Waiting on CI (checkpoints and resume holds)
+
+A long task hands the branch back when its only remaining input is CI. The
+ticket keeps its status (`In Progress` for an implementer, `In Testing` for a
+reviewer), the crash counter is not touched, and the engine posts a short
+`ENGINE: waiting on CI` comment. The next run is **held**: nothing is claimed
+until the commit's checks settle.
+
+The engine polls the checks itself (GitHub: `gh api
+repos/<repo>/commits/<sha>/check-runs` plus the combined commit status; GitLab:
+pipelines), once per `CHECKPOINT_WAIT_SECONDS`, so an hour of CI costs no agent
+runs. When every check has finished — green or red — the hold is released and
+the normal resume or review run starts on the next poll. A hold whose state
+cannot be read is released at once rather than blocking the ticket.
+
+Inspect holds (and see the run outcomes in `status --json`):
+
+```bash
+docker compose exec engine python -c '
+import sqlite3
+db = "/home/agent/.local/share/op-agent-engine/engine.db"
+for row in sqlite3.connect(db).execute("select * from resume_holds"):
+    print(row)
+'
+```
+
+Moving the ticket to `On Hold` stops any further claims; moving it back lets the
+next poll continue. A hold is only consulted while the ticket's status is
+`In Progress` or `In Testing`, and `cleanup` prunes holds older than
+`RUN_RETENTION_DAYS`.
+
+`MAX_CHECKPOINT_WAITS` bounds how many CI re-checks and consecutive checkpoint
+runs are allowed. Past it the ticket goes to `On Hold` with an `ENGINE:
+checkpoint wait cap reached` comment: the ticket is not converging, which is a
+different problem from a crash.
+
+A checkpoint keeps its worktree (`KEEP_CHECKPOINT_WORKTREES`) and the next run
+reuses it when it is clean and still on the branch head, so build caches such as
+a Unity `Library/` directory are not rebuilt for every CI wait.
+
 ## After a silent failure
 
 The expensive case is a run that exits normally (or times out) with an empty
@@ -374,7 +414,10 @@ timestamps come from `runs.finished_at`, not from comment text.
 their own worktree as soon as the outcome is verified; failed runs keep theirs
 for the retention window (see [After a silent failure](#after-a-silent-failure)),
 so `cleanup` expires both those and the leftovers of a crashed run. Worktrees
-whose branch still has a `running` row in the store are never removed. Nothing runs `cleanup` on a schedule by itself,
+whose branch still has a `running` row in the store are never removed. A
+checkpoint worktree is reused by the next run; the sweep only removes it once
+its ticket has been idle past the retention window. `cleanup` also drops
+orphaned resume holds. Nothing runs `cleanup` on a schedule by itself,
 so add one cron entry on the host:
 
 ```cron

@@ -183,14 +183,23 @@ for credentials, self-managed TLS requirements and limitations.
 | `Ready for Review`, PR exists | claim, `In Testing` | review | PR merged / `REJECTED` | `Closed` / `Rejected` |
 | `Ready for Review`, no PR | — | — | — | `On Hold` + comment |
 | `Rejected`, eligible | claim, `In Progress` | fix | as implement | as implement |
+| implement/fix/resume reports `WAITING_CI` | hold the next run | — | checkpoint | stays `In Progress` |
+| review reports `WAITING_CI` | hold the next review | — | checkpoint | stays `In Testing` |
 
 `On Hold` is terminal: the engine ignores the ticket until a human moves it.
 Branches are `op-<project>-<wp>` (one per ticket). Every run uses its own git
-worktree: a successful run removes it, a failed run's state is first captured
-into `runs/<runId>/worktree` and the worktree is kept for post-mortem
+worktree: a successful run removes it, a checkpoint keeps it so the next run
+reuses its build caches, a failed run's state is first captured into
+`runs/<runId>/worktree` and the worktree is kept for post-mortem
 (`KEEP_FAILED_WORKTREES`, `FAILED_WORKTREE_MAX_MB`); at most
 `MAX_RUNS_PER_AGENT` runs per agent (default 1) share that agent's clone. Every
 engine comment starts with `ENGINE:`.
+
+Long tasks are first-class: an agent that would otherwise idle through a
+workflow can end with `RESULT: WAITING_CI <url>` and the engine resumes it when
+the commit's checks settle, polling them itself so the wait costs no model time
+(`CHECKPOINT_WAIT_SECONDS`, `MAX_CHECKPOINT_WAITS`). A checkpoint is not a
+failure and does not consume the crash retry budget.
 
 ## Documentation
 

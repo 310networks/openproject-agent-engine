@@ -96,7 +96,11 @@ def git_repo(tmp_path: Path) -> GitFixture:
     seed = tmp_path / "seed"
     _git(["clone", "--quiet", str(origin), str(seed)])
     (seed / "README.md").write_text("hello\n", encoding="utf-8")
-    _git(["-C", str(seed), "add", "README.md"])
+    # An ignored directory stands in for build caches such as Unity's
+    # Library/: ignored files do not make a worktree dirty, and a reused
+    # worktree keeps them.
+    (seed / ".gitignore").write_text("Library/\n", encoding="utf-8")
+    _git(["-C", str(seed), "add", "README.md", ".gitignore"])
     _git(
         [
             "-C",
@@ -967,3 +971,63 @@ async def test_cleanup_stale_worktrees_removes_a_preserved_worktree(
     assert report.removed_count == 1
     assert not kept[0].exists()
     assert report.errors == ()
+
+
+async def test_prepare_workspace_reuses_a_clean_checkpoint_worktree(
+    tmp_path: Path, git_repo: GitFixture
+) -> None:
+    """A checkpoint keeps its worktree so build caches survive the hand-over."""
+    root = _workspace_root(tmp_path)
+    first = await _prepare(root, git_repo)
+    cache = first.repo_dir / "Library" / "cache.bin"
+    cache.parent.mkdir()
+    cache.write_text("warm\n", encoding="utf-8")
+
+    second = await _prepare(root, git_repo, keep_existing_worktree=True)
+
+    assert second.repo_dir == first.repo_dir
+    assert cache.read_text() == "warm\n"
+    assert not [
+        path
+        for path in second.repo_dir.parent.iterdir()
+        if ".kept-" in path.name
+    ]
+    listing = _git(["-C", str(first.base_repo_dir), "worktree", "list"])
+    assert str(second.repo_dir) in listing
+
+
+async def test_prepare_workspace_recreates_a_worktree_behind_the_branch(
+    tmp_path: Path, git_repo: GitFixture
+) -> None:
+    """Reuse never hides new commits: an advanced head forces a fresh checkout."""
+    root = _workspace_root(tmp_path)
+    first = await _prepare(root, git_repo)
+    cache = first.repo_dir / "Library" / "cache.bin"
+    cache.parent.mkdir()
+    cache.write_text("warm\n", encoding="utf-8")
+    git_repo.push_branch("op-4-100", "remote.txt")
+
+    second = await _prepare(root, git_repo, keep_existing_worktree=True)
+
+    assert second.repo_dir == first.repo_dir
+    assert (second.repo_dir / "remote.txt").is_file()
+    assert not cache.exists()
+
+
+async def test_prepare_workspace_still_moves_a_dirty_worktree_aside_when_reusing(
+    tmp_path: Path, git_repo: GitFixture
+) -> None:
+    root = _workspace_root(tmp_path)
+    first = await _prepare(root, git_repo)
+    (first.repo_dir / "wip.txt").write_text("uncommitted\n", encoding="utf-8")
+
+    second = await _prepare(root, git_repo, keep_existing_worktree=True)
+
+    assert not (second.repo_dir / "wip.txt").exists()
+    kept = [
+        path
+        for path in second.repo_dir.parent.iterdir()
+        if path.name.startswith("op-4-100.kept-")
+    ]
+    assert len(kept) == 1
+    assert (kept[0] / "wip.txt").read_text() == "uncommitted\n"

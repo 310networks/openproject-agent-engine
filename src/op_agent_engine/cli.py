@@ -689,6 +689,9 @@ def _cleanup(*, days: int | None, as_json: bool, dry_run: bool) -> int:
         older_than_days=retention_days,
         dry_run=dry_run,
     )
+    pruned_holds = 0
+    if not dry_run:
+        pruned_holds = _prune_resume_holds(settings, retention_days)
     worktrees: WorktreeCleanupReport | None = None
     if settings.workspace_root is not None:
         worktrees = asyncio.run(
@@ -707,10 +710,13 @@ def _cleanup(*, days: int | None, as_json: bool, dry_run: bool) -> int:
         payload["worktrees"] = (
             worktrees.as_dict() if worktrees is not None else None
         )
+        payload["resume_holds_pruned"] = pruned_holds
         print(json.dumps(payload, indent=2))
     else:
         for line in report.summary():
             print(line)
+        if pruned_holds:
+            print(f"resume holds: removed {pruned_holds} orphaned hold(s)")
         if worktrees is None:
             print("worktree root: not configured; skipped worktree cleanup")
         else:
@@ -720,6 +726,23 @@ def _cleanup(*, days: int | None, as_json: bool, dry_run: bool) -> int:
     if worktrees is not None:
         errors.extend(worktrees.errors)
     return OK_EXIT if not errors else CONFIG_ERROR_EXIT
+
+
+def _prune_resume_holds(settings: EngineSettings, retention_days: int) -> int:
+    """Drop resume holds older than the retention window (best effort)."""
+    store_path = settings.data_dir / STORE_FILE_NAME
+    if not store_path.exists():
+        return 0
+    try:
+        store = Store(store_path)
+    except (OSError, ValueError):
+        return 0
+    try:
+        return store.prune_resume_holds(older_than_days=retention_days)
+    except Exception:
+        return 0
+    finally:
+        store.close()
 
 
 async def _verify_token_async(

@@ -22,7 +22,7 @@ from op_agent_engine.config import EngineSettings
 from op_agent_engine.dashboard import DashboardData
 from op_agent_engine.dispatcher import Dispatcher
 from op_agent_engine.engine import Engine
-from op_agent_engine.github import PullRequest
+from op_agent_engine.github import ChecksSummary, PullRequest
 from op_agent_engine.openproject.client import OpenProjectClient
 from op_agent_engine.openproject.resolve import OpenProjectResolution
 from op_agent_engine.poller import Poller
@@ -124,10 +124,17 @@ class FakeGitHub:
         self,
         pr: PullRequest | None = None,
         merged: PullRequest | None = None,
+        checks: ChecksSummary | None = None,
     ) -> None:
         self.pr = pr
         self.merged = merged
+        self.checks = checks or ChecksSummary(state="none")
+        self.checks_calls: list[tuple[str, str]] = []
         self.states: list[str] = []
+
+    async def commit_checks(self, repo: str, sha: str) -> ChecksSummary:
+        self.checks_calls.append((repo, sha))
+        return self.checks
 
     async def find_pr(
         self, repo: str, branch: str, *, state: str = "open"
@@ -1315,5 +1322,66 @@ async def test_engine_writes_a_heartbeat_after_each_poll(
         heartbeat = store_path.parent / "heartbeat"
         assert heartbeat.is_file()
         datetime.fromisoformat(heartbeat.read_text().strip())
+    finally:
+        await client.aclose()
+
+
+async def test_a_checkpoint_hold_stops_the_resume_until_the_gate_releases_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The engine polls CI itself: a held resume costs no agent run."""
+    from op_agent_engine.checkpoints import GateReport
+
+    runner = FakeRunner(make_result(
+        tmp_path, result_line="RESULT: WAITING_CI https://example.org/run/1",
+        stdout="waiting\n",
+    ))
+    engine, _fake, client, store_path = await make_engine(
+        tmp_path, monkeypatch,
+        work_packages=[wp(100, status=STATUS_NEW, agent=11)],
+        runner=runner,
+        gh=FakeGitHub(checks=ChecksSummary(state="pending", total=2, pending=1)),
+    )
+
+    refreshes = {"n": 0}
+
+    class ScriptedGate:
+        def __init__(self, store: Store) -> None:
+            self._store = store
+
+        async def refresh(self, **kwargs: Any) -> GateReport:
+            refreshes["n"] += 1
+            if refreshes["n"] >= 2:
+                # The checks settled between polls; release every hold.
+                for hold in self._store.resume_holds():
+                    self._store.clear_resume_hold(hold.work_package_id)
+            return GateReport()
+
+    def make_gate(store: Store, settings: Any, checks: Any) -> ScriptedGate:
+        return ScriptedGate(store)
+
+    monkeypatch.setattr("op_agent_engine.engine.build_resume_gate", make_gate)
+    try:
+        assert await engine.run(max_polls=1) == 0
+        store = Store(store_path)
+        try:
+            runs = sorted(runs_for(store, 100), key=lambda run: run.id)
+            assert [run.outcome for run in runs] == ["waiting_ci"]
+            hold = store.resume_hold(100)
+            assert hold is not None and not hold.ready()
+        finally:
+            store.close()
+
+        # Poll 2: the gate releases the hold, so the resume is claimed.
+        assert await engine.run(max_polls=1) == 0
+        store = Store(store_path)
+        try:
+            runs = sorted(runs_for(store, 100), key=lambda run: run.id)
+            assert [run.kind for run in runs] == ["implement", "resume"]
+            assert [run.outcome for run in runs] == ["waiting_ci", "waiting_ci"]
+            assert store.crash_count(100) == 0
+        finally:
+            store.close()
+        assert refreshes["n"] >= 2
     finally:
         await client.aclose()

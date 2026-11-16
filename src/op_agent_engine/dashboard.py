@@ -64,6 +64,13 @@ DECLINED_OUTCOMES = frozenset({"rejected"})
 BLOCKED_OUTCOMES = frozenset(
     {"blocked", "rejection_cap_reached", "no_pr_for_branch", "no_result_line"}
 )
+#: Outcomes that are deliberate checkpoints: neither delivered nor failed.
+#: ``progress_not_finished`` is the legacy name for a checkpoint that pushed
+#: commits; ``waiting_ci`` and ``checkpoint_no_progress`` cover a run that is
+#: only waiting for CI.
+PROGRESS_OUTCOMES = frozenset(
+    {"progress_not_finished", "waiting_ci", "checkpoint_no_progress"}
+)
 #: Terminal states that are not a delivered result.
 FAILED_STATES = frozenset({FAILED, TIMEOUT, INTERRUPTED, CANCELLED})
 
@@ -125,7 +132,7 @@ def _bucket_counts(
     completed = sum(outcomes.get(name, 0) for name in COMPLETED_OUTCOMES)
     declined = sum(outcomes.get(name, 0) for name in DECLINED_OUTCOMES)
     blocked = sum(outcomes.get(name, 0) for name in BLOCKED_OUTCOMES)
-    progress = outcomes.get("progress_not_finished", 0)
+    progress = sum(outcomes.get(name, 0) for name in PROGRESS_OUTCOMES)
     return {
         "total": total,
         "running": running,

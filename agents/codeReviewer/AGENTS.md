@@ -39,6 +39,7 @@ Your final message must end with exactly one of these lines:
 
 - `RESULT: APPROVED <pr-url>`
 - `RESULT: REJECTED <pr-url>`
+- `RESULT: WAITING_CI <url>`
 - `RESULT: BLOCKED <one-line reason>`
 
 The engine verifies your result against the PR state. A PR that is merged is treated as approved. Do not merge unless you intend to approve.
@@ -134,6 +135,8 @@ gh run view <databaseId> --repo "$repo" --json status,conclusion
 3. Confirm that the PR state is merged.
 4. Post a short approval comment on the ticket with the PR URL and the checks you ran.
 5. End with `RESULT: APPROVED <pr-url>`.
+
+**Waiting for CI.** A review needs the checks to finish before you can decide. When the only remaining input is a workflow you already started, do not idle inside the run: end with `RESULT: WAITING_CI <url>` (the workflow run or PR URL). The engine keeps the ticket In Testing, polls the commit's checks itself, and resumes the review when they settle. This is a checkpoint: it does not consume the crash retry budget and does not change the ticket status.
 
 **Reject.** Reject when any blocking issue exists.
 
