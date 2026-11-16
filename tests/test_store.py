@@ -716,3 +716,67 @@ def test_checkpoint_streak_counts_only_consecutive_checkpoints(store: Store) -> 
     fourth = begin(store)
     finish(store, fourth, outcome="checkpoint_no_progress")
     assert store.checkpoint_streak(100) == 1
+
+
+def test_checkpoint_baseline_starts_a_fresh_streak(store: Store) -> None:
+    for _ in range(4):
+        run_id = begin(store)
+        finish(store, run_id, outcome="waiting_ci")
+    assert store.checkpoint_streak(100) == 4
+
+    baseline = store.reset_checkpoint_streak(100)
+    assert baseline == store.get_run(4).id  # type: ignore[union-attr]
+    assert store.checkpoint_streak(100) == 0
+
+    run_id = begin(store)
+    finish(store, run_id, outcome="progress_not_finished")
+    assert store.checkpoint_streak(100) == 1
+
+
+def test_reset_checkpoint_streak_accepts_an_explicit_baseline(store: Store) -> None:
+    first = begin(store)
+    finish(store, first, outcome="waiting_ci")
+    second = begin(store)
+    finish(store, second, outcome="waiting_ci")
+
+    store.reset_checkpoint_streak(100, after_run_id=first)
+    # Only the run after the baseline counts.
+    assert store.checkpoint_streak(100) == 1
+
+
+def test_migration_seeds_checkpoint_baselines_once(tmp_path: Path) -> None:
+    """Pre-upgrade checkpoints must not count against the 0.9.x wait cap."""
+    path = tmp_path / "engine.db"
+    store = Store(path)
+    try:
+        for _ in range(6):
+            run_id = begin(store)
+            finish(store, run_id, outcome="progress_not_finished")
+        assert store.checkpoint_streak(100) == 6
+    finally:
+        store.close()
+
+    # Simulate a database created before the cap existed: drop the baseline
+    # table, then reopen it with the current engine.
+    import sqlite3
+
+    connection = sqlite3.connect(str(path))
+    connection.execute("DROP TABLE checkpoint_baselines")
+    connection.commit()
+    connection.close()
+
+    store = Store(path)
+    try:
+        assert store.checkpoint_streak(100) == 0
+        run_id = begin(store)
+        finish(store, run_id, outcome="waiting_ci")
+        assert store.checkpoint_streak(100) == 1
+    finally:
+        store.close()
+
+    # A second open keeps the baseline (it is not re-seeded on every start).
+    store = Store(path)
+    try:
+        assert store.checkpoint_streak(100) == 1
+    finally:
+        store.close()

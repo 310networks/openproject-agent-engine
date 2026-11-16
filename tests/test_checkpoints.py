@@ -98,17 +98,35 @@ async def test_a_hold_that_is_not_due_costs_no_provider_call() -> None:
     assert report.next_ready_at == hold.ready_at
 
 
-async def test_unreadable_checks_resume_instead_of_blocking() -> None:
+async def test_unreadable_checks_extend_instead_of_hot_looping() -> None:
+    """A missing token permission must not start an agent run every minute."""
     store = _store()
-    checks = FakeChecks(error=GitHubError("gh api failed"))
+    checks = FakeChecks(error=GitHubError("gh api failed (403)"))
     gate = ResumeGate(store=store, checks=checks, wait_seconds=300, max_attempts=8)
-    _hold(store, ready_in_seconds=1)
+    _hold(store, ready_in_seconds=1, attempts=1)
+
+    report = await gate.refresh(now=datetime.now(UTC) + timedelta(seconds=5))
+
+    hold = store.resume_hold(100)
+    assert hold is not None
+    assert hold.attempts == 2
+    assert not hold.ready()
+    assert "CI state unavailable" in hold.reason
+    assert report.extended and report.cleared == ()
+    assert any("checks unavailable" in note for note in report.notes)
+
+
+async def test_unreadable_checks_release_once_the_budget_is_spent() -> None:
+    store = _store()
+    checks = FakeChecks(error=GitHubError("gh api failed (403)"))
+    gate = ResumeGate(store=store, checks=checks, wait_seconds=300, max_attempts=2)
+    _hold(store, ready_in_seconds=1, attempts=2)
 
     report = await gate.refresh(now=datetime.now(UTC) + timedelta(seconds=5))
 
     assert store.resume_hold(100) is None
     assert report.cleared
-    assert any("checks unavailable" in note for note in report.notes)
+    assert any("wait budget" in note for note in report.notes)
 
 
 async def test_a_hold_without_a_head_is_released() -> None:

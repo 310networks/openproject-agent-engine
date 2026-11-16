@@ -244,6 +244,28 @@ class Store:
         # drop the index so an existing deployment can run more than one.
         self._conn.execute("DROP INDEX IF EXISTS one_active_per_agent")
 
+        # The checkpoint wait cap only exists since 0.9.x. Seeded once so the
+        # checkpoints a long ticket recorded *before* the cap existed do not
+        # count against it on the first run after the upgrade (that put six
+        # tickets straight into On Hold at the cap). A later un-hold resets the
+        # baseline again through ``reset_checkpoint_streak``.
+        seeded = self._conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+            "AND name = 'checkpoint_baselines'"
+        ).fetchone() is not None
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS checkpoint_baselines ("
+            "  work_package_id INTEGER PRIMARY KEY,"
+            "  after_run_id INTEGER NOT NULL"
+            ")"
+        )
+        if not seeded:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO checkpoint_baselines "
+                "(work_package_id, after_run_id) "
+                "SELECT work_package_id, MAX(id) FROM runs GROUP BY work_package_id"
+            )
+
     @property
     def path(self) -> Path:
         return self._path
@@ -491,12 +513,17 @@ class Store:
 
         The count stops at the first run with any other outcome, so a
         checkpoint streak measures one uninterrupted wait, not the ticket's
-        whole history.
+        whole history. Runs at or before the ticket's baseline do not count:
+        that is how an upgrade (or a human moving the ticket off On Hold)
+        starts a fresh budget instead of inheriting old checkpoints.
         """
         with self._lock:
             rows = self._conn.execute(
                 "SELECT outcome FROM runs WHERE work_package_id = ? "
-                "AND state != ? AND outcome IS NOT NULL ORDER BY id DESC LIMIT 100",
+                "AND state != ? AND outcome IS NOT NULL "
+                "AND id > COALESCE((SELECT after_run_id FROM checkpoint_baselines "
+                "WHERE work_package_id = runs.work_package_id), 0) "
+                "ORDER BY id DESC LIMIT 100",
                 (work_package_id, RUNNING),
             ).fetchall()
         streak = 0
@@ -505,6 +532,31 @@ class Store:
                 break
             streak += 1
         return streak
+
+    def reset_checkpoint_streak(
+        self, work_package_id: int, *, after_run_id: int | None = None
+    ) -> int:
+        """Start the checkpoint streak over after the newest run.
+
+        Called when the ticket leaves On Hold: the human who un-held it has
+        seen the cap comment, so a fresh ``MAX_CHECKPOINT_WAITS`` budget is the
+        useful behaviour. Returns the baseline that was stored.
+        """
+        with self._lock:
+            if after_run_id is None:
+                row = self._conn.execute(
+                    "SELECT MAX(id) AS newest FROM runs WHERE work_package_id = ?",
+                    (work_package_id,),
+                ).fetchone()
+                after_run_id = int(row["newest"] or 0) if row is not None else 0
+            self._conn.execute(
+                "INSERT INTO checkpoint_baselines (work_package_id, after_run_id) "
+                "VALUES (?, ?) ON CONFLICT(work_package_id) DO UPDATE SET "
+                "after_run_id = excluded.after_run_id",
+                (work_package_id, after_run_id),
+            )
+            self._conn.commit()
+        return after_run_id
 
     def last_interrupted_run(self, work_package_id: int) -> Run | None:
         """Most recent restart checkpoint, separate from successful code runs."""

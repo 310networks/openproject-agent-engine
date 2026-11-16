@@ -826,7 +826,18 @@ class Dispatcher:
             self._store.reset_crash_count(wp.id)
 
         detail = waiting_ci_detail(result.result_line)
-        if checks is not None and checks.is_pending:
+        # An explicit WAITING_CI is the agent telling us it is waiting, so it
+        # is held even when the checks cannot be read: the gate then retries on
+        # its interval instead of starting an agent run every poll. Without a
+        # head there is nothing to re-check, so that case resumes at once.
+        waiting = checks.is_pending if checks is not None else (
+            decision.outcome == "waiting_ci" and head_sha is not None
+        )
+        if waiting:
+            checks_detail = (
+                checks.describe() if checks is not None
+                else "CI state unavailable; the engine re-checks it"
+            )
             ready_at = resume_ready_at(
                 now=datetime.now(UTC),
                 wait_seconds=self._settings.checkpoint_wait_seconds,
@@ -836,12 +847,12 @@ class Dispatcher:
                 repo=self._repo_github(wp.project_id),
                 head_sha=head_sha,
                 ready_at=ready_at,
-                reason=checks.describe(),
+                reason=checks_detail,
                 attempts=streak,
             )
             comment = waiting_ci_hold_comment(
                 head_sha=head_sha,
-                checks_detail=checks.describe(),
+                checks_detail=checks_detail,
                 ready_at=datetime.fromisoformat(ready_at),
                 detail=detail,
             )
@@ -1610,16 +1621,20 @@ class Dispatcher:
         return self._resolution.statuses["on_hold"].name
 
     async def _reset_crash_count_if_unheld(self, wp: WorkPackage) -> None:
-        """Restore the crash retry budget when a human moved the ticket off hold.
+        """Restore the crash and checkpoint budgets when a human un-held it.
 
-        The counter only ever incremented, so an escalation used up the whole
-        budget for good: WP 144 had to be requeued with a hand-written
+        The crash counter only ever incremented, so an escalation used up the
+        whole budget for good: WP 144 had to be requeued with a hand-written
         ``DELETE``. The engine itself only ever moves tickets *to* On Hold, so
         the newest status change leaving On Hold is a human saying the cause
-        was addressed. Only tickets that have a counter cost an API call.
+        was addressed. A checkpoint streak is reset the same way: the human has
+        read the cap comment, so the ticket starts a fresh wait budget.
+
+        Only tickets that still carry a counter or a streak cost an API call.
         """
         previous = self._store.crash_count(wp.id)
-        if previous == 0:
+        streak = self._store.checkpoint_streak(wp.id)
+        if previous == 0 and streak == 0:
             return
         try:
             activities = await self._fetch_activities(wp.id)
@@ -1635,12 +1650,22 @@ class Dispatcher:
             return
         if not unheld(activities, self._on_hold_status_name()):
             return
-        self._store.reset_crash_count(wp.id)
+        if previous:
+            self._store.reset_crash_count(wp.id)
+        baseline = self._store.reset_checkpoint_streak(wp.id) if streak else 0
         logger.info(
-            "reset the crash counter for %s (was %d): the ticket left On Hold",
+            "reset the budgets for %s (crash counter was %d, checkpoint streak "
+            "was %d, baseline run %d): the ticket left On Hold",
             wp.display_id,
             previous,
-            extra={"work_package_id": wp.id, "previous_crash_count": previous},
+            streak,
+            baseline,
+            extra={
+                "work_package_id": wp.id,
+                "previous_crash_count": previous,
+                "previous_checkpoint_streak": streak,
+                "checkpoint_baseline": baseline,
+            },
         )
 
     def _rejected_status_name(self) -> str:

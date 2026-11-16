@@ -25,7 +25,37 @@ reference.
 | `OP_TOKEN_VFX` | token of `vfxArtist` |
 | `OP_TOKEN_AUDIO` | token of `audioDesigner` |
 | `OP_TOKEN_REVIEWER` | token of `codeReviewer` |
-| `GH_TOKEN` | GitHub token used to clone, push and look up pull requests |
+| `GH_TOKEN` | GitHub token used to clone, push and look up pull requests, and to read CI state |
+
+### GitHub token permissions
+
+The engine and the agents share `GH_TOKEN`. Besides clone/push/PR access it
+needs to read the CI state of a commit so a checkpoint can wait on CI instead
+of spending an agent run.
+
+**For GitHub Actions, a fine-grained PAT needs only `Actions: Read`.** The
+engine asks for check-runs first and falls back to
+`GET /repos/<repo>/actions/runs?head_sha=<sha>`, which that permission covers
+(it is the same permission an agent already needs to watch the run it started).
+This is the supported setup.
+
+The Checks API (`commits/<sha>/check-runs`) is **not available to fine-grained
+PATs** — GitHub does not offer a `Checks` repository permission for them (only
+GitHub Apps have it), so selecting one is not possible in the token UI. It is
+read first because it also covers external check providers, but a 403 there is
+expected and harmless.
+
+| Token type | CI sources it can read |
+|---|---|
+| fine-grained PAT with `Actions: Read` | workflow runs (GitHub Actions) — the normal case |
+| classic PAT with `repo` | check-runs + combined status (all providers) + workflow runs |
+| GitHub App installation token with `Checks: Read` | check-runs (all providers), if you also wire the app in |
+
+If no source is readable the hold falls back to a timed retry
+(`CHECKPOINT_WAIT_SECONDS`) for `MAX_CHECKPOINT_WAITS` attempts instead of
+resuming the agent on every poll, and the 403 is logged as
+`could not read the CI state ...`, so a permission problem is visible in
+`docker compose logs engine` without turning into a run per minute.
 
 `OP_PROVISION_TOKEN` is an administrator token used only by
 `agent-init.sh` and `docker compose run --rm provision`.
@@ -368,7 +398,7 @@ Docker network.
 | `MAX_REJECTIONS` | `3` | rejections before an agent stops retrying a work package |
 | `MAX_CRASH_RETRIES` | `2` | retries after a crashed run; checkpoint runs (`progress_not_finished`, `waiting_ci`) neither consume nor extend it, and a checkpoint resets a stale counter |
 | `CHECKPOINT_WAIT_SECONDS` | `300` | how long a `waiting_ci` checkpoint is held before the engine re-checks the commit's CI; the engine polls the checks itself, so a hold costs no model time (minimum 30) |
-| `MAX_CHECKPOINT_WAITS` | `8` | consecutive checkpoint runs (and CI re-checks) before the ticket goes to On Hold with a "checkpoint wait cap" comment instead of looping forever |
+| `MAX_CHECKPOINT_WAITS` | `8` | consecutive checkpoint runs (and CI re-checks) before the ticket goes to On Hold with a "checkpoint wait cap" comment instead of looping forever. Upgrading seeds a baseline so pre-existing checkpoints do not count; a human moving the ticket off On Hold starts a fresh budget |
 | `KEEP_CHECKPOINT_WORKTREES` | `true` | keep a checkpoint's worktree so the next run reuses warm build caches (a dirty worktree is still preserved separately) |
 | `COMMENT_MAX_BYTES` | `65536` | maximum raw engine comment UTF-8 bytes (1024–131072); includes truncation markers, reserves room for JSON escaping under a 1 MiB proxy limit |
 | `COMMENT_LINE_MAX_BYTES` | `2048` | maximum UTF-8 bytes per comment line (128–16384); reduced further when needed to fit head/tail within the total cap |

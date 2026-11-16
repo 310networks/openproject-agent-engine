@@ -97,20 +97,53 @@ class ResumeGate:
             try:
                 checks = await self._checks.commit_checks(hold.repo, hold.head_sha)
             except GitHubError as error:
-                # An unreadable check state must never block the ticket: the
-                # agent can look itself, which is the old behaviour.
+                # An unreadable check state must not hot-loop an agent run per
+                # poll (that is what the 0.9.0 GitHub token produced: Checks:
+                # read was missing, so every checkpoint resumed immediately).
+                # Wait out the normal interval while the budget lasts; only
+                # then fall back to letting the agent look itself.
+                if hold.attempts < self._max_attempts:
+                    self._store.extend_resume_hold(
+                        hold.work_package_id,
+                        ready_at=resume_ready_at(
+                            now=current, wait_seconds=self._wait_seconds
+                        ),
+                        reason="CI state unavailable; re-checking",
+                    )
+                    extended.append(hold)
+                    notes.append(
+                        f"{hold.work_package_id}: checks unavailable ({error})"
+                    )
+                    logger.warning(
+                        "could not read the CI state of %s (%s); re-checking in "
+                        "%ds instead of resuming every poll",
+                        hold.head_sha[:12],
+                        error,
+                        self._wait_seconds,
+                        extra={
+                            "work_package_id": hold.work_package_id,
+                            "repo": hold.repo,
+                            "head_sha": hold.head_sha,
+                            "attempts": hold.attempts + 1,
+                        },
+                    )
+                    continue
+                notes.append(
+                    f"{hold.work_package_id}: checks unavailable and wait budget "
+                    "spent, resuming"
+                )
                 self._store.clear_resume_hold(hold.work_package_id)
                 cleared.append(hold)
-                notes.append(f"{hold.work_package_id}: checks unavailable ({error})")
                 logger.warning(
-                    "could not read the CI state of %s (%s); resuming instead of "
-                    "holding",
+                    "could not read the CI state of %s and the wait budget is "
+                    "spent (%s); resuming",
                     hold.head_sha[:12],
                     error,
                     extra={
                         "work_package_id": hold.work_package_id,
                         "repo": hold.repo,
                         "head_sha": hold.head_sha,
+                        "attempts": hold.attempts,
                     },
                 )
                 continue

@@ -253,3 +253,101 @@ def test_summarise_checks_merges_legacy_statuses() -> None:
     )
     assert summary.state == "failure"
     assert (summary.total, summary.pending, summary.failed) == (2, 0, 1)
+
+
+# -- Actions fallback when Checks: read is not granted -----------------------
+
+
+def _fake_gh_actions(tmp_path: Path, *, runs_body: str, sso: bool = False) -> Path:
+    """A fake ``gh`` whose check-runs call is refused but Actions works.
+
+    Mirrors a fine-grained personal access token with ``Actions: read`` only:
+    ``/check-runs`` and ``/status`` return 403, the workflow-runs endpoint
+    returns data.
+    """
+    script = tmp_path / "gh"
+    script.write_text(
+        "#!/bin/sh\n"
+        'case "$*" in\n'
+        "  *check-runs*|*commits/*/status*)\n"
+        "    cat <<'EOF'\n"
+        '{"message":"Resource not accessible by personal access token","status":"403"}\n'
+        "EOF\n"
+        "    exit 1\n"
+        "    ;;\n"
+        "  *actions/runs*)\n"
+        f"    cat <<'EOF'\n{runs_body}\nEOF\n"
+        "    ;;\n"
+        "  *)\n"
+        "    echo 'unexpected args' >&2\n"
+        "    exit 1\n"
+        "    ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    script.chmod(script.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    return script
+
+
+ACTIONS_PENDING = json.dumps({
+    "total_count": 2,
+    "workflow_runs": [
+        {"name": "Unity CI", "status": "in_progress", "conclusion": None},
+        {"name": "jgsynth CI", "status": "completed", "conclusion": "cancelled"},
+    ],
+})
+
+
+async def test_commit_checks_falls_back_to_workflow_runs(tmp_path: Path) -> None:
+    gh = GitHub(executable=str(_fake_gh_actions(tmp_path, runs_body=ACTIONS_PENDING)))
+    checks = await gh.commit_checks("acme/thing", "abc123")
+    assert checks.state == "pending"
+    assert checks.pending == 1
+    assert checks.total == 2
+
+
+@pytest.mark.parametrize(("conclusion", "state", "failed"), [
+    ("success", "success", 0),
+    ("failure", "failure", 1),
+    ("timed_out", "failure", 1),
+    ("cancelled", "success", 0),
+    ("skipped", "success", 0),
+    ("neutral", "success", 0),
+])
+async def test_workflow_run_conclusions(
+    tmp_path: Path, conclusion: str, state: str, failed: int,
+) -> None:
+    body = json.dumps({
+        "workflow_runs": [
+            {"name": "Unity CI", "status": "completed", "conclusion": conclusion}
+        ]
+    })
+    gh = GitHub(executable=str(_fake_gh_actions(tmp_path, runs_body=body)))
+    checks = await gh.commit_checks("acme/thing", "abc123")
+    assert checks.state == state
+    assert checks.failed == failed
+
+
+async def test_commit_checks_raises_when_no_source_is_readable(tmp_path: Path) -> None:
+    script = tmp_path / "gh"
+    script.write_text(
+        "#!/bin/sh\necho 'Resource not accessible' >&2\nexit 1\n", encoding="utf-8"
+    )
+    script.chmod(script.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    with pytest.raises(GitHubError, match="no readable CI state"):
+        await GitHub(executable=str(script)).commit_checks("acme/thing", "abc123")
+
+
+def test_merge_checks_prefers_the_worse_state() -> None:
+    from op_agent_engine.github import ChecksSummary, merge_checks
+
+    assert merge_checks(None, None) is None
+    assert merge_checks(ChecksSummary("success", total=1), None) == ChecksSummary(
+        "success", total=1
+    )
+    merged = merge_checks(
+        ChecksSummary("success", total=2), ChecksSummary("pending", total=1, pending=1)
+    )
+    assert merged is not None
+    assert merged.state == "pending"
+    assert merged.total == 2

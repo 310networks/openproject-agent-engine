@@ -130,12 +130,27 @@ reviewer), the crash counter is not touched, and the engine posts a short
 `ENGINE: waiting on CI` comment. The next run is **held**: nothing is claimed
 until the commit's checks settle.
 
-The engine polls the checks itself (GitHub: `gh api
-repos/<repo>/commits/<sha>/check-runs` plus the combined commit status; GitLab:
-pipelines), once per `CHECKPOINT_WAIT_SECONDS`, so an hour of CI costs no agent
-runs. When every check has finished — green or red — the hold is released and
-the normal resume or review run starts on the next poll. A hold whose state
-cannot be read is released at once rather than blocking the ticket.
+The engine polls the checks itself, once per `CHECKPOINT_WAIT_SECONDS`, so an
+hour of CI costs no agent runs:
+
+- GitHub: `check-runs` + combined commit status, falling back to
+  `GET /repos/<repo>/actions/runs?head_sha=<sha>` when the token cannot read
+  check-runs.
+- GitLab: pipelines for the commit.
+
+When every check has finished — green or red — the hold is released and the
+normal resume or review run starts on the next poll.
+
+### `could not read the CI state ... (403)`
+
+A 403 on `check-runs` is expected with a fine-grained `GH_TOKEN`: GitHub does
+not offer a `Checks` permission for fine-grained PATs, so the engine falls back
+to the workflow-run API and needs only `Actions: Read` there (see
+[CONFIG.md](CONFIG.md#github-token-permissions)). With a classic `repo`-scoped
+token all sources work. If no source is readable the hold is retried on its
+interval for `MAX_CHECKPOINT_WAITS` attempts instead of resuming the agent on
+every poll, so a permission problem costs a delayed ticket, not a run per
+minute. Check `docker compose logs engine | grep "CI state"` after an upgrade.
 
 Inspect holds (and see the run outcomes in `status --json`):
 
@@ -157,6 +172,12 @@ next poll continue. A hold is only consulted while the ticket's status is
 runs are allowed. Past it the ticket goes to `On Hold` with an `ENGINE:
 checkpoint wait cap reached` comment: the ticket is not converging, which is a
 different problem from a crash.
+
+The cap counts only checkpoints from the current wait episode. Upgrading to a
+version with the cap seeds a baseline, so the dozens of checkpoints a ticket
+recorded before it existed do not escalate it on the first run after the
+upgrade. Moving a capped ticket from `On Hold` back to `In Progress` resets the
+budget (and the crash counter) when the engine next runs it.
 
 A checkpoint keeps its worktree (`KEEP_CHECKPOINT_WORKTREES`) and the next run
 reuses it when it is clean and still on the branch head, so build caches such as
