@@ -45,6 +45,7 @@ from op_agent_engine.store import (
     Run,
     Store,
 )
+from op_agent_engine.work_package_counts import read_counts
 
 logger = get_logger(__name__)
 
@@ -421,6 +422,7 @@ class DashboardData:
                 "max_concurrent_runs": self.settings.max_concurrent_runs,
                 "max_runs_per_agent": self.settings.max_runs_per_agent,
             },
+            "current_work_packages": read_counts(self.config, self.settings, now=now),
             "counts": {
                 **counts,
                 "outcomes": _outcome_buckets(outcome_counts),

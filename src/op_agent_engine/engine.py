@@ -50,6 +50,7 @@ from op_agent_engine.provision import (
 from op_agent_engine.recovery import reconcile_stale_runs, recover_interrupted_runs
 from op_agent_engine.scheduler import ClaimedRun, Scheduler
 from op_agent_engine.store import EngineLock, Store
+from op_agent_engine.work_package_counts import refresh_counts
 
 logger = get_logger(__name__)
 
@@ -286,13 +287,17 @@ class Engine:
                 active_work_package_ids = store.active_work_package_ids()
                 active_run_counts = store.active_run_counts_by_agent()
 
+            if not dry_run:
+                await refresh_counts(client, self._config, resolution, self._settings)
+
             if max_polls is None and not dry_run:
                 idle_reason = self._idle_reason(
                     len(active_work_package_ids), active_run_counts
                 )
                 if idle_reason is not None:
-                    # Nothing can be claimed, so a poll would only burn
-                    # OpenProject requests. The heartbeat still advances so the
+                    # Nothing can be claimed, so skip dispatch polling. The
+                    # lightweight current-status observation above still runs.
+                    # The heartbeat still advances so the
                     # dashboard does not look stale.
                     self._write_heartbeat()
                     if idle_reason != last_idle_reason:

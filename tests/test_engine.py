@@ -710,6 +710,10 @@ async def test_paused_engine_claims_nothing(
         assert status_href(fake, 100) == f"/api/v3/statuses/{STATUS_NEW}"
         assert fake.patches == []
         assert runner.requests == []
+        snapshot = DashboardData(engine._config, engine._settings).snapshot()
+        current = snapshot["current_work_packages"]
+        assert current["status"] == "fresh"
+        assert (current["blocked"], current["on_hold"]) == (0, 0)
         store = Store(store_path)
         try:
             assert store.active_run_count() == 0
@@ -723,7 +727,10 @@ async def test_paused_engine_claims_nothing(
 
 
 def status_poll_count(fake: FakeOpenProject) -> int:
-    """Candidate queries, i.e. one per poll (the recovery query has an assignee)."""
+    """Dispatch queries have a type filter; count observations do not.
+
+    The recovery query additionally has an assignee filter.
+    """
     count = 0
     for request in fake.requests:
         if request.url.path != "/api/v3/work_packages":
@@ -732,7 +739,7 @@ def status_poll_count(fake: FakeOpenProject) -> int:
         if raw is None:
             continue
         conditions = json.loads(raw)
-        if any("status" in condition for condition in conditions) and not any(
+        if any("type" in condition for condition in conditions) and not any(
             "assignee" in condition for condition in conditions
         ):
             count += 1
@@ -779,6 +786,8 @@ async def test_engine_skips_polls_while_every_slot_is_in_use(
 
         await asyncio.sleep(1.5)
         assert status_poll_count(fake) == 1, "polled while the only slot was busy"
+        observations = [r for r in fake.requests if r.url.params.get("pageSize") == "1"]
+        assert len(observations) >= 4, "current counts did not refresh while slots were full"
 
         await wait_until(
             lambda: status_href(fake, 100) == f"/api/v3/statuses/{STATUS_ON_HOLD}"
