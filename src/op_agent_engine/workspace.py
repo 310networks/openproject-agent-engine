@@ -42,7 +42,8 @@ import asyncio
 import contextlib
 import re
 import shutil
-from dataclasses import dataclass
+import tempfile
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote
@@ -205,10 +206,13 @@ async def run_git(
         _stdout, stderr = await asyncio.wait_for(
             process.communicate(), timeout=timeout
         )
-    except TimeoutError as error:
-        process.kill()
+    except (TimeoutError, asyncio.CancelledError) as error:
+        with contextlib.suppress(ProcessLookupError):
+            process.kill()
         with contextlib.suppress(BaseException):
             await process.wait()
+        if isinstance(error, asyncio.CancelledError):
+            raise
         raise GitError(args, -1, f"timed out after {timeout:g} seconds") from error
     returncode = process.returncode
     if returncode is None or returncode != 0:
@@ -737,7 +741,40 @@ async def capture_worktree_state(
     max_file_bytes: int = CAPTURE_MAX_FILE_BYTES,
     max_total_bytes: int = CAPTURE_MAX_TOTAL_BYTES,
 ) -> WorktreeCapture:
-    """Write the state of a failed run's worktree into *dest_dir*.
+    """Publish a fresh snapshot, never overlaying an earlier capture.
+
+    Build in a private sibling directory so cancellation or an unexpected
+    failure cannot publish an incomplete snapshot. Preliminary shutdown
+    evidence belongs in a separate directory and is never replaced here.
+    """
+    dest = Path(dest_dir)
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix=f".{dest.name}-", dir=dest.parent) as staging:
+            capture = await _capture_worktree_state(
+                workspace, Path(staging),
+                max_file_bytes=max_file_bytes, max_total_bytes=max_total_bytes,
+            )
+            if capture.path is None:
+                return capture
+            # All entries in the published directory must come from this
+            # capture, including optional patches and size-capped files.
+            if dest.exists():
+                shutil.rmtree(dest)
+            Path(staging).rename(dest)
+            return replace(capture, path=dest)
+    except OSError as error:
+        return WorktreeCapture(path=None, errors=(f"cannot publish {dest}: {error}",))
+
+
+async def _capture_worktree_state(
+    workspace: Workspace,
+    dest_dir: Path,
+    *,
+    max_file_bytes: int,
+    max_total_bytes: int,
+) -> WorktreeCapture:
+    """Write the state of a failed run's worktree into a fresh *dest_dir*.
 
     The artefact is a plain directory a human can read with shell tools:
 

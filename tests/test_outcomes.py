@@ -59,6 +59,14 @@ def test_progress_does_not_mask_failure(
 # -- decide_implementer_outcome -------------------------------------------
 
 
+def test_restart_comment_cap_is_utf8_byte_bounded() -> None:
+    short = "ENGINE: run interrupted"
+    assert bound_comment(short, max_bytes=1024) == short
+    text = bound_comment("ENGINE: " + "🙂" * 300000, max_bytes=1024)
+    assert len(text.encode("utf-8")) <= 1024
+    assert "truncated" in text
+
+
 def test_timeout_without_pr_is_crash_retry() -> None:
     decision = decide_implementer_outcome(
         exit_code=-15, timed_out=True, result_line="RESULT: ok", pr_found=False

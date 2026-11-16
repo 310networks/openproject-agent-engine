@@ -12,5 +12,16 @@ Description:
 
 A previous run on this ticket ended unexpectedly. Inspect the branch state (git status, git log, any open PR) and continue from there. Do not repeat completed work and do not discard existing commits.
 
+{% if interruption is defined and interruption %}
+The previous run was interrupted by an engine restart.
+- Interruption run directory: {{ interruption.run_dir }}
+- Worktree artefact: {{ interruption.worktree_artefact or 'unavailable; inspect meta.json for errors' }}
+- Pre-restart branch head: {{ interruption.branch_head }}
+Inspect meta.json, worktree/head.txt, status.txt, diff.patch, diff_cached.patch,
+unpushed commits and the untracked files before continuing. HEAD or an open PR
+alone does not prove completion. Recover relevant partial/uncommitted work from
+the artefact or kept worktree; do not blindly apply patches or discard edits.
+{% endif %}
+
 Begin now. Use the bundled op CLI and read-only API requests described in the standard if you need more ticket context (comments, relations). External skill files are not required.
 Finish with the RESULT line required by the standard.

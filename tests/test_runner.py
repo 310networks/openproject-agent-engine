@@ -423,6 +423,38 @@ async def test_cancelling_a_run_kills_the_process_group(tmp_path: Path) -> None:
         pytest.fail("process group survived cancellation")
 
 
+async def test_cancel_escalates_term_to_kill_once_with_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import signal
+    import sys
+
+    from op_agent_engine.runners import base
+
+    ready = tmp_path / "ready"
+    script = (
+        "import signal,time,pathlib; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+        f"pathlib.Path({str(ready)!r}).touch(); time.sleep(30)"
+    )
+    signals = []
+    original_kill = base._kill_process_group
+
+    def kill(pgid: int, signum: int) -> None:
+        signals.append(signum)
+        original_kill(pgid, signum)
+
+    monkeypatch.setattr(base, "KILL_GRACE_SECONDS", 0.05)
+    monkeypatch.setattr(base, "_kill_process_group", kill)
+    task = asyncio.create_task(run_command(_request(tmp_path, (sys.executable, "-c", script))))
+    async with asyncio.timeout(3):
+        while not ready.exists():
+            await asyncio.sleep(0.01)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, 2)
+    assert signals == [signal.SIGTERM, signal.SIGKILL]
+
+
 async def test_run_command_missing_binary_raises(tmp_path: Path) -> None:
     request = _request(tmp_path, ("definitely-not-a-binary-xyz",))
     with pytest.raises(RunnerError, match="failed to start runner"):

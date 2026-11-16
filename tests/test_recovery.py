@@ -16,6 +16,27 @@ from op_agent_engine.recovery import (
 from op_agent_engine.store import INTERRUPTED, RUNNING, Store
 
 
+def test_drained_run_keeps_budget_and_can_be_claimed_after_restart(tmp_path: Path) -> None:
+    store = Store(tmp_path / "engine.db")
+    try:
+        def claim() -> int:
+            return store.begin_run(
+                work_package_id=100, project_id=4, agent="IMPL", kind="resume",
+                attempt=1, branch="op-4-100",
+                run_dir_template=str(store.runs_dir / "{id}"),
+            )
+
+        run_id = claim()
+        store.increment_crash_count(100)
+        store.mark_interrupted(run_id, outcome="drained")
+        assert recover_interrupted_runs(store).interrupted == 0
+        assert store.crash_count(100) == 1
+        assert store.last_interrupted_run(100).id == run_id
+        assert claim() != run_id
+    finally:
+        store.close()
+
+
 def _store(tmp_path: Path) -> Store:
     return Store(tmp_path / "engine.db")
 
