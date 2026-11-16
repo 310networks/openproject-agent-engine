@@ -22,6 +22,9 @@ const KPI_HINTS = {
 let refreshMs = REFRESH_FALLBACK_MS;
 let timer = null;
 let lastSnapshot = null;
+let recentSignature = null;
+let recentTimes = [];
+const expandedTickets = new Set();
 
 const els = {
   badge: document.getElementById("engine-badge"),
@@ -280,7 +283,27 @@ function ticketCell(session) {
   return cell;
 }
 
-function sessionTable(sessions, { active = false } = {}) {
+// Work-package IDs are unique within this engine's OpenProject instance.
+// Use run IDs for legacy entries without a ticket ID rather than merging them.
+function ticketKey(session) {
+  return session.work_package_id == null ? `run-${session.id}` : `wp-${session.work_package_id}`;
+}
+
+function groupRecentSessions(sessions) {
+  const groups = new Map();
+  // The newest started run represents the ticket; IDs break timestamp ties.
+  const ordered = [...sessions].sort((a, b) =>
+    (Date.parse(b.started_at) || 0) - (Date.parse(a.started_at) || 0) || b.id - a.id
+  );
+  for (const session of ordered) {
+    const key = ticketKey(session);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(session);
+  }
+  return [...groups.values()];
+}
+
+function sessionTable(sessions, { active = false, histories = null } = {}) {
   if (!sessions.length) {
     return make(
       "div",
@@ -294,6 +317,7 @@ function sessionTable(sessions, { active = false } = {}) {
   for (const label of ["Session", "Ticket", "Agent", "Kind", active ? "Started" : "Outcome", "Duration", active ? "State" : "Finished", "PR"]) {
     headRow.append(make("th", "", label));
   }
+  if (histories) headRow.append(make("th", "", "History"));
   head.append(headRow);
   table.append(head);
 
@@ -331,6 +355,7 @@ function sessionTable(sessions, { active = false } = {}) {
     } else {
       const finished = make("td", "nowrap small", relativeTime(session.finished_at));
       finished.title = session.finished_at || "";
+      recentTimes.push({ node: finished, iso: session.finished_at });
       row.append(finished);
     }
 
@@ -342,6 +367,41 @@ function sessionTable(sessions, { active = false } = {}) {
     }
     row.append(pr);
     body.append(row);
+    if (histories) {
+      const key = ticketKey(session);
+      const previous = histories.get(key) || [];
+      const cell = make("td");
+      row.append(cell);
+      if (!previous.length) {
+        cell.append(make("span", "small", "—"));
+        continue;
+      }
+      const button = make("button", "history-toggle", `↶ ${previous.length}`);
+      button.type = "button";
+      button.dataset.ticketKey = key;
+      button.setAttribute("aria-label", `Session history for ${session.display_id || `WP#${session.work_package_id}`}`);
+      button.setAttribute("aria-controls", `history-${key}`);
+      const historyRow = make("tr", "history-row");
+      historyRow.id = `history-${key}`;
+      const historyCell = make("td");
+      historyCell.colSpan = 9;
+      historyCell.append(make("p", "history-note", "Earlier sessions in this snapshot (newest first). Older sessions may be outside the snapshot limit."));
+      historyCell.append(sessionTable(previous));
+      historyRow.append(historyCell);
+      const setExpanded = (expanded) => {
+        historyRow.hidden = !expanded;
+        button.setAttribute("aria-expanded", String(expanded));
+      };
+      setExpanded(expandedTickets.has(key));
+      button.addEventListener("click", () => {
+        const expanded = !expandedTickets.has(key);
+        if (expanded) expandedTickets.add(key);
+        else expandedTickets.delete(key);
+        setExpanded(expanded);
+      });
+      cell.append(button);
+      body.append(historyRow);
+    }
   }
   table.append(body);
   return table;
@@ -351,11 +411,30 @@ function renderSessions(snapshot) {
   const active = snapshot.active_sessions || [];
   const recent = snapshot.recent_sessions || [];
   els.activeCount.textContent = `${active.length} running`;
-  els.recentCount.textContent = `${recent.length} shown`;
   clear(els.active);
   els.active.append(sessionTable(active, { active: true }));
-  clear(els.recent);
-  els.recent.append(sessionTable(recent));
+  // Keep history controls mounted during timer ticks and unchanged polls so
+  // keyboard focus and expanded rows survive automatic refreshes.
+  const signature = JSON.stringify(recent);
+  if (signature !== recentSignature) {
+    const focusedKey = document.activeElement?.dataset?.ticketKey;
+    const groups = groupRecentSessions(recent);
+    const histories = new Map(groups.map(([latest, ...previous]) => [ticketKey(latest), previous]));
+    for (const key of expandedTickets) {
+      if (!histories.get(key)?.length) expandedTickets.delete(key);
+    }
+    els.recentCount.textContent = `${groups.length} tickets · ${recent.length} sessions in snapshot`;
+    recentTimes = [];
+    clear(els.recent);
+    els.recent.append(sessionTable(groups.map(([latest]) => latest), { histories }));
+    recentSignature = signature;
+    if (focusedKey) {
+      for (const button of els.recent.querySelectorAll(".history-toggle")) {
+        if (button.dataset.ticketKey === focusedKey) button.focus();
+      }
+    }
+  }
+  for (const { node, iso } of recentTimes) node.textContent = relativeTime(iso);
 }
 
 function renderOutcomes(snapshot) {
