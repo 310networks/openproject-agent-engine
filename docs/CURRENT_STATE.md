@@ -132,12 +132,17 @@ resume is parked. A clean implementer run that pushed nothing while a **draft**
 PR's checks are still running is recorded as `checkpoint_no_progress` for the
 same reason; once those checks settle the same run is an ordinary `no_pr`
 failure, because then the agent was not waiting for anything. The engine polls
-the held commit's checks itself (`gh api .../check-commits/<sha>/check-runs` on
-GitHub, pipelines on GitLab) every `CHECKPOINT_WAIT_SECONDS`, so a long CI wait
-costs no model time; a hold that cannot read the CI state is released instead of
-blocking. `MAX_CHECKPOINT_WAITS` bounds both the CI re-checks and the number of
-consecutive checkpoint runs before the ticket goes to `On Hold` with a
-"checkpoint wait cap" comment. A checkpoint keeps its worktree (unless
+the held commit's checks itself every `CHECKPOINT_WAIT_SECONDS`, so a long CI
+wait costs no model time. On GitHub it reads check-runs plus the combined commit
+status and falls back to the workflow-run API for the SHA when the token cannot
+read check-runs (a fine-grained token only needs `Actions: Read`); on GitLab it
+reads the project's pipelines. A hold whose state still cannot be read is
+retried on its interval for `MAX_CHECKPOINT_WAITS` attempts rather than
+resuming the agent on every poll. The same setting bounds the consecutive
+checkpoint runs before the ticket goes to `On Hold` with a "checkpoint wait
+cap" comment; the count starts from a per-ticket baseline seeded at upgrade, and
+moving the ticket off `On Hold` resets it (together with the crash counter) when
+the engine next runs it. A checkpoint keeps its worktree (unless
 `KEEP_CHECKPOINT_WORKTREES=false`) and the next run reuses it when it is clean
 and still on the branch head, so build caches survive the hand-over. Each resume
 prompt carries a brief of the previous run (result line, head, PR, hold reason

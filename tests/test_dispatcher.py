@@ -2912,3 +2912,86 @@ async def test_a_reviewer_waiting_for_ci_stays_in_testing(
     finally:
         await client.aclose()
         store.close()
+
+
+async def test_a_waiting_ci_checkpoint_holds_even_when_checks_are_unreadable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 403 on the check API must not resume the agent on every poll.
+
+    A fine-grained GitHub token without ``Checks: read`` cannot read
+    check-runs; the agent's own ``WAITING_CI`` is then the only evidence, and
+    it still has to be held (the gate retries on its interval).
+    """
+    gh = FakeGitHub(checks_error=GitHubError("gh api check-runs failed (403)"))
+    runner = FakeRunner(make_result(
+        tmp_path,
+        result_line="RESULT: WAITING_CI https://example.org/actions/runs/1",
+        stdout="RESULT: WAITING_CI https://example.org/actions/runs/1\n",
+    ))
+    dispatcher, fake, store, client, _ = await make_dispatcher(
+        tmp_path, monkeypatch, runner=runner, gh=gh,
+        work_packages=[wp(100, status=STATUS_IN_PROGRESS, agent=11)],
+    )
+    try:
+        claimed = claim(store, make_item(100))
+        await dispatcher.execute(claimed)
+        run = store.get_run(claimed.run_id)
+        assert run is not None and run.outcome == "waiting_ci"
+        hold = store.resume_hold(100)
+        assert hold is not None
+        assert "unavailable" in hold.reason
+        assert not hold.ready()
+        comments = posted_comments(fake, 100)
+        assert len(comments) == 1 and "waiting on CI" in comments[0]
+        # No crash retry, ticket unchanged.
+        assert store.crash_count(100) == 0
+        assert status_href(fake, 100) == f"/api/v3/statuses/{STATUS_IN_PROGRESS}"
+    finally:
+        await client.aclose()
+        store.close()
+
+
+async def test_unheld_ticket_resets_the_checkpoint_streak(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A human un-hold starts a fresh checkpoint wait budget too."""
+    runner = FakeRunner(make_result(
+        tmp_path, result_line="RESULT: WAITING_CI", stdout="RESULT: WAITING_CI\n",
+    ))
+    fake = make_fake(
+        work_packages=[wp(100, status=STATUS_IN_PROGRESS, agent=11)],
+        priorities=PRIORITIES,
+        activities=[
+            status_change(100, "On Hold", previous="In Progress", activity_id=900),
+            status_change(100, "New", previous="On Hold", activity_id=901),
+        ],
+    )
+    dispatcher, fake, store, client, _ = await make_dispatcher(
+        tmp_path, monkeypatch, runner=runner, gh=FakeGitHub(pr=None), fake=fake,
+    )
+    try:
+        # A long checkpoint history: the next checkpoint would exceed the cap.
+        for _ in range(5):
+            previous = claim(store, make_item(100), kind="resume")
+            store.finish_run(
+                previous.run_id, state=SUCCEEDED, outcome="waiting_ci"
+            )
+        assert store.checkpoint_streak(100) == 5
+
+        claimed = claim(store, make_item(100), kind="resume")
+        await dispatcher.execute(claimed)
+
+        run = store.get_run(claimed.run_id)
+        assert run is not None
+        assert run.outcome == "waiting_ci"
+        # The reset run itself is the baseline, so the fresh streak is empty
+        # and the next checkpoint only counts 1 of a fresh budget.
+        assert store.checkpoint_streak(100) == 0
+        following = claim(store, make_item(100), kind="resume")
+        store.finish_run(following.run_id, state=SUCCEEDED, outcome="waiting_ci")
+        assert store.checkpoint_streak(100) == 1
+        assert status_href(fake, 100) == f"/api/v3/statuses/{STATUS_IN_PROGRESS}"
+    finally:
+        await client.aclose()
+        store.close()
