@@ -8,6 +8,7 @@ const KPI_ICONS = {
   completed: "✓",
   declined: "✕",
   blocked: "!",
+  on_hold: "Ⅱ",
   failed: "×",
 };
 const KPI_HINTS = {
@@ -15,13 +16,15 @@ const KPI_HINTS = {
   running: "in flight now",
   completed: "delivered work",
   declined: "reviewer said no",
-  blocked: "needs a human",
+  blocked: "waiting on dependencies now",
+  on_hold: "needs a human now",
   failed: "crashed or timed out",
 };
 
 let refreshMs = REFRESH_FALLBACK_MS;
 let timer = null;
 let lastSnapshot = null;
+let updateFailed = false;
 let recentSignature = null;
 let recentTimes = [];
 const expandedTickets = new Set();
@@ -164,18 +167,36 @@ function renderEngine(snapshot) {
   els.badge.title = engine.heartbeat || "no heartbeat";
 }
 
-function renderKpis(snapshot) {
+function renderKpis(snapshot, failed = updateFailed) {
   const counts = snapshot.counts;
-  const order = ["total", "running", "completed", "declined", "blocked", "failed"];
+  const current = snapshot.current_work_packages;
+  // A cached successful response can expire even while the API is unreachable.
+  const elapsed = Math.max(0, (Date.now() - Date.parse(snapshot.generated_at)) / 1000) || 0;
+  const expired = current?.status === "fresh" &&
+    current.age_seconds + elapsed > current.stale_after_seconds;
+  const status = failed ? "unavailable" : expired ? "stale" : current?.status;
+  const order = ["total", "running", "completed", "declined", "blocked", "on_hold", "failed"];
   clear(els.kpis);
   for (const key of order) {
     const card = make("div", "kpi");
     card.dataset.tone = key;
     const label = make("div", "label");
-    label.append(make("span", "", KPI_ICONS[key]), make("span", "", key));
+    const icon = make("span", "", KPI_ICONS[key]);
+    icon.setAttribute("aria-hidden", "true");
+    label.append(icon, make("span", "", key.replaceAll("_", " ")));
     card.append(label);
-    card.append(make("div", "value", counts[key] ?? 0));
-    card.append(make("div", "hint", KPI_HINTS[key]));
+    const isCurrent = key === "blocked" || key === "on_hold";
+    const available = status === "fresh" && Number.isInteger(current?.[key]) && current[key] >= 0;
+    const value = isCurrent ? (available ? current[key] : "—") : (counts[key] ?? 0);
+    card.append(make("div", "value", value));
+    const hint = isCurrent && !available
+      ? `${KPI_HINTS[key]} · ${status === "stale" ? "stale" : "unavailable"}`
+      : KPI_HINTS[key];
+    card.append(make("div", "hint", hint));
+    if (isCurrent) {
+      card.title = `Current tickets in monitored projects. ${hint}.` +
+        (current?.observed_at ? ` Last observed: ${current.observed_at}.` : " No observation available.");
+    }
     els.kpis.append(card);
   }
 }
@@ -486,8 +507,10 @@ async function poll() {
     const response = await fetch("/api/status", { cache: "no-store" });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const snapshot = await response.json();
+    updateFailed = false;
     render(snapshot);
   } catch (error) {
+    updateFailed = true;
     if (lastSnapshot) render(lastSnapshot);
     renderBanner(lastSnapshot, error instanceof Error ? error.message : String(error));
   } finally {
@@ -498,6 +521,7 @@ async function poll() {
 // Refresh the relative timestamps even when the server data is unchanged.
 setInterval(() => {
   if (!lastSnapshot) return;
+  renderKpis(lastSnapshot);
   renderAgents(lastSnapshot);
   renderSessions(lastSnapshot);
   els.updated.textContent =

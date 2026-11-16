@@ -19,8 +19,8 @@ glance:
   earlier sessions for that ticket, newest first, and works with keyboard
   navigation. Expanded history stays open across automatic refreshes.
   Active sessions and all-run totals are unchanged.
-- **How are the totals trending?** Total, running, completed, declined,
-  blocked and failed counts, plus a breakdown of recorded outcomes (excluding
+- **How are the totals trending?** Historical total, running, completed,
+  declined and failed session counts, plus a breakdown of recorded outcomes (excluding
   aborted claim attempts).
 
 The outcome breakdown distinguishes **No progress** (stored legacy outcome
@@ -165,8 +165,22 @@ The example is illustrative, not deployment data. Semantics:
   rolls back persisted observations; older engines leave it to expire.
 - Consumers must display an unknown/stale indication, not coerce null to zero.
   Existing `counts.blocked` still means historical human-intervention run
-  outcomes; it must not be used for current dependency counts. The separate
-  card presentation remains OP#502; this backend change does not alter the UI.
+  outcomes; it is not used by the headline cards.
+
+### Blocked and On Hold cards
+
+The **Blocked** card shows current tickets waiting on dependencies; **On Hold**
+shows current tickets needing human intervention. Both use
+`current_work_packages`, not cumulative session outcomes or recent-session
+counts. Their scope is all enabled monitored projects, as described above.
+A fresh zero is displayed as `0`. Missing, unavailable or stale observations
+show `—` with an explicit unavailable/stale hint rather than a fabricated zero.
+The hover description includes the last observation time when available.
+Cached observations expire in the browser too; a failed dashboard update marks
+both current counts unavailable until a successful update. Other session totals
+remain visible from the last snapshot, with the existing update-failed banner.
+Before the first response, the card area is empty; it never implies zero.
+The seven cards wrap to three columns on tablets and two on mobile.
 
 ## Dashboard presentation tests
 
@@ -193,7 +207,8 @@ variables or prompts.
 
 - Run rows created before the dashboard milestone have no stored subject;
   they show the work-package id only. New rows carry the subject.
-- Totals are computed from the SQLite run history, so they survive engine
+- Session totals (not the current Blocked/On Hold ticket cards) are computed
+  from the SQLite run history, so they survive engine
   restarts but are lost if `engine.db` is deleted (the database is
   deliberately disposable).
 - An agent card lists every running session for that agent. The JSON API
