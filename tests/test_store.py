@@ -605,3 +605,114 @@ def test_reset_crash_count_returns_the_previous_value(store: Store) -> None:
     assert store.crash_count(100) == 0
     # Idempotent: a second reset has nothing to delete.
     assert store.reset_crash_count(100) == 0
+
+
+# -- resume holds -------------------------------------------------------------
+
+
+def _iso(delta_seconds: int) -> str:
+    from datetime import UTC, datetime, timedelta
+
+    return (datetime.now(UTC) + timedelta(seconds=delta_seconds)).isoformat()
+
+
+def test_resume_hold_round_trips_and_replaces(store: Store) -> None:
+    first = store.set_resume_hold(
+        100, repo="acme/game", head_sha="abc", ready_at=_iso(300),
+        reason="2 of 3 check(s) still running", attempts=1,
+    )
+    assert first.work_package_id == 100
+    assert first.head_sha == "abc"
+    assert first.attempts == 1
+    assert not first.ready()
+
+    second = store.set_resume_hold(
+        100, repo="acme/game", head_sha="def", ready_at=_iso(600),
+        reason="1 of 3 check(s) still running", attempts=2,
+    )
+    assert second.head_sha == "def"
+    assert second.attempts == 2
+    assert len(store.resume_holds()) == 1
+    # created_at survives the replace; updated_at moves with it.
+    assert second.created_at == first.created_at
+
+
+def test_extend_resume_hold_counts_attempts(store: Store) -> None:
+    store.set_resume_hold(
+        100, repo="acme/game", head_sha="abc", ready_at=_iso(-1),
+        reason="pending", attempts=1,
+    )
+    store.extend_resume_hold(100, ready_at=_iso(-1), reason="still pending")
+    hold = store.resume_hold(100)
+    assert hold is not None
+    assert hold.attempts == 2
+    assert hold.reason == "still pending"
+    assert hold.ready()
+
+
+def test_clear_resume_hold_reports_whether_it_existed(store: Store) -> None:
+    store.set_resume_hold(
+        100, repo="acme/game", head_sha="abc", ready_at=_iso(30), reason="pending"
+    )
+    assert store.clear_resume_hold(100) is True
+    assert store.clear_resume_hold(100) is False
+    assert store.resume_holds() == []
+
+
+def test_prune_resume_holds_keeps_recent_holds(store: Store) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    store.set_resume_hold(
+        100, repo="acme/game", head_sha="abc", ready_at=_iso(30), reason="recent"
+    )
+    recent = datetime.now(UTC) + timedelta(days=1)
+    assert store.prune_resume_holds(older_than_days=30, now=recent) == 0
+    assert len(store.resume_holds()) == 1
+    later = datetime.now(UTC) + timedelta(days=60)
+    assert store.prune_resume_holds(older_than_days=30, now=later) == 1
+    assert store.resume_holds() == []
+
+
+# -- checkpoint classification ------------------------------------------------
+
+
+def finish(store: Store, run_id: int, *, outcome: str) -> None:
+    store.finish_run(run_id, state=SUCCEEDED, outcome=outcome)
+
+
+def test_last_implementer_run_includes_checkpoints_and_failures(store: Store) -> None:
+    first = begin(store, kind="implement")
+    finish(store, first, outcome="progress_not_finished")
+    second = begin(store, kind="resume")
+    finish(store, second, outcome="no_pr")
+
+    run = store.last_implementer_run(100)
+    assert run is not None
+    assert run.id == second
+    assert run.kind == "resume"
+
+
+def test_last_implementer_run_ignores_a_running_row(store: Store) -> None:
+    first = begin(store, kind="implement")
+    finish(store, first, outcome="progress_not_finished")
+    begin(store, kind="resume")
+
+    run = store.last_implementer_run(100)
+    assert run is not None
+    assert run.id == first
+
+
+def test_checkpoint_streak_counts_only_consecutive_checkpoints(store: Store) -> None:
+    first = begin(store)
+    finish(store, first, outcome="progress_not_finished")
+    second = begin(store)
+    finish(store, second, outcome="waiting_ci")
+    assert store.checkpoint_streak(100) == 2
+
+    third = begin(store)
+    store.finish_run(third, state=FAILED, outcome="no_pr")
+    assert store.checkpoint_streak(100) == 0
+
+    fourth = begin(store)
+    finish(store, fourth, outcome="checkpoint_no_progress")
+    assert store.checkpoint_streak(100) == 1

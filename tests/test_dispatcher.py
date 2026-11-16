@@ -21,7 +21,7 @@ from pydantic import SecretStr
 
 from op_agent_engine.config import EngineSettings
 from op_agent_engine.dispatcher import Dispatcher
-from op_agent_engine.github import GitHubError, PullRequest
+from op_agent_engine.github import ChecksSummary, GitHubError, PullRequest
 from op_agent_engine.openproject.client import OpenProjectClient, OpenProjectError
 from op_agent_engine.openproject.workpackage import parse_work_package
 from op_agent_engine.poller import DispatchItem, Poller
@@ -112,12 +112,23 @@ class FakeGitHub:
         pr: PullRequest | None = None,
         error: GitHubError | None = None,
         merged: PullRequest | None = None,
+        checks: ChecksSummary | None = None,
+        checks_error: GitHubError | None = None,
     ) -> None:
         self.pr = pr
         self.merged = merged
         self.error = error
+        self.checks = checks or ChecksSummary(state="none")
+        self.checks_error = checks_error
+        self.checks_calls: list[tuple[str, str]] = []
         self.calls: list[tuple[str, str]] = []
         self.states: list[str] = []
+
+    async def commit_checks(self, repo: str, sha: str) -> ChecksSummary:
+        self.checks_calls.append((repo, sha))
+        if self.checks_error is not None:
+            raise self.checks_error
+        return self.checks
 
     async def find_pr(
         self, repo: str, branch: str, *, state: str = "open"
@@ -182,6 +193,7 @@ async def make_dispatcher(
         "pr={{ pr.url }} review={{ review_number }} agent={{ agent.name }} "
         "repo={{ repo.github }} desc={{ wp.description }}"
     ),
+    resume_template: str | None = None,
     fix_template: str = (
         "FIXPROMPT subject={{ wp.subject }} attempt={{ attempt }} "
         "of {{ max_rejections }} branch={{ branch }} repo={{ repo.github }} "
@@ -245,7 +257,10 @@ async def make_dispatcher(
     (prompts_dir / "implement.txt.j2").write_text(prompts_template, encoding="utf-8")
     (prompts_dir / "review.txt.j2").write_text(review_template, encoding="utf-8")
     (prompts_dir / "fix.txt.j2").write_text(fix_template, encoding="utf-8")
-    (prompts_dir / "resume.txt.j2").write_text(prompts_template, encoding="utf-8")
+    (prompts_dir / "resume.txt.j2").write_text(
+        resume_template if resume_template is not None else prompts_template,
+        encoding="utf-8",
+    )
 
     dispatcher = Dispatcher(
         config=config,
@@ -381,12 +396,19 @@ async def test_clean_head_progress(
             assert not runner.requests
             return
         assert run.outcome == expected
-        assert store.crash_count(100) == (2 if expected == "no_pr" else 1)
+        # A checkpoint is a healthy run: it resets a stale crash counter and
+        # never charges the crash budget. A no_pr run still charges it, and a
+        # delivered run leaves the counter alone (unchanged behaviour).
+        assert store.crash_count(100) == {
+            "progress_not_finished": 0,
+            "no_pr": 2,
+        }.get(expected, 1)
         if expected == "progress_not_finished":
             assert run.state == SUCCEEDED
             assert status_href(fake, 100) == f"/api/v3/statuses/{STATUS_IN_PROGRESS}"
             assert not fake.patches
-            assert not posted_comments(fake, 100)
+            comments = posted_comments(fake, 100)
+            assert len(comments) == 1 and "ENGINE: checkpoint" in comments[0]
         elif expected == "ready_for_review":
             assert status_href(fake, 100) == f"/api/v3/statuses/{STATUS_READY_FOR_REVIEW}"
         meta = json.loads((Path(run.run_dir) / "meta.json").read_text())
@@ -2645,6 +2667,248 @@ async def test_silent_run_is_reported_as_no_result_line(
         assert "(no_result_line)" in comment
         assert "wrote nothing at all to stdout or stderr" in comment
         assert "(run log is empty)" in comment
+    finally:
+        await client.aclose()
+        store.close()
+
+
+# -- checkpoints and CI waits -------------------------------------------------
+
+
+async def test_waiting_ci_checkpoint_holds_the_resume_and_keeps_the_worktree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from op_agent_engine.workspace import branch_snapshot
+
+    checks = ChecksSummary(state="pending", total=3, pending=2)
+    gh = FakeGitHub(checks=checks)
+    runner = FakeRunner(make_result(
+        tmp_path,
+        result_line="RESULT: WAITING_CI https://example.org/actions/runs/1",
+        stdout="RESULT: WAITING_CI https://example.org/actions/runs/1\n",
+    ))
+    dispatcher, fake, store, client, _ = await make_dispatcher(
+        tmp_path, monkeypatch, runner=runner, gh=gh,
+        work_packages=[wp(100, status=STATUS_IN_PROGRESS, agent=11)],
+    )
+    try:
+        workspace = make_real_workspace(tmp_path)
+        use_workspace(monkeypatch, workspace)
+        monkeypatch.setattr("op_agent_engine.dispatcher.branch_snapshot", branch_snapshot)
+        claimed = claim(store, make_item(100))
+        await dispatcher.execute(claimed)
+        run = store.get_run(claimed.run_id)
+        assert run is not None
+        assert run.outcome == "waiting_ci"
+        assert run.state == SUCCEEDED
+        # The ticket stays In Progress and no crash retry is consumed.
+        assert status_href(fake, 100) == f"/api/v3/statuses/{STATUS_IN_PROGRESS}"
+        assert store.crash_count(100) == 0
+        comments = posted_comments(fake, 100)
+        assert len(comments) == 1
+        assert comments[0].startswith("ENGINE: waiting on CI")
+        assert "2 of 3 check(s) still running" in comments[0]
+        # The head commit is held, with the checkpoint streak as its budget.
+        hold = store.resume_hold(100)
+        assert hold is not None
+        assert hold.head_sha == _git(["-C", str(workspace.repo_dir), "rev-parse", "HEAD"]).strip()
+        assert hold.attempts == 1
+        assert not hold.ready()
+        # The worktree is kept for the next run (warm build caches).
+        assert workspace.repo_dir.is_dir()
+        meta = json.loads((Path(run.run_dir) / "meta.json").read_text())
+        assert meta["worktree_checkpoint"] is True
+        assert meta["worktree_kept"] is True
+    finally:
+        await client.aclose()
+        store.close()
+
+
+async def test_waiting_ci_with_settled_checks_resumes_immediately(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gh = FakeGitHub(checks=ChecksSummary(state="success", total=1))
+    runner = FakeRunner(make_result(
+        tmp_path, result_line="RESULT: WAITING_CI", stdout="RESULT: WAITING_CI\n",
+    ))
+    dispatcher, fake, store, client, _ = await make_dispatcher(
+        tmp_path, monkeypatch, runner=runner, gh=gh,
+        work_packages=[wp(100, status=STATUS_IN_PROGRESS, agent=11)],
+    )
+    try:
+        claimed = claim(store, make_item(100))
+        await dispatcher.execute(claimed)
+        run = store.get_run(claimed.run_id)
+        assert run is not None and run.outcome == "waiting_ci"
+        assert store.resume_hold(100) is None
+        comments = posted_comments(fake, 100)
+        assert len(comments) == 1 and comments[0].startswith("ENGINE: checkpoint")
+    finally:
+        await client.aclose()
+        store.close()
+
+
+async def test_a_draft_pr_without_a_push_holds_while_checks_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from dataclasses import replace
+
+    from op_agent_engine.workspace import branch_snapshot
+
+    gh = FakeGitHub(
+        pr=replace(PR, is_draft=True, head_oid="before"),
+        checks=ChecksSummary(state="pending", total=2, pending=1),
+    )
+    runner = FakeRunner(make_result(
+        tmp_path, result_line=f"RESULT: PR_OPENED {PR.url}",
+        stdout=f"RESULT: PR_OPENED {PR.url}\n",
+    ))
+    dispatcher, _fake, store, client, _ = await make_dispatcher(
+        tmp_path, monkeypatch, runner=runner, gh=gh,
+        work_packages=[wp(100, status=STATUS_IN_PROGRESS, agent=11)],
+    )
+    try:
+        workspace = make_real_workspace(tmp_path)
+        use_workspace(monkeypatch, workspace)
+        monkeypatch.setattr("op_agent_engine.dispatcher.branch_snapshot", branch_snapshot)
+        claimed = claim(store, make_item(100), kind="resume")
+        await dispatcher.execute(claimed)
+        run = store.get_run(claimed.run_id)
+        assert run is not None
+        # A no-op resume while CI runs is a checkpoint, not a crash retry.
+        assert run.outcome == "checkpoint_no_progress"
+        assert run.state == SUCCEEDED
+        assert store.crash_count(100) == 0
+        assert store.resume_hold(100) is not None
+        assert workspace.repo_dir.is_dir()
+    finally:
+        await client.aclose()
+        store.close()
+
+
+async def test_the_checkpoint_wait_cap_escalates_to_on_hold(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gh = FakeGitHub(checks=ChecksSummary(state="pending", total=1, pending=1))
+    runner = FakeRunner(make_result(
+        tmp_path, result_line="RESULT: WAITING_CI", stdout="RESULT: WAITING_CI\n",
+    ))
+    dispatcher, fake, store, client, _ = await make_dispatcher(
+        tmp_path, monkeypatch, runner=runner, gh=gh,
+        work_packages=[wp(100, status=STATUS_IN_PROGRESS, agent=11)],
+        settings_overrides={"max_checkpoint_waits": 1},
+    )
+    try:
+        previous = claim(store, make_item(100), kind="resume")
+        store.finish_run(previous.run_id, state=SUCCEEDED, outcome="waiting_ci")
+        claimed = claim(store, make_item(100), kind="resume")
+        await dispatcher.execute(claimed)
+        run = store.get_run(claimed.run_id)
+        assert run is not None
+        assert run.outcome == "checkpoint_wait_cap_reached"
+        assert status_href(fake, 100) == f"/api/v3/statuses/{STATUS_ON_HOLD}"
+        assert store.resume_hold(100) is None
+        comments = posted_comments(fake, 100)
+        assert len(comments) == 1
+        assert comments[0].startswith("ENGINE: checkpoint wait cap reached")
+    finally:
+        await client.aclose()
+        store.close()
+
+
+async def test_the_resume_prompt_carries_the_previous_run_brief(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = FakeRunner(make_result(
+        tmp_path, result_line="RESULT: WAITING_CI", stdout="RESULT: WAITING_CI\n",
+    ))
+    fake = make_fake(
+        work_packages=[wp(100, status=STATUS_IN_PROGRESS, agent=11)],
+        priorities=PRIORITIES,
+        activities=[
+            activity_comment(
+                100,
+                "Status: done\nSummary: added the Sidechain descent; CI still running.",
+                author_id=11,
+            )
+        ],
+    )
+    dispatcher, fake, store, client, _ = await make_dispatcher(
+        tmp_path, monkeypatch, runner=runner, fake=fake,
+        resume_template=(
+            "RESUME run={{ continuation.run_id }} kind={{ continuation.kind }} "
+            "checkpoint={{ continuation.checkpoint }} head={{ continuation.branch_head }} "
+            "pr={{ continuation.pr_url }} draft={{ continuation.pr_draft }} "
+            "hold={{ continuation.hold_reason }} report={{ continuation.report }}"
+        ),
+    )
+    try:
+        previous = claim(store, make_item(100), kind="resume")
+        previous_dir = Path(previous.run_dir)
+        previous_dir.mkdir(parents=True, exist_ok=True)
+        (previous_dir / "meta.json").write_text(json.dumps({
+            "heads": {"branch_after": "abcdef1234567890"},
+            "pr_url": "https://example.org/pr/1",
+            "worktree_checkpoint": True,
+        }))
+        store.finish_run(
+            previous.run_id, state=SUCCEEDED, outcome="waiting_ci",
+            result_line="RESULT: WAITING_CI",
+        )
+        hold = store.set_resume_hold(
+            100, repo="acme/game", head_sha="abcdef1234567890",
+            ready_at="2026-01-01T00:00:00+00:00",
+            reason="2 of 3 check(s) still running", attempts=1,
+        )
+        assert hold.ready()
+
+        claimed = claim(store, make_item(100), kind="resume")
+        await dispatcher.execute(claimed)
+        prompt = Path(claimed.run_dir) / "prompt.txt"
+        text = prompt.read_text(encoding="utf-8")
+        assert f"run={previous.run_id}" in text
+        assert "checkpoint=True" in text
+        assert "head=abcdef1234567890" in text
+        assert "pr=https://example.org/pr/1" in text
+        assert "hold=2 of 3 check(s) still running" in text
+        assert "added the Sidechain descent; CI still running." in text
+        # The hold has done its job: it is released before the run.
+        assert store.resume_hold(100) is None
+    finally:
+        await client.aclose()
+        store.close()
+
+
+async def test_a_reviewer_waiting_for_ci_stays_in_testing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from dataclasses import replace
+
+    pr = replace(PR, head_oid="abcdef1234567890")
+    gh = FakeGitHub(
+        pr=pr, checks=ChecksSummary(state="pending", total=1, pending=1)
+    )
+    runner = FakeRunner(make_result(
+        tmp_path,
+        result_line="RESULT: WAITING_CI https://example.org/actions/runs/2",
+        stdout="RESULT: WAITING_CI https://example.org/actions/runs/2\n",
+    ))
+    dispatcher, fake, store, client, _ = await make_dispatcher(
+        tmp_path, monkeypatch, runner=runner, gh=gh,
+        work_packages=[wp(100, status=STATUS_IN_TESTING, agent=22)],
+    )
+    try:
+        claimed = claim(store, make_review_item(100), kind="review")
+        await dispatcher.execute(claimed)
+        run = store.get_run(claimed.run_id)
+        assert run is not None
+        assert run.outcome == "waiting_ci"
+        assert status_href(fake, 100) == f"/api/v3/statuses/{STATUS_IN_TESTING}"
+        assert store.crash_count(100) == 0
+        hold = store.resume_hold(100)
+        assert hold is not None
+        assert hold.head_sha == "abcdef1234567890"
+        assert posted_comments(fake, 100)[0].startswith("ENGINE: waiting on CI")
     finally:
         await client.aclose()
         store.close()

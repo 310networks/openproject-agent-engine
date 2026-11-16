@@ -34,23 +34,32 @@ dispatched on a later poll (M7).
 Resume runs (M7) are implementer runs for a work package left In Progress by
 an interrupted or retryable failed run; their prompt is ``resume.txt.j2`` and
 they use the same external verification as implement and fix runs.
+
+Checkpoint runs (M8) are the deliberate stops of a long task:
+``RESULT: WAITING_CI``, a clean run that pushed commits, or a clean run that
+pushed nothing while a draft PR's checks are still running. They keep the
+ticket In Progress, do not touch the crash counter, keep their worktree for
+the next run, post a short engine comment, and hold the next resume until the
+head commit's CI checks settle (see :mod:`op_agent_engine.checkpoints`).
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
+from op_agent_engine.checkpoints import resume_ready_at
 from op_agent_engine.config import (
     EngineSettings,
     ProjectConfig,
     WorkflowConfig,
 )
-from op_agent_engine.github import GitHub, GitHubError, PullRequest, head_advanced
-from op_agent_engine.gitlab import GitLab
+from op_agent_engine.github import ChecksSummary, GitHubError, PullRequest, head_advanced
+from op_agent_engine.hosting import build_hosting_client
 from op_agent_engine.logging import get_logger, redact_mapping
 from op_agent_engine.openproject.activities import (
     author_id as activity_author_id,
@@ -79,6 +88,8 @@ from op_agent_engine.outcomes import (
     OutcomeDecision,
     already_open_pr_comment,
     bound_comment,
+    checkpoint_comment,
+    checkpoint_wait_cap_comment,
     decide_implementer_outcome,
     decide_reviewer_outcome,
     escalation_comment,
@@ -87,12 +98,20 @@ from op_agent_engine.outcomes import (
     read_tail,
     rejection_cap_comment,
     rejection_is_outstanding,
+    waiting_ci_detail,
+    waiting_ci_hold_comment,
 )
 from op_agent_engine.prompts import FixContext, PromptRenderer, select_fix_context, with_standard
 from op_agent_engine.runners.base import OnSpawned, RunRequest, RunResult
 from op_agent_engine.runners.generic import GenericRunner
 from op_agent_engine.scheduler import ClaimedRun
-from op_agent_engine.store import FAILED, SUCCEEDED, Store
+from op_agent_engine.store import (
+    CHECKPOINT_OUTCOMES,
+    FAILED,
+    SUCCEEDED,
+    ResumeHold,
+    Store,
+)
 from op_agent_engine.workspace import (
     Workspace,
     WorkspaceError,
@@ -108,6 +127,9 @@ logger = get_logger(__name__)
 
 #: Run kinds the dispatcher executes.
 EXECUTED_KINDS = frozenset({"implement", "fix", "resume", "review"})
+
+#: Longest excerpt of the previous run's ticket report in a resume prompt.
+MAX_CONTINUATION_REPORT_CHARS = 4000
 
 #: The status a run was claimed in; transitions must start from there.
 EXPECTED_STATUS_KEY_BY_KIND = {
@@ -126,6 +148,8 @@ class GitHubLike(Protocol):
     async def find_pr(
         self, repo: str, branch: str, *, state: str = "open"
     ) -> PullRequest | None: ...
+
+    async def commit_checks(self, repo: str, sha: str) -> ChecksSummary: ...
 
 
 class RunnerLike(Protocol):
@@ -171,12 +195,8 @@ class Dispatcher:
         self._store = store
         self._client = client
         self._settings = settings
-        self._gh: GitHubLike = gh if gh is not None else (
-            GitHub() if settings.git_host == "github.com" else GitLab(
-                host=settings.git_host,
-                token=(settings.gitlab_token.get_secret_value()
-                       if settings.gitlab_token else None),
-            )
+        self._gh: GitHubLike = (
+            gh if gh is not None else build_hosting_client(settings)
         )
         self._runner = runner if runner is not None else GenericRunner(config)
         self._prompts = (
@@ -364,6 +384,9 @@ class Dispatcher:
         started_at: datetime,
     ) -> None:
         wp = claimed.item.work_package
+        # The open PR, when the pre-run lookup found one. Reused for the resume
+        # briefing so one API call covers both purposes.
+        open_pr: PullRequest | None = None
 
         # A resume run whose branch already has an open PR is usually finished
         # work: the previous run was killed or timed out after opening it.
@@ -431,9 +454,31 @@ class Dispatcher:
 
         await self._reset_crash_count_if_unheld(wp)
 
-        workspace = await self._prepare_workspace(claimed, run_id)
+        # The scheduler only claims a held ticket once its deadline passed, so
+        # the hold has done its job: clear it before the run so a failure is
+        # not parked behind a stale deadline.
+        resume_hold = self._store.resume_hold(wp.id)
+        if resume_hold is not None:
+            self._store.clear_resume_hold(wp.id)
+
+        workspace = await self._prepare_workspace(
+            claimed,
+            run_id,
+            # A checkpoint keeps its worktree so the next run reuses the warm
+            # build caches instead of re-importing the whole project.
+            keep_existing_worktree=self._settings.keep_checkpoint_worktrees,
+        )
         if workspace is None:
             return
+
+        # A resume prompt carries a brief of the previous run: what it did,
+        # what it reported, and whether it ended at a checkpoint. The agent
+        # then continues instead of re-deriving the ticket from scratch.
+        continuation: dict[str, Any] | None = None
+        if claimed.kind == "resume":
+            continuation = await self._continuation_context(
+                claimed, open_pr=open_pr, resume_hold=resume_hold
+            )
 
         # A fix pass needs the reviewer feedback and the rejection number;
         # both come from the work package history.
@@ -481,7 +526,11 @@ class Dispatcher:
             run_id,
             run_dir,
             self._render_prompt(
-                claimed, workspace, fix_context=fix_context, attempt=attempt
+                claimed,
+                workspace,
+                fix_context=fix_context,
+                attempt=attempt,
+                continuation=continuation,
             ),
         )
         try:
@@ -654,6 +703,7 @@ class Dispatcher:
             started_at=started_at,
             workspace=workspace,
             run_dir=run_dir,
+            reviewed_pr=pr,
         )
 
     # -- outcome handling ----------------------------------------------------
@@ -683,14 +733,148 @@ class Dispatcher:
             pr_found=pr is not None and not pr.is_draft,
             silent=result.is_silent(),
             progress=bool(heads.get("worktree_clean")) and (moved or pr_moved),
+            draft_pr_open=pr is not None and pr.is_draft,
+        )
+        decision, checkpoint_kept = await self._apply_checkpoint_policy(
+            claimed, decision, pr=pr, heads=heads, result=result
         )
         archive = await self._finish_workspace(
-            claimed, workspace, run_dir, decision=decision
+            claimed,
+            workspace,
+            run_dir,
+            decision=decision,
+            keep=checkpoint_kept,
         )
         await self._apply_decision(
             run_id, claimed, request, result, decision, pr=pr,
             started_at=started_at, archive=archive, heads=heads,
+            checkpoint_kept=checkpoint_kept,
         )
+
+    async def _apply_checkpoint_policy(
+        self,
+        claimed: ClaimedRun,
+        decision: OutcomeDecision,
+        *,
+        pr: PullRequest | None,
+        heads: dict[str, Any],
+        result: RunResult,
+        keep_worktree: bool = True,
+    ) -> tuple[OutcomeDecision, bool]:
+        """Turn a checkpoint into a held/escalated decision and its comment.
+
+        Returns the decision to record plus whether the worktree must be kept
+        for the next run. The checkpoint never consumes the crash retry
+        budget: the agent stopped deliberately, so the run itself is healthy.
+        A clean run that pushed nothing is only a checkpoint while its CI is
+        still running; otherwise it stays an ordinary ``no_pr`` failure.
+        """
+        wp = claimed.item.work_package
+        if decision.outcome not in CHECKPOINT_OUTCOMES:
+            if decision.run_state == SUCCEEDED:
+                # A delivered run makes any leftover hold meaningless.
+                self._store.clear_resume_hold(wp.id)
+            return decision, False
+
+        head_sha = heads.get("branch_after") or heads.get("pr_after")
+        checks = await self._commit_checks(wp, head_sha)
+        if (
+            decision.outcome == "checkpoint_no_progress"
+            and (checks is None or not checks.is_pending)
+        ):
+            # Nothing is running, so the agent did not wait for anything:
+            # scoring it as a failure keeps the old, honest escalation.
+            logger.info(
+                "a draft PR with no new commits is not a checkpoint for %s: %s",
+                wp.display_id,
+                checks.describe() if checks is not None else "checks unknown",
+                extra={
+                    "work_package_id": wp.id,
+                    "checks": checks.describe() if checks is not None else None,
+                },
+            )
+            return (
+                OutcomeDecision(run_state=FAILED, outcome="no_pr", crash_retry=True),
+                False,
+            )
+
+        streak = self._store.checkpoint_streak(wp.id) + 1
+        checks_detail = checks.describe() if checks is not None else None
+        if streak > self._settings.max_checkpoint_waits:
+            self._store.clear_resume_hold(wp.id)
+            logger.warning(
+                "checkpoint wait cap reached for %s (%d > %d); escalating",
+                wp.display_id,
+                streak,
+                self._settings.max_checkpoint_waits,
+                extra={"work_package_id": wp.id, "checkpoint_streak": streak},
+            )
+            return (
+                replace(
+                    decision,
+                    outcome="checkpoint_wait_cap_reached",
+                    transition="on_hold",
+                    comment=checkpoint_wait_cap_comment(
+                        waits=streak, head_sha=head_sha, checks_detail=checks_detail
+                    ),
+                ),
+                False,
+            )
+
+        if self._store.crash_count(wp.id):
+            # A healthy checkpoint is evidence the ticket is not crash-looping.
+            self._store.reset_crash_count(wp.id)
+
+        detail = waiting_ci_detail(result.result_line)
+        if checks is not None and checks.is_pending:
+            ready_at = resume_ready_at(
+                now=datetime.now(UTC),
+                wait_seconds=self._settings.checkpoint_wait_seconds,
+            )
+            self._store.set_resume_hold(
+                wp.id,
+                repo=self._repo_github(wp.project_id),
+                head_sha=head_sha,
+                ready_at=ready_at,
+                reason=checks.describe(),
+                attempts=streak,
+            )
+            comment = waiting_ci_hold_comment(
+                head_sha=head_sha,
+                checks_detail=checks.describe(),
+                ready_at=datetime.fromisoformat(ready_at),
+                detail=detail,
+            )
+        else:
+            self._store.clear_resume_hold(wp.id)
+            comment = checkpoint_comment(
+                outcome=decision.outcome,
+                head_sha=head_sha,
+                pr_url=pr.url if pr is not None else None,
+                detail=detail,
+            )
+        return replace(decision, comment=comment), keep_worktree
+
+    async def _commit_checks(
+        self, wp: WorkPackage, head_sha: str | None
+    ) -> ChecksSummary | None:
+        """The CI state of the head commit, or None when it cannot be read."""
+        if not head_sha:
+            return None
+        try:
+            async with asyncio.timeout(60):
+                return await self._gh.commit_checks(
+                    self._repo_github(wp.project_id), head_sha
+                )
+        except (GitHubError, TimeoutError) as error:
+            logger.warning(
+                "could not read the CI state of %s for %s: %s",
+                head_sha[:12],
+                wp.display_id,
+                error,
+                extra={"work_package_id": wp.id, "head_sha": head_sha},
+            )
+            return None
 
     async def _finish_review_run(
         self,
@@ -704,6 +888,7 @@ class Dispatcher:
         started_at: datetime,
         workspace: Workspace | None = None,
         run_dir: Path | None = None,
+        reviewed_pr: PullRequest | None = None,
     ) -> None:
         decision = decide_reviewer_outcome(
             exit_code=result.exit_code,
@@ -712,8 +897,23 @@ class Dispatcher:
             pr_merged=merged is not None,
             rejection_comment_found=rejection_comment_found,
         )
+        # A reviewer waiting for the PR's checks is a checkpoint too: hold the
+        # next review until they settle instead of re-running it every poll.
+        # The review worktree is read-only, so it is not kept.
+        decision, checkpoint_kept = await self._apply_checkpoint_policy(
+            claimed,
+            decision,
+            pr=reviewed_pr,
+            heads={"pr_after": reviewed_pr.head_oid if reviewed_pr else None},
+            result=result,
+            keep_worktree=False,
+        )
         archive = await self._finish_workspace(
-            claimed, workspace, run_dir, decision=decision
+            claimed,
+            workspace,
+            run_dir,
+            decision=decision,
+            keep=checkpoint_kept,
         )
         if decision.transition == "rejected":
             decision = await self._apply_rejection_cap(
@@ -816,6 +1016,7 @@ class Dispatcher:
         started_at: datetime,
         archive: WorktreeArchive | None = None,
         heads: dict[str, Any] | None = None,
+        checkpoint_kept: bool = False,
     ) -> None:
         wp = claimed.item.work_package
         expected_status_key = EXPECTED_STATUS_KEY_BY_KIND[claimed.kind]
@@ -919,7 +1120,7 @@ class Dispatcher:
             claimed, request, result, state=state, outcome=outcome,
             transition=transition, pr=pr, started_at=started_at,
             archive=archive, heads=heads, decision=recorded_decision,
-            engagement_error=engagement_error,
+            engagement_error=engagement_error, checkpoint_kept=checkpoint_kept,
         )
         logger.info(
             "run finished: state=%s outcome=%s transition=%s",
@@ -1461,9 +1662,19 @@ class Dispatcher:
     # -- workspace, prompt and runner -------------------------------------------
 
     async def _prepare_workspace(
-        self, claimed: ClaimedRun, run_id: int
+        self,
+        claimed: ClaimedRun,
+        run_id: int,
+        *,
+        keep_existing_worktree: bool = False,
     ) -> Workspace | None:
-        """Prepare the workspace; record the failure and return None if it fails."""
+        """Prepare the workspace; record the failure and return None if it fails.
+
+        ``keep_existing_worktree`` reuses a clean worktree that is already on
+        the branch head instead of recreating it, which keeps build caches
+        warm across checkpoint runs. A dirty or out-of-date worktree is
+        handled exactly as before.
+        """
         wp = claimed.item.work_package
         agent = self._config.agents[claimed.item.agent_key]
         lock = self._workspace_locks.setdefault(agent.workspace, asyncio.Lock())
@@ -1481,6 +1692,7 @@ class Dispatcher:
                     gh_token=self._gh_token(claimed.item.agent_key),
                     git_host=self._settings.git_host,
                     max_kept_worktree_bytes=self._max_kept_worktree_bytes(),
+                    keep_existing_worktree=keep_existing_worktree,
                 )
                 self._active_workspaces[run_id] = workspace
                 return workspace
@@ -1522,9 +1734,22 @@ class Dispatcher:
         run_dir: Path | None,
         *,
         decision: OutcomeDecision,
+        keep: bool = False,
     ) -> WorktreeArchive | None:
-        """Capture the worktree when the decided outcome is a failure."""
+        """Capture a failure, keep a checkpoint, or remove a delivered worktree.
+
+        ``keep`` marks a checkpoint whose worktree the next run reuses, so the
+        warm build caches survive the hand-over. Nothing is captured in that
+        case: the worktree is clean and already committed to the branch.
+        """
         if workspace is None:
+            return None
+        if keep and decision.run_state == SUCCEEDED:
+            logger.info(
+                "keeping the checkpoint worktree %s for the next run",
+                workspace.repo_dir,
+                extra={"repo_dir": str(workspace.repo_dir)},
+            )
             return None
         return await self._archive_workspace(
             workspace,
@@ -1579,6 +1804,7 @@ class Dispatcher:
         pr: PullRequest | None = None,
         fix_context: FixContext | None = None,
         attempt: int = 1,
+        continuation: dict[str, Any] | None = None,
     ) -> str:
         wp = claimed.item.work_package
         agent = self._config.agents[claimed.item.agent_key]
@@ -1616,6 +1842,7 @@ class Dispatcher:
             "review_number": 1,
         }
         context["interruption"] = None
+        context["continuation"] = continuation
         if kind == "resume":
             previous = self._store.last_interrupted_run(wp.id)
             last_code = self._store.last_code_run(wp.id)
@@ -1648,6 +1875,89 @@ class Dispatcher:
             )
         return prompt
 
+    # -- resume briefing -----------------------------------------------------
+
+    async def _continuation_context(
+        self,
+        claimed: ClaimedRun,
+        *,
+        open_pr: PullRequest | None,
+        resume_hold: ResumeHold | None = None,
+    ) -> dict[str, Any] | None:
+        """What the previous implementer run did, for the resume prompt.
+
+        The run itself ran with ``--no-session``, so the prompt is the only
+        place a fresh process can learn where the last one stopped. The brief
+        is deliberately short: the result line, the observed head, the open
+        PR, the hold reason and the agent's own ticket report, which is where
+        the remaining work is written down.
+        """
+        wp = claimed.item.work_package
+        previous = self._store.last_implementer_run(wp.id)
+        if previous is None:
+            return None
+        previous_dir = self._store.runs_dir / str(previous.id)
+        meta: dict[str, Any] = {}
+        try:
+            meta = json.loads((previous_dir / "meta.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            logger.warning(
+                "continuation metadata unavailable for run %s", previous.id
+            )
+        heads = meta.get("heads") or {}
+
+        report = await self._agent_report_text(wp.id, claimed.item.agent_key)
+        return {
+            "run_id": previous.id,
+            "kind": previous.kind,
+            "outcome": previous.outcome,
+            "checkpoint": previous.outcome in CHECKPOINT_OUTCOMES,
+            "finished_at": previous.finished_at,
+            "result_line": previous.result_line,
+            "branch_head": heads.get("branch_after"),
+            "worktree_kept": bool(meta.get("worktree_checkpoint")),
+            "pr_url": open_pr.url if open_pr is not None else meta.get("pr_url"),
+            "pr_draft": open_pr.is_draft if open_pr is not None else None,
+            "hold_reason": resume_hold.reason if resume_hold is not None else None,
+            "report": report,
+        }
+
+    async def _agent_report_text(
+        self, work_package_id: int, agent_key: str
+    ) -> str | None:
+        """The agent's most recent ticket comment, truncated for the prompt."""
+        agent = self._config.agents.get(agent_key)
+        if agent is None:
+            return None
+        user = self._resolution.users.get(agent.op_login)
+        if user is None:
+            return None
+        try:
+            activities = await self._fetch_activities(work_package_id)
+        except OpenProjectError as error:
+            logger.warning(
+                "could not read the previous report of work package %s: %s",
+                work_package_id,
+                error,
+                extra={"work_package_id": work_package_id},
+            )
+            return None
+        latest: str | None = None
+        for activity in activities:
+            text = activity_comment_text(activity)
+            if text is None or activity_author_id(activity) != user.id:
+                continue
+            latest = text
+        if latest is None:
+            return None
+        latest = latest.strip()
+        if len(latest) > MAX_CONTINUATION_REPORT_CHARS:
+            latest = (
+                latest[:MAX_CONTINUATION_REPORT_CHARS]
+                + "\n… report truncated; read the ticket for the rest …"
+            )
+        return latest
+
     # -- meta.json -------------------------------------------
 
     def _write_meta(
@@ -1665,6 +1975,7 @@ class Dispatcher:
         heads: dict[str, Any] | None = None,
         decision: dict[str, Any] | None = None,
         engagement_error: str | None = None,
+        checkpoint_kept: bool = False,
     ) -> None:
         run_dir = claimed.run_dir or (self._store.runs_dir / str(claimed.run_id or 0))
         run_dir.mkdir(parents=True, exist_ok=True)
@@ -1705,7 +2016,12 @@ class Dispatcher:
                 if archive is not None and archive.artefact is not None
                 else None
             ),
-            "worktree_kept": bool(archive.kept) if archive is not None else False,
+            "worktree_kept": (
+                bool(archive.kept) if archive is not None else checkpoint_kept
+            ),
+            # A checkpoint worktree is reused by the next run, not only kept
+            # for post-mortem inspection.
+            "worktree_checkpoint": checkpoint_kept,
         }
         if heads is not None:
             meta["heads"] = heads

@@ -288,3 +288,51 @@ async def test_dispatcher_gitlab_workflow(
     finally:
         await client.aclose()
         store.close()
+
+
+# -- CI checks (pipelines) ----------------------------------------------------
+
+PIPELINES_URL = f"https://{HOST}/api/v4/projects/{quote(REPO, safe='')}/pipelines"
+
+
+@pytest.mark.parametrize(("statuses", "state", "pending", "failed"), [
+    (["success"], "success", 0, 0),
+    (["running", "success"], "pending", 1, 0),
+    (["created"], "pending", 1, 0),
+    (["manual"], "pending", 1, 0),
+    (["failed", "success"], "failure", 0, 1),
+    (["canceled"], "failure", 0, 1),
+    ([], "none", 0, 0),
+])
+async def test_commit_checks_summarises_pipelines(
+    statuses: list[str], state: str, pending: int, failed: int,
+) -> None:
+    with respx.mock as router:
+        route = router.get(PIPELINES_URL, params={"sha": "abc123", "per_page": "100"}).respond(
+            200, json=[{"id": index, "status": status} for index, status in enumerate(statuses)]
+        )
+        checks = await GitLab(host=HOST, token="secret").commit_checks(REPO, "abc123")
+        assert checks.state == state
+        assert checks.pending == pending
+        assert checks.failed == failed
+        assert checks.total == len(statuses)
+        assert route.calls[0].request.headers["PRIVATE-TOKEN"] == "secret"
+
+
+async def test_commit_checks_fails_closed_without_a_token() -> None:
+    with pytest.raises(GitHubError, match="GITLAB_TOKEN"):
+        await GitLab(host=HOST, token=None).commit_checks(REPO, "abc123")
+
+
+async def test_commit_checks_raises_on_provider_failure() -> None:
+    with respx.mock as router:
+        router.get(PIPELINES_URL).respond(500, json={"message": "boom"})
+        with pytest.raises(GitHubError, match="pipeline lookup failed"):
+            await GitLab(host=HOST, token="secret").commit_checks(REPO, "abc123")
+
+
+async def test_commit_checks_rejects_a_malformed_payload() -> None:
+    with respx.mock as router:
+        router.get(PIPELINES_URL).respond(200, json={"unexpected": True})
+        with pytest.raises(GitHubError, match="invalid pipeline response"):
+            await GitLab(host=HOST, token="secret").commit_checks(REPO, "abc123")

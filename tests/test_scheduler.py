@@ -662,3 +662,102 @@ async def test_report_to_dict(tmp_path: Path) -> None:
     finally:
         await client.aclose()
         store.close()
+
+
+# -- resume holds -------------------------------------------------------------
+
+
+def _hold(store: Store, work_package_id: int, *, seconds: int) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    ready_at = (datetime.now(UTC) + timedelta(seconds=seconds)).isoformat()
+    store.set_resume_hold(
+        work_package_id,
+        repo="acme/game",
+        head_sha="abc123",
+        ready_at=ready_at,
+        reason="2 of 3 check(s) still running",
+        attempts=1,
+    )
+
+
+async def test_a_held_resume_is_not_claimed(tmp_path: Path) -> None:
+    scheduler, fake, store, client = await make_scheduler(
+        tmp_path, work_packages=seed_entries(wp(100, status=2, agent=11))
+    )
+    try:
+        _hold(store, 100, seconds=300)
+        item = make_item(100, status=2, status_key="in_progress")
+
+        report = await scheduler.schedule(plan(item))
+
+        assert report.claimed_count == 0
+        assert "waiting on CI until" in report.skipped[0].reason
+        assert "2 of 3 check(s) still running" in report.skipped[0].reason
+        assert store.active_run_count() == 0
+        assert not fake.patches
+    finally:
+        await client.aclose()
+        store.close()
+
+
+async def test_a_due_hold_is_claimed(tmp_path: Path) -> None:
+    scheduler, _fake, store, client = await make_scheduler(
+        tmp_path, work_packages=seed_entries(wp(100, status=2, agent=11))
+    )
+    try:
+        _hold(store, 100, seconds=-1)
+
+        report = await scheduler.schedule(
+            plan(make_item(100, status=2, status_key="in_progress"))
+        )
+
+        assert report.claimed_count == 1
+        assert report.claimed[0].kind == "resume"
+    finally:
+        await client.aclose()
+        store.close()
+
+
+async def test_a_hold_does_not_block_other_statuses(tmp_path: Path) -> None:
+    """A stale hold must not stop a fix pass or a first review."""
+    scheduler, _fake, store, client = await make_scheduler(
+        tmp_path,
+        work_packages=seed_entries(
+            wp(100, status=2, agent=11), wp(101, status=3, agent=22)
+        ),
+    )
+    try:
+        _hold(store, 100, seconds=300)
+
+        report = await scheduler.schedule(plan(
+            make_item(100, status=2, status_key="rejected"),
+            make_item(
+                101, status=3, status_key="ready_for_review", agent_key="REVIEWER",
+                agent=22,
+            ),
+        ))
+
+        assert report.claimed_count == 2
+        assert [claimed.kind for claimed in report.claimed] == ["fix", "review"]
+    finally:
+        await client.aclose()
+        store.close()
+
+
+async def test_a_held_review_is_not_claimed(tmp_path: Path) -> None:
+    scheduler, _fake, store, client = await make_scheduler(
+        tmp_path, work_packages=seed_entries(wp(100, status=4, agent=22))
+    )
+    try:
+        _hold(store, 100, seconds=300)
+
+        report = await scheduler.schedule(
+            plan(make_item(100, status=4, status_key="in_testing", agent_key="REVIEWER", agent=22))
+        )
+
+        assert report.claimed_count == 0
+        assert "waiting on CI" in report.skipped[0].reason
+    finally:
+        await client.aclose()
+        store.close()

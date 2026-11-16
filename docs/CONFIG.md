@@ -366,7 +366,10 @@ Docker network.
 | `MAX_CONCURRENT_RUNS` | `1` | agent runs in parallel across all agents |
 | `MAX_RUNS_PER_AGENT` | `1` | concurrent runs per agent; each run gets its own worktree |
 | `MAX_REJECTIONS` | `3` | rejections before an agent stops retrying a work package |
-| `MAX_CRASH_RETRIES` | `2` | retries after a crashed run |
+| `MAX_CRASH_RETRIES` | `2` | retries after a crashed run; checkpoint runs (`progress_not_finished`, `waiting_ci`) neither consume nor extend it, and a checkpoint resets a stale counter |
+| `CHECKPOINT_WAIT_SECONDS` | `300` | how long a `waiting_ci` checkpoint is held before the engine re-checks the commit's CI; the engine polls the checks itself, so a hold costs no model time (minimum 30) |
+| `MAX_CHECKPOINT_WAITS` | `8` | consecutive checkpoint runs (and CI re-checks) before the ticket goes to On Hold with a "checkpoint wait cap" comment instead of looping forever |
+| `KEEP_CHECKPOINT_WORKTREES` | `true` | keep a checkpoint's worktree so the next run reuses warm build caches (a dirty worktree is still preserved separately) |
 | `COMMENT_MAX_BYTES` | `65536` | maximum raw engine comment UTF-8 bytes (1024–131072); includes truncation markers, reserves room for JSON escaping under a 1 MiB proxy limit |
 | `COMMENT_LINE_MAX_BYTES` | `2048` | maximum UTF-8 bytes per comment line (128–16384); reduced further when needed to fit head/tail within the total cap |
 | `RUN_TIMEOUT_SECONDS` | `3600` | hard limit per run |
@@ -398,6 +401,13 @@ run and is expired by `cleanup` with `RUN_RETENTION_DAYS`. Worst case is that
 cap per failing run inside the window; with the default settings and one run
 per agent that is small, and lowering `RUN_RETENTION_DAYS` or the cap bounds it
 further. See [RUNBOOK.md](RUNBOOK.md#after-a-silent-failure).
+
+Checkpoint worktrees: a `waiting_ci`/`progress_not_finished` run keeps its
+worktree and the next run for the same branch reuses it when it is clean and
+still on the branch head, which keeps build caches warm. That worktree is
+removed by `cleanup` once the ticket has been idle past `RUN_RETENTION_DAYS`.
+Set `KEEP_CHECKPOINT_WORKTREES=false` to recreate the worktree on every run
+(the old behaviour) and keep peak disk usage lower.
 
 ## Compose-only
 

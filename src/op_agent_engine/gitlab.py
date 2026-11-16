@@ -6,13 +6,53 @@ recovery and merged-result checks follow exactly the same workflow.
 
 from __future__ import annotations
 
+from typing import Any
 from urllib.parse import quote
 
 import httpx
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from op_agent_engine.config import validate_git_host
-from op_agent_engine.github import GitHubError, PullRequest
+from op_agent_engine.github import ChecksSummary, GitHubError, PullRequest
+
+#: GitLab pipeline statuses that mean the commit will not go green.
+_FAILED_PIPELINE_STATES = frozenset({"failed", "canceled"})
+
+#: GitLab pipeline statuses that mean something is still running.
+_PENDING_PIPELINE_STATES = frozenset(
+    {
+        "created",
+        "waiting_for_resource",
+        "preparing",
+        "pending",
+        "running",
+        "scheduled",
+        "manual",
+    }
+)
+
+
+def summarise_pipelines(entries: Any) -> ChecksSummary:
+    """Reduce GitLab pipeline entries to the shared :class:`ChecksSummary`."""
+    total = pending = failed = 0
+    for entry in entries if isinstance(entries, list) else []:
+        if not isinstance(entry, dict):
+            continue
+        total += 1
+        status = str(entry.get("status") or "")
+        if status in _PENDING_PIPELINE_STATES:
+            pending += 1
+        elif status in _FAILED_PIPELINE_STATES:
+            failed += 1
+    if pending:
+        state = "pending"
+    elif failed:
+        state = "failure"
+    elif total:
+        state = "success"
+    else:
+        state = "none"
+    return ChecksSummary(state=state, total=total, pending=pending, failed=failed)
 
 
 class _MergeRequest(BaseModel):
@@ -36,6 +76,39 @@ class GitLab:
         self.host = validate_git_host(host)
         self._token = token
         self._timeout = timeout
+
+    async def commit_checks(self, repo: str, sha: str) -> ChecksSummary:
+        """The CI state of commit *sha* from the project's pipelines.
+
+        Mirrors :meth:`op_agent_engine.github.GitHub.commit_checks`: the engine
+        polls this before spending another agent run on a ticket that is only
+        waiting for CI. Provider failures raise :class:`GitHubError`.
+        """
+        if not self._token:
+            raise GitHubError("GITLAB_TOKEN is required for GitLab lookups")
+        url = (
+            f"https://{self.host}/api/v4/projects/{quote(repo, safe='')}/pipelines"
+        )
+        headers = {"PRIVATE-TOKEN": self._token}
+        async with httpx.AsyncClient(timeout=self._timeout, headers=headers) as client:
+            try:
+                response = await client.get(url, params={"sha": sha, "per_page": 100})
+                response.raise_for_status()
+                payload = response.json()
+            except httpx.HTTPError as error:
+                status = (
+                    str(error.response.status_code)
+                    if isinstance(error, httpx.HTTPStatusError)
+                    else type(error).__name__
+                )
+                raise GitHubError(f"GitLab pipeline lookup failed ({status})") from None
+            except ValueError:
+                raise GitHubError(
+                    "GitLab returned an invalid pipeline response"
+                ) from None
+        if not isinstance(payload, list):
+            raise GitHubError("GitLab returned an invalid pipeline response")
+        return summarise_pipelines(payload)
 
     async def find_pr(
         self, repo: str, branch: str, *, state: str = "open"

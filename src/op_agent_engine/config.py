@@ -955,6 +955,18 @@ class EngineSettings(BaseSettings):
     max_runs_per_agent: int = Field(default=1, gt=0)
     max_rejections: int = Field(default=3, ge=0)
     max_crash_retries: int = Field(default=2, ge=0)
+    # Checkpoint policy for long tasks: a run that reports progress or
+    # ``RESULT: WAITING_CI`` keeps the ticket In Progress and does not consume
+    # the crash budget. While the head commit's CI checks still run, the next
+    # resume is held and the engine polls the checks itself (no model time).
+    # MAX_CHECKPOINT_WAITS bounds both the gate extensions and the
+    # consecutive checkpoint runs, so a ticket that never converges still
+    # reaches a human.
+    checkpoint_wait_seconds: int = Field(default=300, ge=30)
+    max_checkpoint_waits: int = Field(default=8, ge=0)
+    # A checkpoint keeps its worktree so the next run reuses warm build caches.
+    # Set KEEP_CHECKPOINT_WORKTREES=false to recreate the worktree each run.
+    keep_checkpoint_worktrees: bool = True
     comment_max_bytes: int = Field(default=65536, ge=1024, le=131072)
     comment_line_max_bytes: int = Field(default=2048, ge=128, le=16384)
     run_timeout_seconds: int = Field(default=3600, gt=0)

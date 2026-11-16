@@ -569,3 +569,15 @@ def test_snapshot_omits_the_last_message_when_the_runner_wrote_none(
         assert session["last_message"] is None
     finally:
         store.close()
+
+
+def test_bucket_counts_treats_ci_waits_as_checkpoints() -> None:
+    """waiting_ci/checkpoint_no_progress are neither delivered nor failed."""
+    from op_agent_engine.dashboard import _bucket_counts
+
+    counts = _bucket_counts(total=4, running=0, outcomes={
+        "waiting_ci": 2, "checkpoint_no_progress": 1, "checkpoint_wait_cap_reached": 1,
+    })
+    assert counts["progress_not_finished"] == 3
+    assert counts["completed"] == 0
+    assert counts["failed"] == 1

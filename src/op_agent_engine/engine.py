@@ -8,9 +8,10 @@ The loop:
    row is marked ``interrupted``.
 3. Resolve the workflow against OpenProject (statuses, users, projects,
    types, agent field).
-4. Repeat until stopped: poll for eligible work packages, schedule (claim)
-   as many as the slot rules allow, and execute each claimed implement (M4),
-   fix (M6), resume (M7) or review (M5) run.
+4. Repeat until stopped: refresh the resume holds (the CI of a checkpoint's
+   head commit is polled here, not by an agent), poll for eligible work
+   packages, schedule (claim) as many as the slot rules allow, and execute
+   each claimed implement (M4), fix (M6), resume (M7) or review (M5) run.
 
 On startup, leftover process groups from a crashed engine are terminated (PID
 reuse safe) and every ``running`` row is marked ``interrupted``; In Progress
@@ -31,8 +32,10 @@ from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 
+from op_agent_engine.checkpoints import ResumeGate, build_resume_gate
 from op_agent_engine.config import ConfigError, EngineSettings, WorkflowConfig
 from op_agent_engine.dispatcher import EXECUTED_KINDS, Dispatcher
+from op_agent_engine.hosting import build_hosting_client
 from op_agent_engine.logging import get_logger
 from op_agent_engine.openproject.client import (
     OpenProjectClient,
@@ -211,6 +214,15 @@ class Engine:
             if dry_run
             else self._make_dispatcher(resolution, store, client)
         )
+        # The resume gate polls the CI of a checkpoint's head commit; it shares
+        # the hosting client with the dispatcher so both see the same provider.
+        gate = (
+            None
+            if dry_run
+            else build_resume_gate(
+                store, self._settings, build_hosting_client(self._settings)
+            )
+        )
         logger.info(
             "engine started",
             extra={
@@ -289,6 +301,9 @@ class Engine:
                     await self._sleep_or_stop(stop, wake)
                     continue
             last_idle_reason = None
+
+            if gate is not None:
+                await self._refresh_holds(gate)
 
             poll_number += 1
             try:
@@ -420,6 +435,30 @@ class Engine:
     def _write_heartbeat(self) -> None:
         """Record the time of the last completed poll."""
         write_heartbeat(self._settings)
+
+    async def _refresh_holds(self, gate: ResumeGate) -> None:
+        """Release or extend the resume holds before a poll.
+
+        A hosting-provider outage must not stop the loop: the gate already
+        degrades to "resume now", and an unexpected error is logged once per
+        pass instead of failing the engine.
+        """
+        try:
+            report = await gate.refresh()
+        except Exception as error:
+            logger.warning(
+                "resume gate refresh failed; holds are left as they are: %s",
+                error,
+            )
+            return
+        if report.extended or report.cleared:
+            logger.info(
+                "resume holds: %d extended, %d released, next %s",
+                len(report.extended),
+                len(report.cleared),
+                report.next_ready_at,
+                extra={"resume_gate": report.to_dict()},
+            )
 
     async def _execute_claimed(
         self, dispatcher: Dispatcher, claimed: ClaimedRun
@@ -625,6 +664,9 @@ async def _run_once_async(
                     "engine paused: %d item(s) not claimed", len(plan.items)
                 )
                 return 0
+            await build_resume_gate(
+                store, settings, build_hosting_client(settings)
+            ).refresh()
             scheduler = Scheduler(
                 client,
                 config,

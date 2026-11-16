@@ -193,6 +193,22 @@ class Scheduler:
         active_by_agent = self._store.active_run_counts_by_agent()
         active_count = self._store.active_run_count()
         for item in plan.items:
+            held = self._hold_blocker(item)
+            if held is not None:
+                skipped.append(SkippedItem(item, held))
+                logger.info(
+                    "not resuming %s (agent %s): %s",
+                    item.work_package.display_id,
+                    item.agent_key,
+                    held,
+                    extra={
+                        "work_package_id": item.work_package.id,
+                        "agent": item.agent_key,
+                        "reason": held,
+                        "resume_hold": True,
+                    },
+                )
+                continue
             blocker = self._slot_blocker(
                 item, active_work_packages, active_by_agent, active_count
             )
@@ -275,6 +291,22 @@ class Scheduler:
             extra={"schedule_report": report.to_dict(), "dry_run": dry_run},
         )
         return report
+
+    def _hold_blocker(self, item: DispatchItem) -> str | None:
+        """Why a resume is parked until its CI checks settle, or None.
+
+        The engine's resume gate clears the hold once the checks finish (or
+        extends its deadline while they run); until then the ticket costs
+        nothing at all. Only an ``In Progress`` resume or an ``In Testing``
+        review is held: a fresh implement run, a fix pass or a first review
+        has other work to do.
+        """
+        if item.status_key not in {"in_progress", "in_testing"}:
+            return None
+        hold = self._store.resume_hold(item.work_package.id)
+        if hold is None or hold.ready():
+            return None
+        return f"waiting on CI until {hold.ready_at} ({hold.reason})"
 
     # -- slot rules (eligibility rules 7-9, evaluated against the store) --
 

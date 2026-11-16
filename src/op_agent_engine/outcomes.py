@@ -13,6 +13,13 @@ Implement and fix runs (M6):
   retry counter increments and a resume run is dispatched on a later poll
   (M7). When the cap (``MAX_CRASH_RETRIES``) is reached the work package
   moves to On Hold with an engine comment (escalation).
+* ``RESULT: WAITING_CI`` -> a checkpoint, not a failure: the agent finished
+  its work for now and the only remaining input is CI. The ticket stays In
+  Progress, the crash counter is not touched, and the resume is held until
+  the commit's checks settle (the engine polls them itself, so waiting costs
+  no model time). A draft PR with no new commits is treated the same way
+  while checks are still running; once they settle that run is an ordinary
+  ``no_pr`` failure.
 
 Review runs (M5):
 
@@ -51,6 +58,10 @@ BLOCKED_RE = re.compile(r"^BLOCKED\s+(?P<reason>.+)$", re.IGNORECASE)
 
 #: ``REJECTED [<reason>]`` (case-insensitive keyword).
 REJECTED_RE = re.compile(r"^REJECTED\b\s*(?P<reason>.*)$", re.IGNORECASE)
+
+#: ``WAITING_CI [<detail>]`` (case-insensitive keyword). The detail is usually
+#: the workflow run or PR URL, so the engine comment can point at it.
+WAITING_CI_RE = re.compile(r"^WAITING_CI\b\s*(?P<detail>.*)$", re.IGNORECASE)
 
 #: How many tail lines of the run log go into an escalation comment.
 ESCALATION_TAIL_LINES = 40
@@ -157,6 +168,25 @@ def is_rejection(result_line: str | None) -> bool:
     return rejection_reason(result_line) is not None
 
 
+def is_waiting_ci(result_line: str | None) -> bool:
+    """Whether the run reported ``RESULT: WAITING_CI`` (detail optional)."""
+    payload = parse_result_line(result_line)
+    if payload is None:
+        return False
+    return WAITING_CI_RE.match(payload) is not None
+
+
+def waiting_ci_detail(result_line: str | None) -> str | None:
+    """The optional detail after ``WAITING_CI`` (e.g. a workflow run URL)."""
+    payload = parse_result_line(result_line)
+    if payload is None:
+        return None
+    match = WAITING_CI_RE.match(payload)
+    if match is None:
+        return None
+    return match.group("detail").strip() or None
+
+
 #: Outcome for a run that exited 0, printed nothing and left no PR.
 NO_RESULT_LINE = "no_result_line"
 
@@ -180,6 +210,7 @@ def decide_implementer_outcome(
     pr_found: bool,
     silent: bool = False,
     progress: bool = False,
+    draft_pr_open: bool = False,
 ) -> OutcomeDecision:
     """Apply the rules for implement/fix runs.
 
@@ -195,7 +226,14 @@ def decide_implementer_outcome(
        retry.
     4. A successful run with a RESULT line and verified clean head movement
        is progress, not finished delivery; it stays In Progress without a retry.
-    5. A run that exited 0 without writing anything and without a PR is
+    5. ``RESULT: WAITING_CI`` is a checkpoint: the remaining input is CI, so
+       the run must not spend the crash budget. The dispatcher decides
+       whether to hold the resume (checks still running) or resume at once.
+    6. A clean, successful run that pushed nothing while a draft PR is open is
+       a checkpoint too -- but only while the commit's checks are running.
+       The dispatcher downgrades it to ``no_pr`` once they settle, because
+       then the agent is not waiting for anything.
+    7. A run that exited 0 without writing anything and without a PR is
        ``no_result_line``, not ``no_pr``: the engine cannot tell whether the
        agent did nothing or the agent CLI swallowed its output.
     """
@@ -223,8 +261,14 @@ def decide_implementer_outcome(
         return OutcomeDecision(
             run_state=FAILED, outcome=NO_RESULT_LINE, crash_retry=True
         )
+    if is_waiting_ci(result_line):
+        return OutcomeDecision(run_state=SUCCEEDED, outcome="waiting_ci")
     if progress and result_line is not None:
         return OutcomeDecision(run_state=SUCCEEDED, outcome="progress_not_finished")
+    if draft_pr_open and result_line is not None:
+        return OutcomeDecision(
+            run_state=SUCCEEDED, outcome="checkpoint_no_progress"
+        )
     return OutcomeDecision(run_state=FAILED, outcome="no_pr", crash_retry=True)
 
 
@@ -261,6 +305,11 @@ def decide_reviewer_outcome(
         return OutcomeDecision(
             run_state=FAILED, outcome="nonzero_exit", crash_retry=True
         )
+    if is_waiting_ci(result_line):
+        # The reviewer is waiting for the PR's checks before it can decide.
+        # Same checkpoint rules as an implementer: stays In Testing, no crash
+        # retry, and the engine holds the next review until the checks settle.
+        return OutcomeDecision(run_state=SUCCEEDED, outcome="waiting_ci")
     if is_rejection(result_line):
         if rejection_comment_found:
             return OutcomeDecision(
@@ -323,6 +372,111 @@ def already_open_pr_comment(branch: str, pr_url: str) -> str:
 def blocked_comment(reason: str) -> str:
     """Engine comment posted when the agent reports a genuine blocker."""
     return f"ENGINE: blocked\n\n{reason}"
+
+
+def checkpoint_comment(
+    *,
+    outcome: str,
+    head_sha: str | None,
+    pr_url: str | None,
+    detail: str | None = None,
+) -> str:
+    """Engine comment for a checkpoint run that stays In Progress.
+
+    Kept to a few lines: a long task produces several of these and they must
+    not bury the agent's own ticket report.
+    """
+    lines = ["ENGINE: checkpoint", ""]
+    if outcome == "waiting_ci":
+        lines.append(
+            "The agent finished what it can do for now and is waiting for CI."
+        )
+    elif outcome == "checkpoint_no_progress":
+        lines.append(
+            "The agent verified the current state and had nothing new to push "
+            "while its CI checks are still running."
+        )
+    else:
+        lines.append(
+            "The agent reported progress and handed the branch back for the "
+            "next run."
+        )
+    if pr_url:
+        lines.append(f"Pull request: {pr_url}")
+    if head_sha:
+        lines.append(f"Head: {head_sha[:12]}")
+    if detail:
+        lines.append(f"Waiting on: {detail}")
+    lines.extend(
+        [
+            "",
+            "The ticket keeps its current status; the next run continues from "
+            "this branch.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def waiting_ci_hold_comment(
+    *,
+    head_sha: str | None,
+    checks_detail: str,
+    ready_at: datetime | None,
+    detail: str | None = None,
+) -> str:
+    """Engine comment for a checkpoint whose resume is held for CI.
+
+    The engine polls the commit's checks itself; no agent run is spent while
+    they run.
+    """
+    lines = [
+        "ENGINE: waiting on CI",
+        "",
+        f"Checks for {head_sha[:12] if head_sha else 'the current head'}: "
+        f"{checks_detail}.",
+    ]
+    if detail:
+        lines.append(f"Waiting on: {detail}")
+    if ready_at is not None:
+        lines.append(
+            "The next run is held until they finish (or until "
+            f"{ready_at.isoformat(timespec='seconds')}, whichever comes first)."
+        )
+    lines.extend(
+        [
+            "",
+            "The ticket keeps its current status. No agent run is started while "
+            "the checks are running.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def checkpoint_wait_cap_comment(
+    *, waits: int, head_sha: str | None, checks_detail: str | None
+) -> str:
+    """Engine comment when the checkpoint wait budget is exhausted.
+
+    Distinct from a crash escalation: the runs themselves were healthy, but
+    the ticket made no progress across ``MAX_CHECKPOINT_WAITS`` checkpoints.
+    """
+    lines = [
+        "ENGINE: checkpoint wait cap reached",
+        "",
+        f"The last {waits} runs ended as checkpoints without delivering a "
+        "ready pull request, so the ticket is on hold for a human.",
+    ]
+    if head_sha:
+        lines.append(f"Head: {head_sha[:12]}")
+    if checks_detail:
+        lines.append(f"Checks: {checks_detail}")
+    lines.extend(
+        [
+            "",
+            "Move the ticket back to In Progress to let the agent continue.",
+        ]
+    )
+    return "\n".join(lines)
 
 
 def blocked_by_relations_comment(blocker_labels: list[str]) -> str:
