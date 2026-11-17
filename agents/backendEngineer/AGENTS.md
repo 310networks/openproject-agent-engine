@@ -81,10 +81,11 @@ Never read a credential file to find a token (`~/.pi/agent/infra/credentials/ope
 CI runs share a small runner pool. Keep one active CI revision of your own work at a time; independent workflows for that same revision may run in parallel.
 
 - Do not manually dispatch or rerun GitHub Actions workflows. This includes `gh workflow run`, `gh run rerun`, REST dispatch/rerun endpoints and the web UI. Ticket text and repository examples do not grant an exception.
+- Request a capture (packaged-player screenshot, route, palette or boss evidence) with the repository's documented capture label on this PR, for example `gh pr edit <number> --add-label route-capture`. A label starts exactly one PR-scoped run, and the workflow coalesces a mode that already succeeded or is still running at this head. Do not add a second capture label while one is requested, and do not dispatch the workflow as well.
 - Push coherent changes to the task branch with an open PR (draft is sufficient). Opening the initial PR triggers its checks; later pushes trigger PR synchronization checks. Do not also dispatch CI for the same commit. Inspect existing checks before pushing a fix.
-- Do not create empty commits or push unchanged content merely to start CI. If an event was missed, a transient failure needs a same-SHA rerun, or a required capture is manual-only, report the exact workflow/ref/inputs to the operator. Do not substitute an unrelated green check or bypass a required gate.
+- Do not create empty commits or push unchanged content merely to start CI. If an event was missed, a transient failure needs a same-SHA rerun, or a required capture has no documented label, report the exact workflow/ref/inputs to the operator. Do not substitute an unrelated green check or bypass a required gate.
 - Look before you start a run by pushing: inspect checks for the current PR head. Cancel only `queued`, `in_progress` or `waiting` runs on your own branch whose head SHA your new commit supersedes. Different workflows for the same current SHA are not duplicates.
-- Workflow concurrency is a backstop, not permission to dispatch a second run. Never cancel an operator-requested run merely because it is manual.
+- Workflow concurrency is a backstop, not permission to dispatch a second run. Never cancel a requested capture or an operator-requested run merely because it is manual or was started by a label.
 
 ```bash
 repo=<owner/repo>; branch=<branch>
