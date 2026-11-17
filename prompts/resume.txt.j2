@@ -7,9 +7,6 @@ Task
 - Repository: {{ repo.github }}    Directory: {{ repo_dir }}
 - Branch: {{ branch }}    Base branch: {{ repo.default_branch }}
 
-Description:
-{{ wp.description }}
-
 {% if continuation is defined and continuation %}
 Your previous run on this ticket ended at a {% if continuation.checkpoint %}deliberate checkpoint{% else %}stop that was not a delivered result{% endif %}. Continue from that state instead of re-deriving the ticket.
 - Previous run: #{{ continuation.run_id }} ({{ continuation.kind }}), outcome {{ continuation.outcome }}, finished {{ continuation.finished_at }}
@@ -25,6 +22,9 @@ Its ticket report (what was done, what remains):
 {% endif %}
 Verify the current branch state (git status, git log, the open PR and its checks), then do the remaining work. Do not repeat completed work and do not discard existing commits.
 {% endif %}
+Description:
+{{ wp.description }}
+
 {% if interruption is defined and interruption %}
 The previous run was interrupted by an engine restart.
 - Interruption run directory: {{ interruption.run_dir }}

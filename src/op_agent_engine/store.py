@@ -72,6 +72,29 @@ CREATE TABLE IF NOT EXISTS crash_counts (
 -- The hold is advisory: the scheduler skips the ticket only while ready_at is
 -- in the future, and the engine's resume gate clears it when the checks
 -- finish or when the evidence is unusable.
+-- Separate task convergence from cheap CI polling. No historical sessions
+-- are backfilled on upgrade; these counters start with the next checkpoint.
+CREATE TABLE IF NOT EXISTS checkpoint_unholds (
+  work_package_id INTEGER PRIMARY KEY,
+  event_id TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS checkpoint_progress (
+  work_package_id INTEGER PRIMARY KEY,
+  head_sha TEXT,
+  stagnant INTEGER NOT NULL DEFAULT 0,
+  revisions INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS checkpoint_milestones (
+  work_package_id INTEGER NOT NULL,
+  milestone TEXT NOT NULL,
+  PRIMARY KEY (work_package_id, milestone)
+);
+CREATE TABLE IF NOT EXISTS checkpoint_diagnoses (
+  work_package_id INTEGER NOT NULL,
+  head_sha TEXT NOT NULL,
+  fingerprint TEXT NOT NULL,
+  PRIMARY KEY (work_package_id, head_sha, fingerprint)
+);
 CREATE TABLE IF NOT EXISTS resume_holds (
   work_package_id INTEGER PRIMARY KEY,
   repo TEXT NOT NULL,
@@ -80,7 +103,8 @@ CREATE TABLE IF NOT EXISTS resume_holds (
   reason TEXT NOT NULL,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
-  attempts INTEGER NOT NULL DEFAULT 0
+  attempts INTEGER NOT NULL DEFAULT 0,
+  diagnosis_allowed INTEGER NOT NULL DEFAULT 0
 );
 """
 
@@ -150,6 +174,7 @@ class ResumeHold:
     created_at: str
     updated_at: str
     attempts: int
+    diagnosis_allowed: bool = False
 
     def ready(self, now: datetime | None = None) -> bool:
         """Whether the hold has expired (``ready_at`` is in the past)."""
@@ -173,6 +198,8 @@ def _row_to_resume_hold(row: sqlite3.Row) -> ResumeHold:
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),
         attempts=int(row["attempts"]),
+        diagnosis_allowed=(bool(row["diagnosis_allowed"])
+                           if "diagnosis_allowed" in set(row.keys()) else False),
     )
 
 
@@ -240,6 +267,12 @@ class Store:
         for name in ("display_id", "subject"):
             if name not in columns:
                 self._conn.execute(f"ALTER TABLE runs ADD COLUMN {name} TEXT")
+        hold_columns = {str(r["name"]) for r in
+                        self._conn.execute("PRAGMA table_info(resume_holds)")}
+        if "diagnosis_allowed" not in hold_columns:
+            self._conn.execute(
+                "ALTER TABLE resume_holds ADD COLUMN diagnosis_allowed INTEGER NOT NULL DEFAULT 0"
+            )
         # ``MAX_RUNS_PER_AGENT`` replaced the one-run-per-agent database rule;
         # drop the index so an existing deployment can run more than one.
         self._conn.execute("DROP INDEX IF EXISTS one_active_per_agent")
@@ -534,7 +567,8 @@ class Store:
         return streak
 
     def reset_checkpoint_streak(
-        self, work_package_id: int, *, after_run_id: int | None = None
+        self, work_package_id: int, *, after_run_id: int | None = None,
+        unhold_event: str | None = None,
     ) -> int:
         """Start the checkpoint streak over after the newest run.
 
@@ -543,6 +577,17 @@ class Store:
         useful behaviour. Returns the baseline that was stored.
         """
         with self._lock:
+            if unhold_event is not None:
+                previous = self._conn.execute(
+                    "SELECT event_id FROM checkpoint_unholds WHERE work_package_id = ?",
+                    (work_package_id,),
+                ).fetchone()
+                if previous is not None and previous["event_id"] == unhold_event:
+                    return 0
+                self._conn.execute("INSERT OR REPLACE INTO checkpoint_unholds VALUES (?, ?)",
+                                   (work_package_id, unhold_event))
+                self._conn.execute("DELETE FROM crash_counts WHERE work_package_id = ?",
+                                   (work_package_id,))
             if after_run_id is None:
                 row = self._conn.execute(
                     "SELECT MAX(id) AS newest FROM runs WHERE work_package_id = ?",
@@ -554,6 +599,12 @@ class Store:
                 "VALUES (?, ?) ON CONFLICT(work_package_id) DO UPDATE SET "
                 "after_run_id = excluded.after_run_id",
                 (work_package_id, after_run_id),
+            )
+            self._conn.execute(
+                "DELETE FROM checkpoint_progress WHERE work_package_id = ?", (work_package_id,)
+            )
+            self._conn.execute(
+                "DELETE FROM checkpoint_diagnoses WHERE work_package_id = ?", (work_package_id,)
             )
             self._conn.commit()
         return after_run_id
@@ -653,6 +704,75 @@ class Store:
             self._conn.commit()
         return int(row["count"])
 
+    def checkpoint_progress(self, work_package_id: int) -> dict[str, object]:
+        """Small durable delivery counters, distinct from passive hold attempts."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT head_sha, stagnant, revisions FROM checkpoint_progress "
+                "WHERE work_package_id = ?", (work_package_id,),
+            ).fetchone()
+        return dict(row) if row is not None else {}
+
+    def complete_checkpoint_episode(self, work_package_id: int) -> None:
+        """A verified delivery handoff ends progress/diagnosis waits, not milestone history."""
+        with self._lock:
+            for table in ("checkpoint_progress", "checkpoint_diagnoses", "resume_holds"):
+                self._conn.execute(
+                    f"DELETE FROM {table} WHERE work_package_id = ?", (work_package_id,)
+                )
+            self._conn.commit()
+
+    def latest_ci_diagnosis(self, work_package_id: int) -> dict[str, str] | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT head_sha, fingerprint FROM checkpoint_diagnoses "
+                "WHERE work_package_id = ? ORDER BY rowid DESC LIMIT 1", (work_package_id,),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def claim_ci_diagnosis(self, work_package_id: int, head_sha: str, fingerprint: str) -> bool:
+        """Persist a once-per-source/failure model wake, including across restarts."""
+        with self._lock:
+            cursor = self._conn.execute(
+                "INSERT OR IGNORE INTO checkpoint_diagnoses VALUES (?, ?, ?)",
+                (work_package_id, head_sha, fingerprint),
+            )
+            self._conn.commit()
+            return cursor.rowcount == 1
+
+    def record_checkpoint_progress(
+        self, work_package_id: int, *, head_sha: str | None, milestone: str | None = None,
+        waiting: bool = False,
+    ) -> tuple[int, int]:
+        """Return unchanged-source checkpoints and revisions since a new milestone.
+
+        A SHA is activity, not delivery. Only a previously unseen, declared
+        completed milestone restarts the convergence budget. Independent review
+        still verifies that declaration; this is scheduling, never acceptance.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT head_sha, stagnant, revisions FROM checkpoint_progress "
+                "WHERE work_package_id = ?", (work_package_id,),
+            ).fetchone()
+            moved = bool(head_sha) and (row is None or row["head_sha"] != head_sha)
+            stagnant = 0 if moved else (int(row["stagnant"]) if row else 0) + int(not waiting)
+            revisions = (int(row["revisions"]) if row else 0) + int(moved)
+            if (moved and milestone
+                    and milestone.lower() not in {"none", "omit unless newly completed"}):
+                cursor = self._conn.execute(
+                    "INSERT OR IGNORE INTO checkpoint_milestones VALUES (?, ?)",
+                    (work_package_id, milestone),
+                )
+                if cursor.rowcount:
+                    revisions = 0
+            self._conn.execute(
+                "INSERT OR REPLACE INTO checkpoint_progress VALUES (?, ?, ?, ?)",
+                (work_package_id, head_sha, stagnant, revisions),
+            )
+            self._conn.commit()
+        return stagnant, revisions
+
     # -- resume holds ----------------------------------------------------
 
     def set_resume_hold(
@@ -664,6 +784,7 @@ class Store:
         reason: str,
         head_sha: str | None = None,
         attempts: int = 0,
+        diagnosis_allowed: bool = False,
     ) -> ResumeHold:
         """Create or replace the resume hold of one work package."""
         now = _utcnow()
@@ -672,15 +793,18 @@ class Store:
                 """
                 INSERT INTO resume_holds (
                   work_package_id, repo, head_sha, ready_at, reason,
-                  created_at, updated_at, attempts
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                  created_at, updated_at, attempts, diagnosis_allowed
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(work_package_id) DO UPDATE SET
                   repo = excluded.repo,
                   head_sha = excluded.head_sha,
                   ready_at = excluded.ready_at,
                   reason = excluded.reason,
+                  created_at = CASE WHEN resume_holds.head_sha IS excluded.head_sha
+                    THEN resume_holds.created_at ELSE excluded.created_at END,
                   updated_at = excluded.updated_at,
-                  attempts = excluded.attempts
+                  attempts = excluded.attempts,
+                  diagnosis_allowed = excluded.diagnosis_allowed
                 """,
                 (
                     work_package_id,
@@ -691,6 +815,7 @@ class Store:
                     now,
                     now,
                     attempts,
+                    int(diagnosis_allowed),
                 ),
             )
             self._conn.commit()

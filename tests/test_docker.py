@@ -745,13 +745,18 @@ def _triggers() -> dict:
     return workflow.get("on") or workflow.get(True) or {}
 
 
-def test_workflow_tests_pull_requests_on_the_same_inputs_as_main() -> None:
+def test_workflow_tests_pull_requests_on_all_image_and_test_inputs() -> None:
     triggers = _triggers()
 
     assert "pull_request" in triggers, "contributions get no CI without this"
     assert triggers["pull_request"]["branches"] == ["main"]
-    # The paths that rebuild the image must be the paths a pull request tests.
-    assert set(triggers["pull_request"]["paths"]) == set(triggers["push"]["paths"])
+    # Every image input is tested, plus tests/docs-only PRs. Those extra paths
+    # must not publish a new image merely because a test/doc changed on main.
+    image_paths = set(triggers["push"]["paths"])
+    pr_paths = set(triggers["pull_request"]["paths"])
+    assert image_paths <= pr_paths
+    assert {"tests/**", "docs/CONFIG.md", "docs/RUNBOOK.md"} <= pr_paths
+    assert "tests/**" not in image_paths
 
 
 def test_publish_never_runs_for_a_pull_request() -> None:

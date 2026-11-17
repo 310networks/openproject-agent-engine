@@ -221,7 +221,11 @@ class Engine:
             None
             if dry_run
             else build_resume_gate(
-                store, self._settings, build_hosting_client(self._settings)
+                store, self._settings, build_hosting_client(self._settings),
+                client=client,
+                active_status_ids=frozenset(
+                    resolution.statuses[key].id for key in ("in_progress", "in_testing")
+                ),
             )
         )
         logger.info(
@@ -445,7 +449,7 @@ class Engine:
         """Release or extend the resume holds before a poll.
 
         A hosting-provider outage must not stop the loop: the gate already
-        degrades to "resume now", and an unexpected error is logged once per
+        retains a passive hold, and an unexpected error is logged once per
         pass instead of failing the engine.
         """
         try:
@@ -670,7 +674,11 @@ async def _run_once_async(
                 )
                 return 0
             await build_resume_gate(
-                store, settings, build_hosting_client(settings)
+                store, settings, build_hosting_client(settings),
+                client=client,
+                active_status_ids=frozenset(
+                    resolution.statuses[key].id for key in ("in_progress", "in_testing")
+                ),
             ).refresh()
             scheduler = Scheduler(
                 client,

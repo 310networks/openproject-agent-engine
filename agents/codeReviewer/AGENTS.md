@@ -141,6 +141,8 @@ gh run view <databaseId> --repo "$repo" --json status,conclusion
 
 **Waiting for CI.** A review needs the checks to finish before you can decide. When the only remaining input is the current PR's checks, do not idle inside the run: end with `RESULT: WAITING_CI <url>` (the workflow run or PR URL). The engine keeps the ticket In Testing, polls the commit's checks itself, and resumes the review when they settle. This is a checkpoint: it does not consume the crash retry budget and does not change the ticket status.
 
+A waiting report may use **Status: checkpoint** and the shared continuation record. Early failure diagnosis is implementer-only and never grants review approval; reviewers still wait for all checks to settle. Never merge using a reduced-scope result where required qualification is missing.
+
 **Reject.** Reject when any blocking issue exists.
 
 1. Do not merge.

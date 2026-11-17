@@ -38,16 +38,18 @@ def _hold(
     ready_in_seconds: int,
     head_sha: str | None = "abc123",
     attempts: int = 1,
+    diagnosis_allowed: bool = False,
 ) -> None:
     store.set_resume_hold(
         100,
-        repo="acme/game",
+        repo="acme/repo",
         head_sha=head_sha,
         ready_at=resume_ready_at(
             now=datetime.now(UTC), wait_seconds=ready_in_seconds
         ),
         reason="2 of 3 check(s) still running",
         attempts=attempts,
+        diagnosis_allowed=diagnosis_allowed,
     )
 
 
@@ -66,7 +68,7 @@ async def test_pending_checks_extend_the_hold() -> None:
     assert hold.attempts == before.attempts + 1
     assert hold.ready_at > before.ready_at
     assert report.extended and report.cleared == ()
-    assert checks.calls == [("acme/game", "abc123")]
+    assert checks.calls == [("acme/repo", "abc123")]
     assert report.next_ready_at == hold.ready_at
 
 
@@ -116,7 +118,7 @@ async def test_unreadable_checks_extend_instead_of_hot_looping() -> None:
     assert any("checks unavailable" in note for note in report.notes)
 
 
-async def test_unreadable_checks_release_once_the_budget_is_spent() -> None:
+async def test_unreadable_checks_remain_passive_beyond_warning_threshold() -> None:
     store = _store()
     checks = FakeChecks(error=GitHubError("gh api failed (403)"))
     gate = ResumeGate(store=store, checks=checks, wait_seconds=300, max_attempts=2)
@@ -124,9 +126,9 @@ async def test_unreadable_checks_release_once_the_budget_is_spent() -> None:
 
     report = await gate.refresh(now=datetime.now(UTC) + timedelta(seconds=5))
 
-    assert store.resume_hold(100) is None
-    assert report.cleared
-    assert any("wait budget" in note for note in report.notes)
+    assert store.resume_hold(100) is not None
+    assert report.extended and not report.cleared
+    assert any("checks unavailable" in note for note in report.notes)
 
 
 async def test_a_hold_without_a_head_is_released() -> None:
@@ -142,8 +144,8 @@ async def test_a_hold_without_a_head_is_released() -> None:
     assert report.cleared
 
 
-async def test_the_wait_budget_releases_the_hold_for_a_run() -> None:
-    """After MAX_CHECKPOINT_WAITS extensions the agent gets to look itself."""
+async def test_pending_checks_never_spend_model_sessions_after_warning_threshold() -> None:
+    """A long CI queue is cheap passive polling, not an implementer task."""
     store = _store()
     checks = FakeChecks(ChecksSummary(state="pending", total=1, pending=1))
     gate = ResumeGate(store=store, checks=checks, wait_seconds=300, max_attempts=2)
@@ -151,9 +153,13 @@ async def test_the_wait_budget_releases_the_hold_for_a_run() -> None:
 
     report = await gate.refresh(now=datetime.now(UTC) + timedelta(seconds=5))
 
-    assert store.resume_hold(100) is None
-    assert report.cleared
-    assert any("wait budget spent" in note for note in report.notes)
+    hold = store.resume_hold(100)
+    assert hold is not None and hold.attempts == 3
+    assert report.extended and not report.cleared
+    for n in range(12):
+        report = await gate.refresh(now=datetime.now(UTC) + timedelta(seconds=400 * (n + 1)))
+        assert store.resume_hold(100) is not None
+        assert report.extended and not report.cleared
 
 
 async def test_refresh_counts_extensions_and_releases_separately() -> None:
@@ -163,7 +169,7 @@ async def test_refresh_counts_extensions_and_releases_separately() -> None:
     _hold(store, ready_in_seconds=1)
     store.set_resume_hold(
         200,
-        repo="acme/game",
+        repo="acme/repo",
         head_sha="def456",
         ready_at=resume_ready_at(now=datetime.now(UTC), wait_seconds=1),
         reason="1 of 1 check still running",

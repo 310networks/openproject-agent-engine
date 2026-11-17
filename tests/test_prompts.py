@@ -140,6 +140,9 @@ def test_with_standard_prepends_standard(tmp_path: Path) -> None:
     assert result.startswith("# Engineering standard\n")
     assert f"Source: {standard}" in result
     assert "Be excellent." in result
+    assert "Shared development-delivery policy" in result
+    assert "`done`, `blocked`, or `checkpoint`" in result
+    assert "```continuation" in result
     assert result.rstrip().endswith("Do the task.")
 
 

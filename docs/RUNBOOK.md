@@ -143,14 +143,16 @@ normal resume or review run starts on the next poll.
 
 ### `could not read the CI state ... (403)`
 
-A 403 on `check-runs` is expected with a fine-grained `GH_TOKEN`: GitHub does
-not offer a `Checks` permission for fine-grained PATs, so the engine falls back
-to the workflow-run API and needs only `Actions: Read` there (see
+A 403 on `check-runs` can mean a fine-grained `GH_TOKEN` was not granted
+`Checks: Read`. The engine falls back to the workflow-run API and needs
+`Actions: Read` there (see
 [CONFIG.md](CONFIG.md#github-token-permissions)). With a classic `repo`-scoped
 token all sources work. If no source is readable the hold is retried on its
-interval for `MAX_CHECKPOINT_WAITS` attempts instead of resuming the agent on
-every poll, so a permission problem costs a delayed ticket, not a run per
-minute. Check `docker compose logs engine | grep "CI state"` after an upgrade.
+interval without a model wake. At the `MAX_CHECKPOINT_WAITS` poll-warning
+threshold it emits one operator warning and retains the durable hold. Repair
+provider access/queue capacity; do not ask a content agent to poll it. A healthy
+settled result releases it. Check `docker compose logs engine | grep "CI state"`
+after an upgrade.
 
 Inspect holds (and see the run outcomes in `status --json`):
 
@@ -165,19 +167,70 @@ for row in sqlite3.connect(db).execute("select * from resume_holds"):
 
 Moving the ticket to `On Hold` stops any further claims; moving it back lets the
 next poll continue. A hold is only consulted while the ticket's status is
-`In Progress` or `In Testing`, and `cleanup` prunes holds older than
-`RUN_RETENTION_DAYS`.
+the configured `In Progress` or `In Testing` status: before each due CI poll,
+the engine checks the current ticket status and retires inactive/deleted holds.
+An unavailable/malformed status stays passive without a hosting-provider poll.
+`cleanup` also prunes holds older than `RUN_RETENTION_DAYS`.
 
-`MAX_CHECKPOINT_WAITS` bounds how many CI re-checks and consecutive checkpoint
-runs are allowed. Past it the ticket goes to `On Hold` with an `ENGINE:
-checkpoint wait cap reached` comment: the ticket is not converging, which is a
-different problem from a crash.
+Three budgets are deliberately separate:
 
-The cap counts only checkpoints from the current wait episode. Upgrading to a
-version with the cap seeds a baseline, so the dozens of checkpoints a ticket
-recorded before it existed do not escalate it on the first run after the
-upgrade. Moving a capped ticket from `On Hold` back to `In Progress` resets the
-budget (and the crash counter) when the engine next runs it.
+1. **Passive per-SHA polling:** new source starts a fresh hold clock/counter.
+   No observed head is not pollable and consumes the bounded stagnation budget.
+   Unchanged pending/unreadable CI stays passive indefinitely, with one warning
+   at `MAX_CHECKPOINT_WAITS`; it never spends model sessions to say "still pending".
+2. **Stagnation:** more than `MAX_CHECKPOINT_WAITS` unchanged-source checkpoints
+   with no pending CI causes one `On Hold` strategy escalation, not a crash.
+3. **Convergence:** more than `MAX_CHECKPOINT_REVISIONS` source revisions without
+   a newly declared completed milestone requests strategy review. A milestone
+   must be an actual task deliverable, not another exploratory test variant.
+   Repeated declarations of the same milestone, placeholder values and same-head
+   declarations do not reset this budget. A current-run source/evidence declaration
+   is required. These count observed checkpoint revisions, not every git commit.
+
+A successfully verified PR handoff or approved/merged delivery ends the progress
+and diagnosis episode, including the existing-PR shortcut; a rejected, blocked
+or failed run does not. This resets the scheduling budget, not human acceptance.
+Milestone history remains retained across delivery episodes.
+
+Progress accounting is upgrade-safe (no history backfill). Unholding resets the
+current progress/diagnosis episode and crash counter once per human status event
+(the event ID is persisted, so subsequent resumes do not reset again). Milestone
+history survives an unhold to prevent replaying an old deliverable as new. Milestone declarations are
+scheduling signals only: independent review, qualification and Owner acceptance
+remain mandatory.
+
+### Early required-failure diagnosis (opt-in)
+
+Operators may set `CI_ACTIONABLE_CHECKS` to a trusted exact-name repository map,
+for example `{"owner/repo":["Unit tests"]}`. A completed named failure can
+release an explicitly eligible implementer/fix/resume hold **once per source/failure
+fingerprint** even when an
+unrelated documentation job is running. The diagnosis claim persists across restarts;
+returning `WAITING_CI` at the same failure does not create another model loop.
+Review and upgraded/unknown-kind holds are ineligible: they always wait for all
+checks to settle, so the early-diagnosis feature cannot bypass reviewer readiness.
+Unconfigured/optional failures do not wake a pending agent early. All failures
+still count after CI settles, and this map never grants merge approval or hides
+an eventual failed check. Configure GitHub job/status names (or workflow names
+if the token can only read Actions); GitLab currently keeps settle-all behavior.
+No live configuration is changed by this code update.
+
+### Continuation and small telemetry
+
+All roles receive one shared development-delivery policy through `with_standard`.
+Use report status `checkpoint` and a fenced `continuation` JSON record containing
+`next_action`, `source_sha`, relevant `ci_run`, `failure_category`, `failure`,
+optional newly `completed_milestone`, `remaining`, and immutable `evidence`.
+Next action/source are prioritized ahead of the 4,000-character legacy clip.
+Long reports remain available on the ticket; no new evidence commit is required
+for each test adjustment or passive poll.
+
+`meta.json` records `checkpoint_progress`, author-declared continuation fields
+and `agent_process_seconds` (process wall time including tools, not pure model
+inference/billed time). Release logs record `passive_ci_seconds` and provider
+poll count with work-package/source identity. Existing CI timing artifacts
+remain the source for repository-specific test/build timings. These are
+diagnostic signals, not proof that a task milestone was accepted.
 
 A checkpoint keeps its worktree (`KEEP_CHECKPOINT_WORKTREES`) and the next run
 reuses it when it is clean and still on the branch head, so build caches such as

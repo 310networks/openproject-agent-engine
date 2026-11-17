@@ -52,10 +52,11 @@ expected and harmless.
 | GitHub App installation token with `Checks: Read` | check-runs (all providers), if you also wire the app in |
 
 If no source is readable the hold falls back to a timed retry
-(`CHECKPOINT_WAIT_SECONDS`) for `MAX_CHECKPOINT_WAITS` attempts instead of
-resuming the agent on every poll, and the 403 is logged as
-`could not read the CI state ...`, so a permission problem is visible in
-`docker compose logs engine` without turning into a run per minute.
+(`CHECKPOINT_WAIT_SECONDS`) without consuming model runs. At the
+`MAX_CHECKPOINT_WAITS` poll-warning threshold the engine emits an operator
+warning once; the durable hold/reason stays visible until access is repaired,
+checks settle, or an operator clears it. Provider errors never force a model
+wake just because the poll-warning threshold elapsed.
 
 `OP_PROVISION_TOKEN` is an administrator token used only by
 `agent-init.sh` and `docker compose run --rm provision`.
@@ -398,7 +399,9 @@ Docker network.
 | `MAX_REJECTIONS` | `3` | rejections before an agent stops retrying a work package |
 | `MAX_CRASH_RETRIES` | `2` | retries after a crashed run; checkpoint runs (`progress_not_finished`, `waiting_ci`) neither consume nor extend it, and a checkpoint resets a stale counter |
 | `CHECKPOINT_WAIT_SECONDS` | `300` | how long a `waiting_ci` checkpoint is held before the engine re-checks the commit's CI; the engine polls the checks itself, so a hold costs no model time (minimum 30) |
-| `MAX_CHECKPOINT_WAITS` | `8` | consecutive checkpoint runs (and CI re-checks) before the ticket goes to On Hold with a "checkpoint wait cap" comment instead of looping forever. Upgrading seeds a baseline so pre-existing checkpoints do not count; a human moving the ticket off On Hold starts a fresh budget |
+| `MAX_CHECKPOINT_WAITS` | `8` | unchanged-source checkpoints without pending CI before an On Hold strategy escalation; independently the passive-poll warning threshold (never a model wake timer). New observed SHA resets stagnation; unhold resets the episode; no historical backfill |
+| `MAX_CHECKPOINT_REVISIONS` | `32` | source revisions since a newly declared completed milestone before an On Hold strategy review; source churn alone cannot reset this budget (minimum 1) |
+| `CI_ACTIONABLE_CHECKS` | `{}` | trusted JSON mapping of repository name to exact check/status/workflow names eligible for one early implementer failure-diagnosis wake per source/failure fingerprint while unrelated checks remain pending. Reviewer/upgraded holds always settle all checks; default waits for all checks; this is NOT merge-required-check configuration |
 | `KEEP_CHECKPOINT_WORKTREES` | `true` | keep a checkpoint's worktree so the next run reuses warm build caches (a dirty worktree is still preserved separately) |
 | `COMMENT_MAX_BYTES` | `65536` | maximum raw engine comment UTF-8 bytes (1024–131072); includes truncation markers, reserves room for JSON escaping under a 1 MiB proxy limit |
 | `COMMENT_LINE_MAX_BYTES` | `2048` | maximum UTF-8 bytes per comment line (128–16384); reduced further when needed to fit head/tail within the total cap |
