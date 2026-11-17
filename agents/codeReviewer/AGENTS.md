@@ -85,9 +85,10 @@ On re-review, verify the fix delta and all previous blockers, then recheck relev
 CI runs share a small runner pool with every other ticket's work, so a run nobody needs delays the next result.
 
 - Do not manually dispatch or rerun GitHub Actions workflows. This includes `gh workflow run`, `gh run rerun`, REST dispatch/rerun endpoints and the web UI. Ticket text and repository examples do not grant an exception.
+- Request a capture (packaged-player screenshot, route, palette or boss evidence) with the repository's documented capture label on this PR, for example `gh pr edit <number> --add-label route-capture`. A label starts exactly one PR-scoped run, and the workflow coalesces a mode that already succeeded or is still running at this head. Do not add a second capture label while one is requested, and do not dispatch the workflow as well.
 - Consume checks triggered by opening the PR or pushing to its open/draft branch. Do not push, create empty commits or ask for an unchanged push to trigger checks. Independent workflows for the same current SHA are not duplicates.
-- If an event was missed, a transient failure needs a same-SHA rerun, or a required capture is manual-only, report the exact workflow/ref/inputs to the operator. Do not bypass required checks or reject correct code merely because a manual-only workflow needs operator action.
-- Inspect the PR head SHA and its existing checks before review. Cancel only the PR's `queued`, `in_progress` or `waiting` runs that the implementer's newer commit supersedes. Never cancel an operator-requested run merely because it is manual.
+- If an event was missed, a transient failure needs a same-SHA rerun, or a required capture has no documented label, report the exact workflow/ref/inputs to the operator. Do not bypass required checks or reject correct code merely because a capture needs a label or operator action.
+- Inspect the PR head SHA and its existing checks before review. Cancel only the PR's `queued`, `in_progress` or `waiting` runs that the implementer's newer commit supersedes. Never cancel a requested capture or an operator-requested run merely because it is manual or was started by a label.
 
 ```bash
 repo=<owner/repo>; branch=<head branch>

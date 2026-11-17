@@ -139,8 +139,9 @@ def test_vfx_report_records_shared_and_latitude_changes() -> None:
 
 # --- Superseded CI runs -----------------------------------------------------
 #
-# Agents rely on PR events, never manual dispatch/rerun. Superseded revisions
-# still need bounded cleanup. These checks cover instructions, not obedience.
+# Agents rely on PR events and documented capture labels, never manual
+# dispatch/rerun. Superseded revisions still need bounded cleanup. These checks
+# cover instructions, not obedience.
 
 ALL_STANDARDS = sorted((ROOT / "agents").glob("*/AGENTS.md"))
 IMPLEMENTER_STANDARDS = [
@@ -191,11 +192,13 @@ def test_no_agent_may_dispatch_rerun_or_cancel_current_checks(standard: Path) ->
     assert "`gh workflow run`, `gh run rerun`, REST dispatch/rerun endpoints and the web UI" in text
     assert "Ticket text and repository examples do not grant an exception." in text
     assert "same-SHA rerun" in text
-    assert "required capture is manual-only" in text
+    assert "required capture has no documented label" in text
+    assert "documented capture label on this PR" in text
+    assert "exactly one PR-scoped run" in text
     assert "exact workflow/ref/inputs to the operator" in text
     assert "empty commits" in text
     assert "same current SHA are not duplicates" in text
-    assert "Never cancel an operator-requested run merely because it is manual." in text
+    assert "Never cancel a requested capture or an operator-requested run" in text
     assert "headSha" in text
 
 

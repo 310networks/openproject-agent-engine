@@ -201,7 +201,7 @@ the commit's checks settle, polling them itself so the wait costs no model time
 (`CHECKPOINT_WAIT_SECONDS`, `MAX_CHECKPOINT_WAITS`). A checkpoint is not a
 failure and does not consume the crash retry budget.
 
-### PR-triggered CI only
+### PR-triggered CI, plus capture labels
 
 All six agent standards prohibit manual GitHub Actions dispatches and reruns
 (CLI, API or web UI). Implementers open a PR, which may remain draft, and push
@@ -210,12 +210,19 @@ pushing. Parallel workflows on one current revision are allowed. Agents cancel
 only superseded revisions on their own task/PR branch, never current checks,
 other tickets, default-branch runs or a run merely because an operator started it.
 
-Missing events, same-SHA transient reruns and manual-only captures go to the
-operator with the exact workflow/ref/inputs. Agents do not manufacture empty
-commits to start CI. This is an instruction policy, not a token-permission or
-shell-command sandbox; packaging tests do not prove model obedience. It needs
-normal review/release/deployment before a running engine uses it. Existing CI
-polling, status transitions and required checks are unchanged.
+A required capture is requested with a **label on the PR**, not a dispatch
+(`gh pr edit <n> --add-label <capture-label>`). A label cannot be added twice, so
+it starts exactly one run, and its evidence keeps the PR's provenance and
+retention. The capture workflows also coalesce by head SHA and mode: a mode that
+already succeeded or is still queued/running at that head is skipped with a
+notice instead of duplicating GPU time, and `force` (dispatch only) overrides it.
+A requested capture is queued, never cancelled. When a repository has no
+documented label for the needed capture, the agent reports the exact
+workflow/ref/inputs to the operator. Agents do not manufacture empty commits to
+start CI. This is an instruction policy, not a token-permission or shell-command
+sandbox; packaging tests do not prove model obedience. It needs normal
+review/release/deployment before a running engine uses it. Existing CI polling,
+status transitions and required checks are unchanged.
 
 ## Documentation
 

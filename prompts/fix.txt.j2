@@ -14,6 +14,6 @@ Additional comment from {{ c.author }} ({{ c.created_at }}):
 
 {% endfor %}
 Address every blocking point, push to the same branch, and update the existing PR. Do not open a new PR.
-Never manually dispatch or rerun workflows; use the PR-triggered checks described in the standard.
+Never manually dispatch or rerun workflows; use the PR-triggered checks and the documented capture label described in the standard.
 If the only remaining input is the current PR's CI, end with `RESULT: WAITING_CI <url>` instead of waiting inside this run; the engine resumes you when the checks finish.
 Finish with the RESULT line required by the standard.
