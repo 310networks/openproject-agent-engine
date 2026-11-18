@@ -46,6 +46,7 @@ head commit's CI checks settle (see :mod:`op_agent_engine.checkpoints`).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -58,6 +59,7 @@ from op_agent_engine.config import (
     ProjectConfig,
     WorkflowConfig,
 )
+from op_agent_engine.continuation import checkpoint_record, compact_report
 from op_agent_engine.github import ChecksSummary, GitHubError, PullRequest, head_advanced
 from op_agent_engine.hosting import build_hosting_client
 from op_agent_engine.logging import get_logger, redact_mapping
@@ -69,7 +71,7 @@ from op_agent_engine.openproject.activities import (
 )
 from op_agent_engine.openproject.activities import (
     count_status_changes,
-    unheld,
+    status_transitions,
 )
 from op_agent_engine.openproject.activities import (
     created_at as activity_created_at,
@@ -257,6 +259,9 @@ class Dispatcher:
 
         self._active_claims[run_id] = (claimed, started_at)
         try:
+            # Reviews and open-PR handoffs reset too, before either path can
+            # return or add a claim/status transition after the human unhold.
+            await self._reset_crash_count_if_unheld(wp)
             if claimed.kind == "review":
                 await self._execute_review(claimed, run_id, run_dir, started_at)
             else:
@@ -451,8 +456,6 @@ class Dispatcher:
                             claimed, run_id, open_pr, started_at
                         )
                         return
-
-        await self._reset_crash_count_if_unheld(wp)
 
         # The scheduler only claims a held ticket once its deadline passed, so
         # the hold has done its job: clear it before the run so a failure is
@@ -780,7 +783,7 @@ class Dispatcher:
         checks = await self._commit_checks(wp, head_sha)
         if (
             decision.outcome == "checkpoint_no_progress"
-            and (checks is None or not checks.is_pending)
+            and (not head_sha or (checks is not None and not checks.is_pending))
         ):
             # Nothing is running, so the agent did not wait for anything:
             # scoring it as a failure keeps the old, honest escalation.
@@ -798,16 +801,42 @@ class Dispatcher:
                 False,
             )
 
-        streak = self._store.checkpoint_streak(wp.id) + 1
+        # Polling and content progress have independent budgets. In particular,
+        # eight useful pushes are not eight failed waits on a single revision.
+        run = self._store.get_run(claimed.run_id) if claimed.run_id is not None else None
+        report = await self._agent_report_text(
+            wp.id, claimed.item.agent_key, compact=False,
+            since=datetime.fromisoformat(run.started_at) if run is not None else None,
+        )
+        record = checkpoint_record(report)
+        if claimed.run_dir is not None:
+            with contextlib.suppress(OSError):
+                (claimed.run_dir / "continuation.json").write_text(
+                    json.dumps(record) + "\n", encoding="utf-8",
+                )
+        milestone = (record.get("completed_milestone")
+                     if record.get("source_sha") == head_sha and record.get("evidence") else None)
         checks_detail = checks.describe() if checks is not None else None
-        if streak > self._settings.max_checkpoint_waits:
+        # No head means no pollable identity: consume bounded stagnation, not
+        # immediately-discarded pending holds.
+        waiting = bool(head_sha) and (checks.is_pending if checks is not None else
+                                     decision.outcome in {"waiting_ci", "checkpoint_no_progress"})
+        stagnant, revisions = self._store.record_checkpoint_progress(
+            wp.id, head_sha=head_sha, milestone=milestone, waiting=waiting,
+        )
+        stalled = not waiting and stagnant > self._settings.max_checkpoint_waits
+        unconverged = revisions > self._settings.max_checkpoint_revisions
+        if stalled or unconverged:
+            streak = revisions if unconverged else stagnant
             self._store.clear_resume_hold(wp.id)
             logger.warning(
                 "checkpoint wait cap reached for %s (%d > %d); escalating",
                 wp.display_id,
                 streak,
-                self._settings.max_checkpoint_waits,
-                extra={"work_package_id": wp.id, "checkpoint_streak": streak},
+                (self._settings.max_checkpoint_revisions if unconverged
+                 else self._settings.max_checkpoint_waits),
+                extra={"work_package_id": wp.id, "stagnant": stagnant,
+                       "revisions_since_milestone": revisions},
             )
             return (
                 replace(
@@ -815,7 +844,8 @@ class Dispatcher:
                     outcome="checkpoint_wait_cap_reached",
                     transition="on_hold",
                     comment=checkpoint_wait_cap_comment(
-                        waits=streak, head_sha=head_sha, checks_detail=checks_detail
+                        waits=streak, head_sha=head_sha, checks_detail=checks_detail,
+                        revisions=unconverged,
                     ),
                 ),
                 False,
@@ -830,9 +860,6 @@ class Dispatcher:
         # is held even when the checks cannot be read: the gate then retries on
         # its interval instead of starting an agent run every poll. Without a
         # head there is nothing to re-check, so that case resumes at once.
-        waiting = checks.is_pending if checks is not None else (
-            decision.outcome == "waiting_ci" and head_sha is not None
-        )
         if waiting:
             checks_detail = (
                 checks.describe() if checks is not None
@@ -848,7 +875,8 @@ class Dispatcher:
                 head_sha=head_sha,
                 ready_at=ready_at,
                 reason=checks_detail,
-                attempts=streak,
+                attempts=0,
+                diagnosis_allowed=claimed.kind != "review",
             )
             comment = waiting_ci_hold_comment(
                 head_sha=head_sha,
@@ -1120,6 +1148,8 @@ class Dispatcher:
                 extra=log_extra,
             )
 
+        if state == SUCCEEDED and outcome in {"ready_for_review", "approved"}:
+            self._store.complete_checkpoint_episode(wp.id)
         self._store.finish_run(
             run_id,
             state=state,
@@ -1189,6 +1219,7 @@ class Dispatcher:
             return
         else:
             state, outcome = SUCCEEDED, "ready_for_review_existing_pr"
+            self._store.complete_checkpoint_episode(wp.id)
             logger.info(
                 "branch %s already has an open PR; work package %s moved to "
                 "Ready for Review without a resume run",
@@ -1248,6 +1279,7 @@ class Dispatcher:
             raise
         else:
             state, outcome = SUCCEEDED, "approved"
+            self._store.complete_checkpoint_episode(wp.id)
             logger.info(
                 "PR for branch %s was already merged; work package %s closed "
                 "without a new review run",
@@ -1626,15 +1658,16 @@ class Dispatcher:
         The crash counter only ever incremented, so an escalation used up the
         whole budget for good: WP 144 had to be requeued with a hand-written
         ``DELETE``. The engine itself only ever moves tickets *to* On Hold, so
-        the newest status change leaving On Hold is a human saying the cause
-        was addressed. A checkpoint streak is reset the same way: the human has
-        read the cap comment, so the ticket starts a fresh wait budget.
+        the latest unhold event says the cause was addressed. Persist its ID
+        so a later claim/status transition cannot hide it and repeated resumes
+        cannot consume it again. Apply before every run-kind/PR short-circuit.
 
         Only tickets that still carry a counter or a streak cost an API call.
         """
         previous = self._store.crash_count(wp.id)
         streak = self._store.checkpoint_streak(wp.id)
-        if previous == 0 and streak == 0:
+        progress = self._store.checkpoint_progress(wp.id)
+        if previous == 0 and streak == 0 and not progress:
             return
         try:
             activities = await self._fetch_activities(wp.id)
@@ -1648,11 +1681,17 @@ class Dispatcher:
                 extra={"work_package_id": wp.id},
             )
             return
-        if not unheld(activities, self._on_hold_status_name()):
+        event = next((a for a in reversed(activities)
+                      if any(before == self._on_hold_status_name() and after != before
+                             for before, after in status_transitions(a))), None)
+        if event is None:
             return
-        if previous:
-            self._store.reset_crash_count(wp.id)
-        baseline = self._store.reset_checkpoint_streak(wp.id) if streak else 0
+        event_id = str(event.get("id") or json.dumps(event, sort_keys=True))
+        # A cap ends the old streak. Reset new counters anyway, once per human
+        # unhold, atomically; do not reset again on every subsequent resume.
+        baseline = self._store.reset_checkpoint_streak(wp.id, unhold_event=event_id)
+        if not baseline:
+            return
         logger.info(
             "reset the budgets for %s (crash counter was %d, checkpoint streak "
             "was %d, baseline run %d): the ticket left On Hold",
@@ -1932,6 +1971,12 @@ class Dispatcher:
         heads = meta.get("heads") or {}
 
         report = await self._agent_report_text(wp.id, claimed.item.agent_key)
+        diagnosis = self._store.latest_ci_diagnosis(wp.id)
+        diagnosis_reason = None
+        current_head = open_pr.head_oid if open_pr is not None else heads.get("branch_after")
+        if diagnosis is not None and diagnosis["head_sha"] == current_head:
+            diagnosis_reason = (f"Early failure diagnosis at {current_head}: "
+                                f"{diagnosis['fingerprint']}; inspect current checks/run URLs")
         return {
             "run_id": previous.id,
             "kind": previous.kind,
@@ -1943,12 +1988,13 @@ class Dispatcher:
             "worktree_kept": bool(meta.get("worktree_checkpoint")),
             "pr_url": open_pr.url if open_pr is not None else meta.get("pr_url"),
             "pr_draft": open_pr.is_draft if open_pr is not None else None,
-            "hold_reason": resume_hold.reason if resume_hold is not None else None,
+            "hold_reason": resume_hold.reason if resume_hold is not None else diagnosis_reason,
             "report": report,
         }
 
     async def _agent_report_text(
-        self, work_package_id: int, agent_key: str
+        self, work_package_id: int, agent_key: str, *, compact: bool = True,
+        since: datetime | None = None,
     ) -> str | None:
         """The agent's most recent ticket comment, truncated for the prompt."""
         agent = self._config.agents.get(agent_key)
@@ -1972,16 +2018,15 @@ class Dispatcher:
             text = activity_comment_text(activity)
             if text is None or activity_author_id(activity) != user.id:
                 continue
+            if since is not None:
+                stamp = activity_created_at(activity)
+                if stamp is None or stamp < since:
+                    continue
             latest = text
         if latest is None:
             return None
-        latest = latest.strip()
-        if len(latest) > MAX_CONTINUATION_REPORT_CHARS:
-            latest = (
-                latest[:MAX_CONTINUATION_REPORT_CHARS]
-                + "\n… report truncated; read the ticket for the rest …"
-            )
-        return latest
+        return (compact_report(latest.strip(), MAX_CONTINUATION_REPORT_CHARS)
+                if compact else latest.strip())
 
     # -- meta.json -------------------------------------------
 
@@ -2047,7 +2092,10 @@ class Dispatcher:
             # A checkpoint worktree is reused by the next run, not only kept
             # for post-mortem inspection.
             "worktree_checkpoint": checkpoint_kept,
+            "checkpoint_progress": self._store.checkpoint_progress(claimed.item.work_package.id),
         }
+        with contextlib.suppress(OSError, ValueError):
+            meta["declared_continuation"] = json.loads((run_dir / "continuation.json").read_text())
         if heads is not None:
             meta["heads"] = heads
         if archive is not None:
@@ -2057,6 +2105,8 @@ class Dispatcher:
             meta["timed_out"] = result.timed_out
             meta["result_line"] = result.result_line
             meta["duration_seconds"] = round(result.duration_seconds, 2)
+            # Process wall time includes tools/I/O, NOT pure inference/billed model time.
+            meta["agent_process_seconds"] = round(result.duration_seconds, 2)
         (run_dir / "meta.json").write_text(
             json.dumps(meta, indent=2) + "\n", encoding="utf-8"
         )

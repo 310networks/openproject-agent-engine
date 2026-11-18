@@ -959,11 +959,18 @@ class EngineSettings(BaseSettings):
     # ``RESULT: WAITING_CI`` keeps the ticket In Progress and does not consume
     # the crash budget. While the head commit's CI checks still run, the next
     # resume is held and the engine polls the checks itself (no model time).
-    # MAX_CHECKPOINT_WAITS bounds both the gate extensions and the
-    # consecutive checkpoint runs, so a ticket that never converges still
-    # reaches a human.
+    # Passive polling warns but never forces a model wake. Unchanged-source
+    # no-pending checkpoints and observed revisions since a milestone have
+    # separate bounded strategy-review budgets.
+    # Trusted operator config: exact job/status names eligible for one early
+    # diagnosis wake while unrelated CI remains pending. Empty preserves settle-all.
+    ci_actionable_checks: dict[str, tuple[str, ...]] = Field(default_factory=dict)
     checkpoint_wait_seconds: int = Field(default=300, ge=30)
+    # Also the passive-poll warning threshold, NOT a timer that wakes a model.
     max_checkpoint_waits: int = Field(default=8, ge=0)
+    # Distinct source revisions without a new declared completed milestone
+    # request a bounded strategy review instead of allowing endless implementation churn.
+    max_checkpoint_revisions: int = Field(default=32, ge=1)
     # A checkpoint keeps its worktree so the next run reuses warm build caches.
     # Set KEEP_CHECKPOINT_WORKTREES=false to recreate the worktree each run.
     keep_checkpoint_worktrees: bool = True

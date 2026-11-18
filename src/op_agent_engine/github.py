@@ -63,6 +63,15 @@ NEUTRAL_WORKFLOW_CONCLUSIONS = frozenset({"cancelled", "skipped", "neutral"})
 
 
 @dataclass(frozen=True)
+class CheckResult:
+    """Observed identity, not a declaration that a check is required for merge."""
+
+    name: str
+    state: str
+    url: str = ""
+
+
+@dataclass(frozen=True)
 class ChecksSummary:
     """The state of the CI checks attached to one commit.
 
@@ -77,6 +86,12 @@ class ChecksSummary:
     total: int = 0
     pending: int = 0
     failed: int = 0
+    checks: tuple[CheckResult, ...] = ()
+
+    def actionable_failures(self, required: tuple[str, ...]) -> tuple[str, ...]:
+        """Exact trusted-profile names only; never infer scope from a PR report."""
+        return tuple(sorted({c.name for c in self.checks
+                             if c.name in required and c.state == "failure"}))
 
     @property
     def is_pending(self) -> bool:
@@ -87,7 +102,13 @@ class ChecksSummary:
         if self.state == "none":
             return "no checks reported"
         if self.state == "pending":
-            return f"{self.pending} of {self.total} check(s) still running"
+            detail = f"{self.pending} of {self.total} check(s) still running"
+            failures = sorted({c.name for c in self.checks if c.state == "failure"})
+            if self.failed:
+                detail += f"; {self.failed} failed"
+                if failures:
+                    detail += ": " + ", ".join(failures)
+            return detail
         if self.state == "failure":
             return f"{self.failed} of {self.total} check(s) failed"
         return f"all {self.total} check(s) finished"
@@ -98,6 +119,7 @@ def summarise_checks(
 ) -> ChecksSummary:
     """Reduce GitHub check-runs and a combined commit status to a summary."""
     total = pending = failed = 0
+    identities: list[CheckResult] = []
     runs = check_runs.get("check_runs")
     for run in runs if isinstance(runs, list) else []:
         if not isinstance(run, Mapping):
@@ -107,6 +129,12 @@ def summarise_checks(
             pending += 1
         elif str(run.get("conclusion") or "") in FAILED_CONCLUSIONS:
             failed += 1
+        identities.append(CheckResult(
+            name=str(run.get("name") or ""),
+            state=("pending" if run.get("status") != "completed" else
+                   "failure" if run.get("conclusion") in FAILED_CONCLUSIONS else "success"),
+            url=str(run.get("html_url") or ""),
+        ))
     statuses = (combined_status or {}).get("statuses")
     for status in statuses if isinstance(statuses, list) else []:
         if not isinstance(status, Mapping):
@@ -117,6 +145,11 @@ def summarise_checks(
             pending += 1
         elif state in {"failure", "error"}:
             failed += 1
+        identities.append(CheckResult(
+            name=str(status.get("context") or ""),
+            state="failure" if state in {"failure", "error"} else state,
+            url=str(status.get("target_url") or ""),
+        ))
     if pending:
         state = "pending"
     elif failed:
@@ -125,7 +158,8 @@ def summarise_checks(
         state = "success"
     else:
         state = "none"
-    return ChecksSummary(state=state, total=total, pending=pending, failed=failed)
+    return ChecksSummary(state=state, total=total, pending=pending, failed=failed,
+                         checks=tuple(identities))
 
 
 def summarise_workflow_runs(payload: Mapping[str, Any]) -> ChecksSummary:
@@ -138,11 +172,20 @@ def summarise_workflow_runs(payload: Mapping[str, Any]) -> ChecksSummary:
     without counting as failures.
     """
     total = pending = failed = 0
+    identities: list[CheckResult] = []
     runs = payload.get("workflow_runs")
     for run in runs if isinstance(runs, list) else []:
         if not isinstance(run, Mapping):
             continue
         total += 1
+        conclusion = str(run.get("conclusion") or "")
+        identities.append(CheckResult(
+            name=str(run.get("name") or ""),
+            state=("pending" if run.get("status") != "completed" else "failure"
+                   if conclusion in FAILED_CONCLUSIONS - NEUTRAL_WORKFLOW_CONCLUSIONS
+                   else "success"),
+            url=str(run.get("html_url") or ""),
+        ))
         if run.get("status") != "completed":
             pending += 1
             continue
@@ -157,7 +200,8 @@ def summarise_workflow_runs(payload: Mapping[str, Any]) -> ChecksSummary:
         state = "success"
     else:
         state = "none"
-    return ChecksSummary(state=state, total=total, pending=pending, failed=failed)
+    return ChecksSummary(state=state, total=total, pending=pending, failed=failed,
+                         checks=tuple(identities))
 
 
 def merge_checks(
@@ -189,7 +233,8 @@ def merge_checks(
         state=state,
         total=counts.total,
         pending=counts.pending,
-        failed=counts.failed,
+        failed=max(primary.failed, secondary.failed),
+        checks=tuple(dict.fromkeys(primary.checks + secondary.checks)),
     )
 
 
@@ -252,7 +297,7 @@ class GitHub:
         A fine-grained token with only ``Actions: read`` therefore still
         yields a real CI state instead of an error. Only when every source
         fails is :class:`GitHubError` raised, and the caller then falls back to
-        a timed hold/release instead of blocking or hot-looping.
+        a passive timed recheck instead of spending model runs.
         """
         problems: list[str] = []
         summary: ChecksSummary | None = None

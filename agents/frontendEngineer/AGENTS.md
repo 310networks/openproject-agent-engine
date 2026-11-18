@@ -170,7 +170,8 @@ When the prompt includes a previous-run brief (its result line, head, PR and the
 
 Post this as one comment on the ticket when you finish:
 
-- **Status:** done | blocked
+- **Status:** done | blocked | checkpoint
+  - `checkpoint` — independent work is complete; waiting for CI. Use the shared continuation record and `RESULT: WAITING_CI <url>`.
   - `done` — the deliverable this ticket asks for is complete and verified. Anything you found but did not do because it is outside this ticket's scope belongs under **Suggested follow-up** and is non-blocking; do not report `blocked` for it.
   - `blocked` — you could not complete the deliverable and need an answer or an external change before you can continue. In that case the run must also end with `RESULT: BLOCKED <one-line reason>` (section 7). A complete deliverable with open questions is `done`, not `blocked`.
 - **PR:** branch to default branch (URL)
@@ -182,4 +183,4 @@ Post this as one comment on the ticket when you finish:
 - **Unverified items:** state explicitly what you did not verify
 - **Suggested follow-up:** next recommended ticket, if any
 
-Never claim a feature works unless you implemented and tested it in this run.
+Never claim a feature works without relevant verified evidence. Unchanged immutable evidence may be reused with explicit source/dependency identity; name what remains unverified.

@@ -40,6 +40,9 @@ on:
       - "agents/**"
       - "pyproject.toml"
       - ".github/workflows/docker.yml"
+      - "tests/**"
+      - "docs/CONFIG.md"
+      - "docs/RUNBOOK.md"
   workflow_dispatch:
 
 concurrency:
@@ -76,6 +79,9 @@ jobs:
 
       - name: pytest
         run: pytest
+
+      - name: dashboard JavaScript tests
+        run: node --test tests/dashboard.test.cjs
 
   publish:
     name: build and push

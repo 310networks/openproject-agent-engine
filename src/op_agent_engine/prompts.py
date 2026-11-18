@@ -26,6 +26,7 @@ from jinja2 import (
 )
 
 from op_agent_engine.config import ConfigError, EngineSettings
+from op_agent_engine.continuation import CONTINUATION_POLICY
 from op_agent_engine.gitlab_prompt import gitlab_instructions
 from op_agent_engine.openproject.activities import ActivityComment, comment_from_activity
 
@@ -205,6 +206,7 @@ def with_standard(
         f"# Engineering standard\n\n"
         f"Source: {standard_path}\n\n"
         f"{content}\n\n"
+        f"{CONTINUATION_POLICY}\n\n"
         f"---\n\n"
         f"{prompt}"
     )

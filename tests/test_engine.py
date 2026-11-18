@@ -1366,7 +1366,9 @@ async def test_a_checkpoint_hold_stops_the_resume_until_the_gate_releases_it(
                     self._store.clear_resume_hold(hold.work_package_id)
             return GateReport()
 
-    def make_gate(store: Store, settings: Any, checks: Any) -> ScriptedGate:
+    def make_gate(store: Store, settings: Any, checks: Any, **kwargs: Any) -> ScriptedGate:
+        assert kwargs["client"] is not None
+        assert len(kwargs["active_status_ids"]) == 2
         return ScriptedGate(store)
 
     monkeypatch.setattr("op_agent_engine.engine.build_resume_gate", make_gate)

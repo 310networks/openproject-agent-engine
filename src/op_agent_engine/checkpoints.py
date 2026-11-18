@@ -13,11 +13,15 @@ hosting-provider poll:
   deadline or clears the hold so the next poll resumes the agent.
 
 The gate never claims work or changes a ticket; it only drops or extends
-holds. Everything degrades to "resume now" when the checks cannot be read.
+holds. Pending or unreadable checks remain passive holds, even beyond the
+poll-warning threshold. A slow queue must not spend model sessions. A warning
+is logged once per hold when that threshold is reached; a settled result (or
+an operator clearing the hold) releases it.
 """
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
@@ -25,9 +29,17 @@ from typing import Protocol
 from op_agent_engine.config import EngineSettings
 from op_agent_engine.github import ChecksSummary, GitHubError
 from op_agent_engine.logging import get_logger
+from op_agent_engine.openproject.client import (
+    OpenProjectClient,
+    OpenProjectError,
+    OpenProjectNotFoundError,
+)
+from op_agent_engine.openproject.workpackage import parse_work_package
 from op_agent_engine.store import ResumeHold, Store
 
 logger = get_logger(__name__)
+
+HoldActiveLookup = Callable[[int], Awaitable[bool | None]]
 
 
 class ChecksLookup(Protocol):
@@ -69,11 +81,32 @@ class ResumeGate:
         checks: ChecksLookup,
         wait_seconds: int,
         max_attempts: int,
+        actionable_checks: Mapping[str, tuple[str, ...]] | None = None,
+        is_active: HoldActiveLookup | None = None,
     ) -> None:
         self._store = store
         self._checks = checks
         self._wait_seconds = max(1, wait_seconds)
         self._max_attempts = max(0, max_attempts)
+        self._actionable_checks = actionable_checks or {}
+        self._is_active = is_active
+
+    def _release_hold(self, hold: ResumeHold, current: datetime) -> None:
+        self._store.clear_resume_hold(hold.work_package_id)
+        elapsed = 0.0
+        try:
+            created = datetime.fromisoformat(hold.created_at)
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=UTC)
+            elapsed = max(0.0, (current - created).total_seconds())
+        except ValueError:
+            logger.warning("invalid hold creation timestamp for %s", hold.work_package_id)
+        logger.info(
+            "CI passive hold released for %s after %.1fs (%d provider polls)",
+            hold.work_package_id, elapsed, hold.attempts,
+            extra={"work_package_id": hold.work_package_id, "head_sha": hold.head_sha,
+                   "passive_ci_seconds": round(elapsed, 2), "provider_polls": hold.attempts},
+        )
 
     async def refresh(self, *, now: datetime | None = None) -> GateReport:
         """Extend holds whose checks still run; clear the rest.
@@ -89,6 +122,24 @@ class ResumeGate:
         for hold in self._store.resume_holds():
             if not hold.ready(current):
                 continue
+            if self._is_active is not None:
+                active = await self._is_active(hold.work_package_id)
+                if active is False:
+                    self._release_hold(hold, current)
+                    cleared.append(hold)
+                    notes.append(f"{hold.work_package_id}: no longer in an active status")
+                    continue
+                if active is None:
+                    self._store.extend_resume_hold(
+                        hold.work_package_id,
+                        ready_at=resume_ready_at(now=current, wait_seconds=self._wait_seconds),
+                        reason="Work package status unavailable; passive recheck",
+                    )
+                    extended.append(hold)
+                    log = logger.warning if hold.attempts == self._max_attempts else logger.debug
+                    log("work package status unavailable for %s; retaining passive hold",
+                        hold.work_package_id)
+                    continue
             if not hold.head_sha:
                 self._store.clear_resume_hold(hold.work_package_id)
                 cleared.append(hold)
@@ -97,68 +148,53 @@ class ResumeGate:
             try:
                 checks = await self._checks.commit_checks(hold.repo, hold.head_sha)
             except GitHubError as error:
-                # An unreadable check state must not hot-loop an agent run per
-                # poll (that is what the 0.9.0 GitHub token produced: Checks:
-                # read was missing, so every checkpoint resumed immediately).
-                # Wait out the normal interval while the budget lasts; only
-                # then fall back to letting the agent look itself.
-                if hold.attempts < self._max_attempts:
-                    self._store.extend_resume_hold(
-                        hold.work_package_id,
-                        ready_at=resume_ready_at(
-                            now=current, wait_seconds=self._wait_seconds
-                        ),
-                        reason="CI state unavailable; re-checking",
-                    )
-                    extended.append(hold)
-                    notes.append(
-                        f"{hold.work_package_id}: checks unavailable ({error})"
-                    )
-                    logger.warning(
-                        "could not read the CI state of %s (%s); re-checking in "
-                        "%ds instead of resuming every poll",
-                        hold.head_sha[:12],
-                        error,
-                        self._wait_seconds,
-                        extra={
-                            "work_package_id": hold.work_package_id,
-                            "repo": hold.repo,
-                            "head_sha": hold.head_sha,
-                            "attempts": hold.attempts + 1,
-                        },
-                    )
-                    continue
-                notes.append(
-                    f"{hold.work_package_id}: checks unavailable and wait budget "
-                    "spent, resuming"
+                # Provider trouble is not work for the task implementer.
+                # Warn once, retaining a visible hold and the normal polling cadence.
+                self._store.extend_resume_hold(
+                    hold.work_package_id,
+                    ready_at=resume_ready_at(now=current, wait_seconds=self._wait_seconds),
+                    reason="CI state unavailable; operator should check provider access",
                 )
-                self._store.clear_resume_hold(hold.work_package_id)
-                cleared.append(hold)
-                logger.warning(
-                    "could not read the CI state of %s and the wait budget is "
-                    "spent (%s); resuming",
-                    hold.head_sha[:12],
-                    error,
-                    extra={
-                        "work_package_id": hold.work_package_id,
-                        "repo": hold.repo,
-                        "head_sha": hold.head_sha,
-                        "attempts": hold.attempts,
-                    },
+                extended.append(hold)
+                notes.append(f"{hold.work_package_id}: checks unavailable ({error})")
+                log = logger.warning if hold.attempts == self._max_attempts else logger.debug
+                log(
+                    "CI state unavailable for %s (%s); passive recheck in %ds; "
+                    "operator may clear the hold after repairing access",
+                    hold.head_sha[:12], error, self._wait_seconds,
+                    extra={"work_package_id": hold.work_package_id,
+                           "head_sha": hold.head_sha, "attempts": hold.attempts + 1},
                 )
                 continue
 
-            if checks.is_pending and hold.attempts < self._max_attempts:
+            failures = checks.actionable_failures(self._actionable_checks.get(hold.repo, ()))
+            if (hold.diagnosis_allowed and checks.is_pending and failures
+                    and self._store.claim_ci_diagnosis(
+                        hold.work_package_id, hold.head_sha, "|".join(failures),
+                    )):
+                # Diagnosis is useful now. This neither cancels other jobs nor
+                # satisfies the later settle-all/review/merge qualification gate.
+                self._release_hold(hold, current)
+                cleared.append(hold)
+                notes.append(f"{hold.work_package_id}: actionable failure: {', '.join(failures)}")
+                logger.info("released one CI diagnosis: %s", notes[-1])
+                continue
+
+            if checks.is_pending:
+                reason = checks.describe()
+                if hold.attempts >= self._max_attempts:
+                    reason += "; poll warning threshold exceeded: operator inspect queue/provider"
                 self._store.extend_resume_hold(
                     hold.work_package_id,
                     ready_at=resume_ready_at(
                         now=current, wait_seconds=self._wait_seconds
                     ),
-                    reason=checks.describe(),
+                    reason=reason,
                 )
                 extended.append(hold)
-                logger.info(
-                    "holding the resume of work package %s: %s",
+                log = logger.warning if hold.attempts == self._max_attempts else logger.debug
+                log(
+                    "CI remains pending; holding work package %s without a model run: %s",
                     hold.work_package_id,
                     checks.describe(),
                     extra={
@@ -171,11 +207,7 @@ class ResumeGate:
                 )
                 continue
 
-            if checks.is_pending:
-                notes.append(
-                    f"{hold.work_package_id}: wait budget spent, resuming anyway"
-                )
-            self._store.clear_resume_hold(hold.work_package_id)
+            self._release_hold(hold, current)
             cleared.append(hold)
             logger.info(
                 "resume of work package %s released: %s",
@@ -197,11 +229,33 @@ class ResumeGate:
         )
 
 
-def build_resume_gate(store: Store, settings: EngineSettings, checks: ChecksLookup) -> ResumeGate:
-    """The gate configured from the engine settings."""
+def build_resume_gate(
+    store: Store, settings: EngineSettings, checks: ChecksLookup, *,
+    client: OpenProjectClient | None = None,
+    active_status_ids: frozenset[int] | None = None,
+) -> ResumeGate:
+    """Configure the gate; engine entry points supply resolved active status IDs."""
+    if client is not None and not active_status_ids:
+        raise ValueError("active status IDs are required with a work-package client")
+
+    async def is_active(work_package_id: int) -> bool | None:
+        assert client is not None
+        try:
+            payload = await client.get_json(f"/api/v3/work_packages/{work_package_id}")
+        except OpenProjectNotFoundError:
+            return False
+        except OpenProjectError:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        status_id = parse_work_package(payload, "", {}).status_id
+        return status_id in (active_status_ids or ()) if status_id else None
+
     return ResumeGate(
         store=store,
         checks=checks,
         wait_seconds=settings.checkpoint_wait_seconds,
         max_attempts=settings.max_checkpoint_waits,
+        actionable_checks=settings.ci_actionable_checks,
+        is_active=is_active if client is not None else None,
     )

@@ -633,8 +633,8 @@ def test_resume_hold_round_trips_and_replaces(store: Store) -> None:
     assert second.head_sha == "def"
     assert second.attempts == 2
     assert len(store.resume_holds()) == 1
-    # created_at survives the replace; updated_at moves with it.
-    assert second.created_at == first.created_at
+    # A new source revision starts a new passive hold clock.
+    assert second.created_at >= first.created_at
 
 
 def test_extend_resume_hold_counts_attempts(store: Store) -> None:

@@ -510,16 +510,16 @@ def test_git_error_without_stderr_says_so() -> None:
 def test_git_error_redacts_credentials_from_stderr() -> None:
     # git-lfs echoes the remote URL, so a failed smudge prints the PAT.
     stderr = (
-        "Error downloading object: Assets/Audio/hit.wav (192099d): Smudge error: "
+        "Error downloading object: assets/example.bin (192099d): Smudge error: "
         "batch response: Fatal error: Server error from HTTP 502\n"
-        "https://x-access-token:github_pat_11B75EFXY0AfpvRCKyEjry_abc@github.com/"
-        "310networks/jungle-gym.git/info/lfs/objects/batch\n"
+        "https://x-access-token:github_pat_TEST_ONLY_NOT_A_REAL_TOKEN@github.com/"
+        "owner/repo.git/info/lfs/objects/batch\n"
         "https://x-access-token:ghp_abcdefghijklmnopqrstuvwxyz0123456789@github.com/x/y\n"
     )
 
     message = str(GitError(["worktree", "add"], 128, stderr))
 
-    assert "github_pat_11B75EFXY" not in message
+    assert "github_pat_TEST_ONLY" not in message
     assert "ghp_abcdefghij" not in message
     assert "HTTP 502" in message
     assert "https://***@github.com/" in message

@@ -386,6 +386,8 @@ async def test_clean_head_progress(
         use_workspace(monkeypatch, workspace)
         monkeypatch.setattr("op_agent_engine.dispatcher.branch_snapshot", branch_snapshot)
         store.increment_crash_count(100)
+        store.record_checkpoint_progress(100, head_sha="before")
+        store.claim_ci_diagnosis(100, "before", "Unit tests")
         claimed = claim(store, make_item(100), kind=kind)
         await dispatcher.execute(claimed)
         run = store.get_run(claimed.run_id)
@@ -394,8 +396,15 @@ async def test_clean_head_progress(
         if kind == "resume" and draft is False:
             assert run.outcome == "ready_for_review_existing_pr"
             assert not runner.requests
+            assert store.checkpoint_progress(100) == {}
+            assert store.latest_ci_diagnosis(100) is None
             return
         assert run.outcome == expected
+        if expected == "ready_for_review":
+            assert store.checkpoint_progress(100) == {}
+            assert store.latest_ci_diagnosis(100) is None
+        else:
+            assert store.checkpoint_progress(100)
         # A checkpoint is a healthy run: it resets a stale crash counter and
         # never charges the crash budget. A no_pr run still charges it, and a
         # delivered run leaves the counter alone (unchanged behaviour).
@@ -2708,11 +2717,11 @@ async def test_waiting_ci_checkpoint_holds_the_resume_and_keeps_the_worktree(
         assert len(comments) == 1
         assert comments[0].startswith("ENGINE: waiting on CI")
         assert "2 of 3 check(s) still running" in comments[0]
-        # The head commit is held, with the checkpoint streak as its budget.
+        # The head commit has a fresh per-SHA passive poll counter.
         hold = store.resume_hold(100)
         assert hold is not None
         assert hold.head_sha == _git(["-C", str(workspace.repo_dir), "rev-parse", "HEAD"]).strip()
-        assert hold.attempts == 1
+        assert hold.attempts == 0
         assert not hold.ready()
         # The worktree is kept for the next run (warm build caches).
         assert workspace.repo_dir.is_dir()
@@ -2789,7 +2798,7 @@ async def test_a_draft_pr_without_a_push_holds_while_checks_run(
 async def test_the_checkpoint_wait_cap_escalates_to_on_hold(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    gh = FakeGitHub(checks=ChecksSummary(state="pending", total=1, pending=1))
+    gh = FakeGitHub(checks=ChecksSummary(state="success", total=1))
     runner = FakeRunner(make_result(
         tmp_path, result_line="RESULT: WAITING_CI", stdout="RESULT: WAITING_CI\n",
     ))
@@ -2801,6 +2810,8 @@ async def test_the_checkpoint_wait_cap_escalates_to_on_hold(
     try:
         previous = claim(store, make_item(100), kind="resume")
         store.finish_run(previous.run_id, state=SUCCEEDED, outcome="waiting_ci")
+        store.record_checkpoint_progress(100, head_sha="unchanged")
+        store.record_checkpoint_progress(100, head_sha="unchanged")
         claimed = claim(store, make_item(100), kind="resume")
         await dispatcher.execute(claimed)
         run = store.get_run(claimed.run_id)

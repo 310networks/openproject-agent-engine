@@ -439,8 +439,9 @@ def waiting_ci_hold_comment(
         lines.append(f"Waiting on: {detail}")
     if ready_at is not None:
         lines.append(
-            "The next run is held until they finish (or until "
-            f"{ready_at.isoformat(timespec='seconds')}, whichever comes first)."
+            "The engine will check again at "
+            f"{ready_at.isoformat(timespec='seconds')}; this is a passive poll, "
+            "not an agent-resume deadline."
         )
     lines.extend(
         [
@@ -453,9 +454,10 @@ def waiting_ci_hold_comment(
 
 
 def checkpoint_wait_cap_comment(
-    *, waits: int, head_sha: str | None, checks_detail: str | None
+    *, waits: int, head_sha: str | None, checks_detail: str | None,
+    revisions: bool = False,
 ) -> str:
-    """Engine comment when the checkpoint wait budget is exhausted.
+    """Engine comment when the progress budget needs a strategy review.
 
     Distinct from a crash escalation: the runs themselves were healthy, but
     the ticket made no progress across ``MAX_CHECKPOINT_WAITS`` checkpoints.
@@ -463,8 +465,11 @@ def checkpoint_wait_cap_comment(
     lines = [
         "ENGINE: checkpoint wait cap reached",
         "",
-        f"The last {waits} runs ended as checkpoints without delivering a "
-        "ready pull request, so the ticket is on hold for a human.",
+        (f"There have been {waits} source revisions without a new declared completed "
+         "milestone. Review the implementation strategy, not just the CI queue."
+         if revisions else
+         f"There have been {waits} unchanged-source checkpoints with no pending CI. "
+         "The ticket needs a no-progress diagnosis before another model run."),
     ]
     if head_sha:
         lines.append(f"Head: {head_sha[:12]}")

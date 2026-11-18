@@ -111,7 +111,7 @@ gh run view <databaseId> --repo "$repo" --json status,conclusion
 **Code you may write (VFX-owned).** Writing code is in scope when the ticket's acceptance criteria need it, provided it stays inside VFX ownership:
 
 - Shader source, shader includes, shader graphs and their materials.
-- Effect and rendering components in the repository's VFX code location and namespace (for example `Assets/**/Scripts/VFX/`, `JungleGym.VFX`): spawners, pooled effect drivers, palette and material data types, and the interpolation utilities those effects use.
+- Effect and rendering components in the repository's documented VFX code location and namespace: spawners, pooled effect drivers, palette and material data types, and the interpolation utilities those effects use.
 - Deterministic editor-time or offline tooling that generates VFX and palette assets from the design source (for example a `tokens.json` to palette-asset importer), committed where the repository keeps its content-pipeline tools.
 - Tests for the code above, in the repository's existing test location, and wiring into an existing build or validator hook when the repository already provides one.
 - Integration edits that put the effect in front of the player. When the ticket's acceptance requires the specified effect to appear in the built game and the only missing piece is wiring, make the minimal additive edit at the effect's own endpoint: bind the effect component to the object, event or prefab that produces the effect, subscribe to an existing event and map its documented payload, hide or reveal the visual representation the effect replaces, and add the serialized reference or asset entry that binding needs. Stay on the lines the effect needs, name the effect in the commit message, and record the edit as a shared change in the report.
@@ -226,7 +226,8 @@ When the prompt includes a previous-run brief (its result line, head, PR and the
 
 Post this as one comment on the ticket when you finish:
 
-- **Status:** done | blocked
+- **Status:** done | blocked | checkpoint
+  - `checkpoint` — independent work is complete; waiting for CI. Use the shared continuation record and `RESULT: WAITING_CI <url>`.
   - `done` — the deliverable this ticket asks for is complete and verified. Anything you found but did not do because it is outside this ticket's scope belongs under **Suggested follow-up tickets** and is non-blocking; do not report `blocked` for it.
   - `blocked` — you could not complete the deliverable and need an answer or an external change before you can continue. In that case the run must also end with `RESULT: BLOCKED <one-line reason>` (section 7). A complete deliverable with open questions is `done`, not `blocked`.
 - **PR:** branch to default branch (URL)

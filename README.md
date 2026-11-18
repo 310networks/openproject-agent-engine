@@ -198,8 +198,14 @@ engine comment starts with `ENGINE:`.
 Long tasks are first-class: an agent that would otherwise idle through a
 workflow can end with `RESULT: WAITING_CI <url>` and the engine resumes it when
 the commit's checks settle, polling them itself so the wait costs no model time
-(`CHECKPOINT_WAIT_SECONDS`, `MAX_CHECKPOINT_WAITS`). A checkpoint is not a
-failure and does not consume the crash retry budget.
+(`CHECKPOINT_WAIT_SECONDS`). Pending/unreadable checks stay passive beyond the
+`MAX_CHECKPOINT_WAITS` warning threshold. Unchanged-source no-pending stalls and
+`MAX_CHECKPOINT_REVISIONS` without a new deliverable have separate strategy-review
+budgets. Operators can opt implementer holds into one early actionable-failure
+diagnosis with `CI_ACTIONABLE_CHECKS`; reviewer holds always wait for settlement.
+A checkpoint is not a failure and does not consume the crash retry budget.
+See [the checkpoint runbook](docs/RUNBOOK.md#waiting-on-ci-checkpoints-and-resume-holds)
+for structured continuation, evidence reuse and operator diagnostics.
 
 ### PR-triggered CI, plus capture labels
 
@@ -261,8 +267,11 @@ a merged instruction PR is not an automatic container upgrade.
 
 ## Contributing
 
-Issues and pull requests are welcome. Pull requests run the test suite
-(`ruff`, `mypy`, `pytest`). Changes to `.github/`, `docker/` or
+Issues and pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md)
+for the project-agnostic scope and public-content/privacy boundary before
+posting code, fixtures, commit messages or review material. Pull requests run the test suite
+(`ruff`, `mypy`, `pytest`, and dashboard JavaScript tests). Changes to
+`.github/`, `docker/` or
 `pyproject.toml` need review from a code owner, see
 [.github/CODEOWNERS](.github/CODEOWNERS).
 

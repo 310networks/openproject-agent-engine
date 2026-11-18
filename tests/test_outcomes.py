@@ -727,4 +727,4 @@ def test_checkpoint_comments_stay_short_and_specific() -> None:
         waits=9, head_sha="abcdef1234567890", checks_detail="1 of 1 check(s) failed"
     )
     assert "checkpoint wait cap reached" in cap
-    assert "9 runs" in cap
+    assert "9 unchanged-source checkpoints" in cap
