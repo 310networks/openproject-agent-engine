@@ -82,7 +82,8 @@ CREATE TABLE IF NOT EXISTS checkpoint_progress (
   work_package_id INTEGER PRIMARY KEY,
   head_sha TEXT,
   stagnant INTEGER NOT NULL DEFAULT 0,
-  revisions INTEGER NOT NULL DEFAULT 0
+  revisions INTEGER NOT NULL DEFAULT 0,
+  published_head TEXT
 );
 CREATE TABLE IF NOT EXISTS checkpoint_milestones (
   work_package_id INTEGER NOT NULL,
@@ -95,6 +96,12 @@ CREATE TABLE IF NOT EXISTS checkpoint_diagnoses (
   fingerprint TEXT NOT NULL,
   PRIMARY KEY (work_package_id, head_sha, fingerprint)
 );
+CREATE TABLE IF NOT EXISTS checkpoint_registrations (
+  work_package_id INTEGER NOT NULL,
+  repo TEXT NOT NULL,
+  head_sha TEXT NOT NULL,
+  PRIMARY KEY (work_package_id, repo, head_sha)
+);
 CREATE TABLE IF NOT EXISTS resume_holds (
   work_package_id INTEGER PRIMARY KEY,
   repo TEXT NOT NULL,
@@ -104,7 +111,8 @@ CREATE TABLE IF NOT EXISTS resume_holds (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   attempts INTEGER NOT NULL DEFAULT 0,
-  diagnosis_allowed INTEGER NOT NULL DEFAULT 0
+  diagnosis_allowed INTEGER NOT NULL DEFAULT 0,
+  pr_branch TEXT
 );
 """
 
@@ -175,6 +183,7 @@ class ResumeHold:
     updated_at: str
     attempts: int
     diagnosis_allowed: bool = False
+    pr_branch: str | None = None
 
     def ready(self, now: datetime | None = None) -> bool:
         """Whether the hold has expired (``ready_at`` is in the past)."""
@@ -200,6 +209,7 @@ def _row_to_resume_hold(row: sqlite3.Row) -> ResumeHold:
         attempts=int(row["attempts"]),
         diagnosis_allowed=(bool(row["diagnosis_allowed"])
                            if "diagnosis_allowed" in set(row.keys()) else False),
+        pr_branch=row["pr_branch"] if "pr_branch" in set(row.keys()) else None,
     )
 
 
@@ -267,12 +277,21 @@ class Store:
         for name in ("display_id", "subject"):
             if name not in columns:
                 self._conn.execute(f"ALTER TABLE runs ADD COLUMN {name} TEXT")
+        progress_columns = {str(r["name"]) for r in
+                            self._conn.execute("PRAGMA table_info(checkpoint_progress)")}
+        if "published_head" not in progress_columns:
+            self._conn.execute("ALTER TABLE checkpoint_progress ADD COLUMN published_head TEXT")
+            # Conservative first observation: do not re-credit a legacy matching
+            # source as new evidence. This column is never used as a polling ID.
+            self._conn.execute("UPDATE checkpoint_progress SET published_head = head_sha")
         hold_columns = {str(r["name"]) for r in
                         self._conn.execute("PRAGMA table_info(resume_holds)")}
         if "diagnosis_allowed" not in hold_columns:
             self._conn.execute(
                 "ALTER TABLE resume_holds ADD COLUMN diagnosis_allowed INTEGER NOT NULL DEFAULT 0"
             )
+        if "pr_branch" not in hold_columns:
+            self._conn.execute("ALTER TABLE resume_holds ADD COLUMN pr_branch TEXT")
         # ``MAX_RUNS_PER_AGENT`` replaced the one-run-per-agent database rule;
         # drop the index so an existing deployment can run more than one.
         self._conn.execute("DROP INDEX IF EXISTS one_active_per_agent")
@@ -716,7 +735,8 @@ class Store:
     def complete_checkpoint_episode(self, work_package_id: int) -> None:
         """A verified delivery handoff ends progress/diagnosis waits, not milestone history."""
         with self._lock:
-            for table in ("checkpoint_progress", "checkpoint_diagnoses", "resume_holds"):
+            for table in ("checkpoint_progress", "checkpoint_diagnoses",
+                          "checkpoint_registrations", "resume_holds"):
                 self._conn.execute(
                     f"DELETE FROM {table} WHERE work_package_id = ?", (work_package_id,)
                 )
@@ -740,9 +760,19 @@ class Store:
             self._conn.commit()
             return cursor.rowcount == 1
 
+    def claim_checks_registration(self, work_package_id: int, repo: str, head_sha: str) -> bool:
+        """Allow one passive registration grace per provider head, across restarts."""
+        with self._lock:
+            cursor = self._conn.execute(
+                "INSERT OR IGNORE INTO checkpoint_registrations VALUES (?, ?, ?)",
+                (work_package_id, repo, head_sha),
+            )
+            self._conn.commit()
+            return cursor.rowcount == 1
+
     def record_checkpoint_progress(
         self, work_package_id: int, *, head_sha: str | None, milestone: str | None = None,
-        waiting: bool = False,
+        waiting: bool = False, published_head: str | None = None,
     ) -> tuple[int, int]:
         """Return unchanged-source checkpoints and revisions since a new milestone.
 
@@ -752,13 +782,19 @@ class Store:
         """
         with self._lock:
             row = self._conn.execute(
-                "SELECT head_sha, stagnant, revisions FROM checkpoint_progress "
+                "SELECT head_sha, stagnant, revisions, published_head FROM checkpoint_progress "
                 "WHERE work_package_id = ?", (work_package_id,),
             ).fetchone()
+            # Single-head callers supply one published source; a dispatcher with no
+            # provider identity supplies neither. Local-only movement is activity,
+            # never a fresh source for a milestone against an unchanged publication.
+            published = published_head or head_sha
+            previous = row["published_head"] if row else None
+            fresh_publication = published is not None and published != previous
             moved = bool(head_sha) and (row is None or row["head_sha"] != head_sha)
             stagnant = 0 if moved else (int(row["stagnant"]) if row else 0) + int(not waiting)
             revisions = (int(row["revisions"]) if row else 0) + int(moved)
-            if (moved and milestone
+            if (fresh_publication and milestone
                     and milestone.lower() not in {"none", "omit unless newly completed"}):
                 cursor = self._conn.execute(
                     "INSERT OR IGNORE INTO checkpoint_milestones VALUES (?, ?)",
@@ -767,8 +803,10 @@ class Store:
                 if cursor.rowcount:
                     revisions = 0
             self._conn.execute(
-                "INSERT OR REPLACE INTO checkpoint_progress VALUES (?, ?, ?, ?)",
-                (work_package_id, head_sha, stagnant, revisions),
+                "INSERT OR REPLACE INTO checkpoint_progress "
+                "(work_package_id, head_sha, stagnant, revisions, published_head) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (work_package_id, head_sha, stagnant, revisions, published or previous),
             )
             self._conn.commit()
         return stagnant, revisions
@@ -785,6 +823,7 @@ class Store:
         head_sha: str | None = None,
         attempts: int = 0,
         diagnosis_allowed: bool = False,
+        pr_branch: str | None = None,
     ) -> ResumeHold:
         """Create or replace the resume hold of one work package."""
         now = _utcnow()
@@ -793,8 +832,8 @@ class Store:
                 """
                 INSERT INTO resume_holds (
                   work_package_id, repo, head_sha, ready_at, reason,
-                  created_at, updated_at, attempts, diagnosis_allowed
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  created_at, updated_at, attempts, diagnosis_allowed, pr_branch
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(work_package_id) DO UPDATE SET
                   repo = excluded.repo,
                   head_sha = excluded.head_sha,
@@ -804,7 +843,8 @@ class Store:
                     THEN resume_holds.created_at ELSE excluded.created_at END,
                   updated_at = excluded.updated_at,
                   attempts = excluded.attempts,
-                  diagnosis_allowed = excluded.diagnosis_allowed
+                  diagnosis_allowed = excluded.diagnosis_allowed,
+                  pr_branch = excluded.pr_branch
                 """,
                 (
                     work_package_id,
@@ -816,6 +856,7 @@ class Store:
                     now,
                     attempts,
                     int(diagnosis_allowed),
+                    pr_branch,
                 ),
             )
             self._conn.commit()

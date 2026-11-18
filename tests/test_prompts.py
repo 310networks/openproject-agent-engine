@@ -143,6 +143,10 @@ def test_with_standard_prepends_standard(tmp_path: Path) -> None:
     assert "Shared development-delivery policy" in result
     assert "`done`, `blocked`, or `checkpoint`" in result
     assert "```continuation" in result
+    assert "decision-sized pushes" in result
+    assert "independent work before declaring a CI wait" in result
+    assert "retained local SHA and the published PR head" in result
+    assert "Reviewers remain read-only" in result
     assert result.rstrip().endswith("Do the task.")
 
 

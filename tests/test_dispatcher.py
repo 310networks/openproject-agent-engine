@@ -11,6 +11,7 @@ import json
 import shutil
 import subprocess
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -2704,6 +2705,10 @@ async def test_waiting_ci_checkpoint_holds_the_resume_and_keeps_the_worktree(
         workspace = make_real_workspace(tmp_path)
         use_workspace(monkeypatch, workspace)
         monkeypatch.setattr("op_agent_engine.dispatcher.branch_snapshot", branch_snapshot)
+        gh.pr = replace(
+            PR, is_draft=True, head_branch=workspace.branch,
+            head_oid=_git(["-C", str(workspace.repo_dir), "rev-parse", "HEAD"]).strip(),
+        )
         claimed = claim(store, make_item(100))
         await dispatcher.execute(claimed)
         run = store.get_run(claimed.run_id)
@@ -2720,7 +2725,9 @@ async def test_waiting_ci_checkpoint_holds_the_resume_and_keeps_the_worktree(
         # The head commit has a fresh per-SHA passive poll counter.
         hold = store.resume_hold(100)
         assert hold is not None
-        assert hold.head_sha == _git(["-C", str(workspace.repo_dir), "rev-parse", "HEAD"]).strip()
+        assert hold.head_sha == gh.pr.head_oid
+        assert hold.pr_branch == workspace.branch
+        assert gh.checks_calls == [("owner/demo", gh.pr.head_oid)]
         assert hold.attempts == 0
         assert not hold.ready()
         # The worktree is kept for the next run (warm build caches).
@@ -2931,10 +2938,13 @@ async def test_a_waiting_ci_checkpoint_holds_even_when_checks_are_unreadable(
     """A 403 on the check API must not resume the agent on every poll.
 
     A fine-grained GitHub token without ``Checks: read`` cannot read
-    check-runs; the agent's own ``WAITING_CI`` is then the only evidence, and
-    it still has to be held (the gate retries on its interval).
+    check-runs; ``WAITING_CI`` with a provider-observed PR head must still
+    be held (the gate retries on its interval).
     """
-    gh = FakeGitHub(checks_error=GitHubError("gh api check-runs failed (403)"))
+    gh = FakeGitHub(
+        pr=replace(PR, is_draft=True, head_oid="published"),
+        checks_error=GitHubError("gh api check-runs failed (403)"),
+    )
     runner = FakeRunner(make_result(
         tmp_path,
         result_line="RESULT: WAITING_CI https://example.org/actions/runs/1",

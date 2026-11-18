@@ -141,6 +141,32 @@ hour of CI costs no agent runs:
 When every check has finished — green or red — the hold is released and the
 normal resume or review run starts on the next poll.
 
+CI holds follow the **provider-observed PR head**, not retained local commits
+or a URL in an agent report. Each due poll refreshes the PR using the configured
+repository and its recorded branch; a newer published head replaces the old
+polling/diagnosis identity. Local work stays retained and counts as content
+progress, but is not evidence that the provider has run CI. A missing PR/head
+cannot poll an unpublished local commit and consumes bounded stagnation on
+subsequent checkpoints instead. Provider lookup errors remain passive holds;
+an explicit missing identity is not a provider outage.
+
+An explicit `WAITING_CI` with a published head but **no checks reported** gets
+one passive registration grace at the normal `CHECKPOINT_WAIT_SECONDS` interval.
+The per-head receipt survives restart and repeated reports. If checks are still
+absent on the due poll, release the hold; repeated no-checks reports then consume
+stagnation rather than waiting forever on repositories without CI. Pending or
+unavailable checks retain the existing passive behavior. Settled success/failure
+never receives a registration grace, and a no-progress draft report with explicit
+nonpending checks remains a `no_pr` failure.
+
+The database upgrade adds a nullable PR branch to holds, a last-observed
+published head to progress accounting, and per-head registration receipts.
+Moving the retained local branch alone cannot refresh milestone evidence for
+an unchanged published revision. Old holds lacking a
+provider PR identity are released once, without querying their possibly local
+SHA; the next checkpoint establishes a trusted identity. Read-only dashboards
+can still read the older schema. No operator configuration change is required.
+
 ### `could not read the CI state ... (403)`
 
 A 403 on `check-runs` can mean a fine-grained `GH_TOKEN` was not granted
@@ -225,8 +251,14 @@ Next action/source are prioritized ahead of the 4,000-character legacy clip.
 Long reports remain available on the ticket; no new evidence commit is required
 for each test adjustment or passive poll.
 
-`meta.json` records `checkpoint_progress`, author-declared continuation fields
-and `agent_process_seconds` (process wall time including tools, not pure model
+`meta.json` records `checkpoint_progress`, author-declared continuation fields,
+`heads.ci_head` (published polling identity), `heads.branch_after` (retained local
+progress), and `heads.ci_local_head_mismatch`. Checkpoint logs expose
+`polled_head_sha`, `local_head_sha` and the mismatch flag; comments distinguish
+retained local work from the polled head. Use these to diagnose unpublished
+progress without attributing its CI to the wrong revision.
+
+`agent_process_seconds` records process wall time (including tools, not pure model
 inference/billed time). Release logs record `passive_ci_seconds` and provider
 poll count with work-package/source identity. Existing CI timing artifacts
 remain the source for repository-specific test/build timings. These are
