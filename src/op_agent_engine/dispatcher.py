@@ -779,7 +779,21 @@ class Dispatcher:
                 self._store.clear_resume_hold(wp.id)
             return decision, False
 
-        head_sha = heads.get("branch_after") or heads.get("pr_after")
+        # Only the provider's PR observation establishes a published CI identity.
+        # A retained worktree may be ahead (or behind); its commits are progress,
+        # not evidence that the provider can run checks for them. Reported URLs
+        # and cached head metadata cannot substitute for this observation.
+        local_head = heads.get("branch_after")
+        head_sha = pr.head_oid if pr is not None else None
+        heads["ci_head"] = head_sha
+        heads["ci_local_head_mismatch"] = bool(local_head and local_head != head_sha)
+        logger.info(
+            "checkpoint CI head for %s: provider=%s retained_local=%s",
+            wp.display_id, head_sha, local_head,
+            extra={"work_package_id": wp.id, "polled_head_sha": head_sha,
+                   "local_head_sha": local_head,
+                   "ci_local_head_mismatch": heads["ci_local_head_mismatch"]},
+        )
         checks = await self._commit_checks(wp, head_sha)
         if (
             decision.outcome == "checkpoint_no_progress"
@@ -815,14 +829,28 @@ class Dispatcher:
                     json.dumps(record) + "\n", encoding="utf-8",
                 )
         milestone = (record.get("completed_milestone")
-                     if record.get("source_sha") == head_sha and record.get("evidence") else None)
+                     if head_sha and record.get("source_sha") == head_sha
+                     and record.get("evidence") else None)
         checks_detail = checks.describe() if checks is not None else None
         # No head means no pollable identity: consume bounded stagnation, not
         # immediately-discarded pending holds.
-        waiting = bool(head_sha) and (checks.is_pending if checks is not None else
-                                     decision.outcome in {"waiting_ci", "checkpoint_no_progress"})
+        registration_grace = bool(
+            head_sha and checks is not None and checks.state == "none"
+            and decision.outcome == "waiting_ci"
+            and self._store.claim_checks_registration(
+                wp.id, self._repo_github(wp.project_id), head_sha,
+            )
+        )
+        waiting = bool(head_sha) and (
+            registration_grace or (checks.is_pending if checks is not None else
+                                   decision.outcome in {"waiting_ci", "checkpoint_no_progress"})
+        )
+        # Track retained content independently, but an ambiguous provider identity
+        # must consume stagnation even if the unpublished local head keeps moving.
+        progress_head = (local_head or head_sha) if head_sha else None
         stagnant, revisions = self._store.record_checkpoint_progress(
-            wp.id, head_sha=head_sha, milestone=milestone, waiting=waiting,
+            wp.id, head_sha=progress_head, published_head=head_sha,
+            milestone=milestone, waiting=waiting,
         )
         stalled = not waiting and stagnant > self._settings.max_checkpoint_waits
         unconverged = revisions > self._settings.max_checkpoint_revisions
@@ -865,6 +893,8 @@ class Dispatcher:
                 checks.describe() if checks is not None
                 else "CI state unavailable; the engine re-checks it"
             )
+            if registration_grace:
+                checks_detail += "; one passive grace for checks registration"
             ready_at = resume_ready_at(
                 now=datetime.now(UTC),
                 wait_seconds=self._settings.checkpoint_wait_seconds,
@@ -877,6 +907,7 @@ class Dispatcher:
                 reason=checks_detail,
                 attempts=0,
                 diagnosis_allowed=claimed.kind != "review",
+                pr_branch=pr.head_branch if pr is not None else None,
             )
             comment = waiting_ci_hold_comment(
                 head_sha=head_sha,
@@ -891,6 +922,10 @@ class Dispatcher:
                 head_sha=head_sha,
                 pr_url=pr.url if pr is not None else None,
                 detail=detail,
+            )
+        if local_head and local_head != head_sha:
+            comment += (
+                f"\nRetained local head: {local_head[:12]} (not the polled CI head)."
             )
         return replace(decision, comment=comment), keep_worktree
 
@@ -1973,7 +2008,7 @@ class Dispatcher:
         report = await self._agent_report_text(wp.id, claimed.item.agent_key)
         diagnosis = self._store.latest_ci_diagnosis(wp.id)
         diagnosis_reason = None
-        current_head = open_pr.head_oid if open_pr is not None else heads.get("branch_after")
+        current_head = open_pr.head_oid if open_pr is not None else None
         if diagnosis is not None and diagnosis["head_sha"] == current_head:
             diagnosis_reason = (f"Early failure diagnosis at {current_head}: "
                                 f"{diagnosis['fingerprint']}; inspect current checks/run URLs")

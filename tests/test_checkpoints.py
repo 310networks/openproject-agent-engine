@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 from op_agent_engine.checkpoints import ResumeGate, resume_ready_at
-from op_agent_engine.github import ChecksSummary, GitHubError
+from op_agent_engine.github import ChecksSummary, GitHubError, PullRequest
 from op_agent_engine.store import Store
 
 
@@ -20,6 +20,14 @@ class FakeChecks:
         self.summary = summary or ChecksSummary(state="none")
         self.error = error
         self.calls: list[tuple[str, str]] = []
+
+    async def find_pr(
+        self, repo: str, branch: str, *, state: str = "open"
+    ) -> PullRequest:
+        return PullRequest(
+            number=1, url="https://example.org/pulls/1", head_branch=branch,
+            state=state, head_oid=branch.removeprefix("task-"),
+        )
 
     async def commit_checks(self, repo: str, sha: str) -> ChecksSummary:
         self.calls.append((repo, sha))
@@ -44,6 +52,7 @@ def _hold(
         100,
         repo="acme/repo",
         head_sha=head_sha,
+        pr_branch=f"task-{head_sha}",
         ready_at=resume_ready_at(
             now=datetime.now(UTC), wait_seconds=ready_in_seconds
         ),
@@ -171,6 +180,7 @@ async def test_refresh_counts_extensions_and_releases_separately() -> None:
         200,
         repo="acme/repo",
         head_sha="def456",
+        pr_branch="task-def456",
         ready_at=resume_ready_at(now=datetime.now(UTC), wait_seconds=1),
         reason="1 of 1 check still running",
         attempts=1,

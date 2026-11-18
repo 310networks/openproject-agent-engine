@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from contextlib import closing
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,7 @@ from op_agent_engine.continuation import checkpoint_record, compact_report
 from op_agent_engine.github import ChecksSummary
 from op_agent_engine.store import Store
 from tests.test_dispatcher import (
+    PR,
     STATUS_IN_PROGRESS,
     STATUS_ON_HOLD,
     FakeGitHub,
@@ -93,7 +95,10 @@ async def test_many_productive_checkpoints_still_get_fresh_passive_poll_budget(
         tmp_path,
         monkeypatch,
         runner=runner,
-        gh=FakeGitHub(checks=ChecksSummary(state="pending", total=2, pending=1)),
+        gh=FakeGitHub(
+            pr=replace(PR, is_draft=True, head_oid="published"),
+            checks=ChecksSummary(state="pending", total=2, pending=1),
+        ),
         work_packages=[wp(100, status=STATUS_IN_PROGRESS, agent=11)],
         settings_overrides={"max_checkpoint_waits": 1},
     )
@@ -122,7 +127,10 @@ async def test_source_churn_without_milestone_requests_one_strategy_review(
         tmp_path,
         monkeypatch,
         runner=runner,
-        gh=FakeGitHub(checks=ChecksSummary(state="pending", total=1, pending=1)),
+        gh=FakeGitHub(
+            pr=replace(PR, is_draft=True, head_oid="published"),
+            checks=ChecksSummary(state="pending", total=1, pending=1),
+        ),
         work_packages=[wp(100, status=STATUS_IN_PROGRESS, agent=11)],
         settings_overrides={"max_checkpoint_revisions": 2},
     )

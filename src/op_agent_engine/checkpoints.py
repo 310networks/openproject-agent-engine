@@ -6,28 +6,31 @@ still running" cost a full model run each time (and a draft PR with nothing to
 push was even scored as a crash). A resume hold replaces that with a cheap
 hosting-provider poll:
 
-* the dispatcher writes a hold with a ``ready_at`` deadline and the head SHA,
+* the dispatcher writes a hold with a ``ready_at`` deadline and the provider PR head,
 * the scheduler skips the ticket while the deadline is in the future,
 * :class:`ResumeGate` runs on every engine loop, asks the hosting provider
   whether that commit's checks are still running and either extends the
   deadline or clears the hold so the next poll resumes the agent.
 
 The gate never claims work or changes a ticket; it only drops or extends
-holds. Pending or unreadable checks remain passive holds, even beyond the
-poll-warning threshold. A slow queue must not spend model sessions. A warning
+holds. Each due poll refreshes the PR head before querying checks. Pending or
+unreadable checks remain passive holds, even beyond the poll-warning threshold.
+An explicit no-checks wait gets one persisted registration grace, not an endless
+hold. A slow queue must not spend model sessions. A warning
 is logged once per hold when that threshold is reached; a settled result (or
 an operator clearing the hold) releases it.
 """
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
 
 from op_agent_engine.config import EngineSettings
-from op_agent_engine.github import ChecksSummary, GitHubError
+from op_agent_engine.github import ChecksSummary, GitHubError, PullRequest
 from op_agent_engine.logging import get_logger
 from op_agent_engine.openproject.client import (
     OpenProjectClient,
@@ -46,6 +49,10 @@ class ChecksLookup(Protocol):
     """The part of a hosting client the gate needs."""
 
     async def commit_checks(self, repo: str, sha: str) -> ChecksSummary: ...
+
+    async def find_pr(
+        self, repo: str, branch: str, *, state: str = "open"
+    ) -> PullRequest | None: ...
 
 
 def resume_ready_at(*, now: datetime, wait_seconds: int) -> str:
@@ -145,9 +152,43 @@ class ResumeGate:
                 cleared.append(hold)
                 notes.append(f"{hold.work_package_id}: no head recorded")
                 continue
+            if not hold.pr_branch:
+                # Pre-upgrade holds may contain an unpublished local SHA. Let
+                # one normal resume re-establish identity rather than polling it.
+                self._release_hold(hold, current)
+                cleared.append(hold)
+                notes.append(f"{hold.work_package_id}: no provider PR identity recorded")
+                continue
+            changed_head = False
             try:
-                checks = await self._checks.commit_checks(hold.repo, hold.head_sha)
-            except GitHubError as error:
+                async with asyncio.timeout(60):
+                    # Use the provider-owned branch, never a reported run URL.
+                    pr = await self._checks.find_pr(hold.repo, hold.pr_branch)
+                    if pr is None or not pr.head_oid:
+                        self._release_hold(hold, current)
+                        cleared.append(hold)
+                        notes.append(f"{hold.work_package_id}: no pollable PR head")
+                        continue
+                    if pr.head_oid != hold.head_sha:
+                        previous_head = hold.head_sha
+                        hold = self._store.set_resume_hold(
+                            hold.work_package_id, repo=hold.repo, head_sha=pr.head_oid,
+                            pr_branch=hold.pr_branch, ready_at=hold.ready_at,
+                            reason="Provider PR head advanced; checking current revision",
+                            diagnosis_allowed=hold.diagnosis_allowed,
+                        )
+                        changed_head = True
+                        notes.append(f"{hold.work_package_id}: provider PR head changed")
+                        logger.info(
+                            "CI hold rebound to provider PR head for %s: %s -> %s",
+                            hold.work_package_id, previous_head, hold.head_sha,
+                            extra={"work_package_id": hold.work_package_id,
+                                   "previous_head_sha": previous_head,
+                                   "polled_head_sha": hold.head_sha},
+                        )
+                    assert hold.head_sha is not None
+                    checks = await self._checks.commit_checks(hold.repo, hold.head_sha)
+            except (GitHubError, TimeoutError) as error:
                 # Provider trouble is not work for the task implementer.
                 # Warn once, retaining a visible hold and the normal polling cadence.
                 self._store.extend_resume_hold(
@@ -161,7 +202,7 @@ class ResumeGate:
                 log(
                     "CI state unavailable for %s (%s); passive recheck in %ds; "
                     "operator may clear the hold after repairing access",
-                    hold.head_sha[:12], error, self._wait_seconds,
+                    (hold.head_sha or "unknown")[:12], error, self._wait_seconds,
                     extra={"work_package_id": hold.work_package_id,
                            "head_sha": hold.head_sha, "attempts": hold.attempts + 1},
                 )
@@ -180,8 +221,19 @@ class ResumeGate:
                 logger.info("released one CI diagnosis: %s", notes[-1])
                 continue
 
-            if checks.is_pending:
+            # A newly observed provider head may not have registered checks yet.
+            # One persisted grace interval only; a genuinely CI-free revision
+            # releases on the next poll, even across a process restart.
+            registration_grace = (
+                changed_head and checks.state == "none"
+                and self._store.claim_checks_registration(
+                    hold.work_package_id, hold.repo, hold.head_sha,
+                )
+            )
+            if checks.is_pending or registration_grace:
                 reason = checks.describe()
+                if registration_grace:
+                    reason += "; one passive grace for checks registration"
                 if hold.attempts >= self._max_attempts:
                     reason += "; poll warning threshold exceeded: operator inspect queue/provider"
                 self._store.extend_resume_hold(
@@ -194,13 +246,14 @@ class ResumeGate:
                 extended.append(hold)
                 log = logger.warning if hold.attempts == self._max_attempts else logger.debug
                 log(
-                    "CI remains pending; holding work package %s without a model run: %s",
+                    "CI pending or registering; holding work package %s without a model run: %s",
                     hold.work_package_id,
                     checks.describe(),
                     extra={
                         "work_package_id": hold.work_package_id,
                         "repo": hold.repo,
                         "head_sha": hold.head_sha,
+                        "polled_head_sha": hold.head_sha,
                         "checks": checks.describe(),
                         "attempts": hold.attempts + 1,
                     },

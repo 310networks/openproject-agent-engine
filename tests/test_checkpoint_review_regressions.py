@@ -51,7 +51,10 @@ async def test_cap_then_human_unhold_resets_new_budgets_once_not_every_resume(
         monkeypatch,
         runner=runner,
         fake=fake,
-        gh=FakeGitHub(checks=ChecksSummary(state="success", total=1)),
+        gh=FakeGitHub(
+            pr=replace(PR, is_draft=True, head_oid="unchanged"),
+            checks=ChecksSummary(state="success", total=1),
+        ),
         settings_overrides={"max_checkpoint_waits": 1},
     )
     try:

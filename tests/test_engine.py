@@ -11,6 +11,7 @@ import asyncio
 import contextlib
 import json
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -1349,7 +1350,10 @@ async def test_a_checkpoint_hold_stops_the_resume_until_the_gate_releases_it(
         tmp_path, monkeypatch,
         work_packages=[wp(100, status=STATUS_NEW, agent=11)],
         runner=runner,
-        gh=FakeGitHub(checks=ChecksSummary(state="pending", total=2, pending=1)),
+        gh=FakeGitHub(
+            pr=replace(PR, is_draft=True, head_oid="published-source"),
+            checks=ChecksSummary(state="pending", total=2, pending=1),
+        ),
     )
 
     refreshes = {"n": 0}

@@ -15,7 +15,14 @@ CONTINUATION_POLICY = """## Shared development-delivery policy
   are unchanged; name those dependencies and links. Never claim unrun tests or
   treat a skipped/focused check as complete qualification. Review/merge still
   require current required qualification, independent review and Owner gates.
-- Group small logical commits into coherent pushes. Use a reduced CI scope only
+- Group small logical commits into coherent, decision-sized pushes: each should
+  provide useful review or CI feedback, not merely restate evidence. Finish safe
+  independent work before declaring a CI wait, without superseding a revision
+  whose result you still need. If clean work must remain local, report both the
+  retained local SHA and the published PR head; only the provider's PR head is
+  the CI/evidence identity. A run URL is a reference, not proof of that identity.
+  Reviewers remain read-only and never push the implementer's branch.
+  Use a reduced CI scope only
   when a verified repository policy authorizes it; follow that repository's
   documented triggers and qualification requirements. Do not assume particular
   labels, workflows, platforms or test families exist. Shared/high-risk and
@@ -35,7 +42,7 @@ CONTINUATION_POLICY = """## Shared development-delivery policy
   string values only). It is author-declared context, not approval or acceptance:
 
 ```continuation
-{"next_action":"one concrete next step", "source_sha":"full current head SHA",
+{"next_action":"one concrete next step", "source_sha":"full published PR head SHA",
  "ci_run":"immutable relevant run URL",
  "failure_category":"production|test/pilot|infrastructure|none",
  "failure":"short current failure or none",
