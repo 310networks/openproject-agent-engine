@@ -2,6 +2,9 @@
 
 // The dashboard is deliberately dependency-free: one JSON endpoint, plain DOM.
 const REFRESH_FALLBACK_MS = 3000;
+// Recent sessions are windowed by ticket, not by session: one busy ticket with
+// many CI checkpoints must not push newer tickets out of the section.
+const RECENT_TICKET_LIMIT = 8;
 const KPI_ICONS = {
   total: "Σ",
   running: "▶",
@@ -324,6 +327,12 @@ function groupRecentSessions(sessions) {
   return [...groups.values()];
 }
 
+// Only the newest RECENT_TICKET_LIMIT tickets are listed; each keeps every
+// session the snapshot holds for it so hidden history stays reachable.
+function recentTicketGroups(sessions, limit = RECENT_TICKET_LIMIT) {
+  return groupRecentSessions(sessions).slice(0, Math.max(1, limit));
+}
+
 function sessionTable(sessions, { active = false, histories = null } = {}) {
   if (!sessions.length) {
     return make(
@@ -434,20 +443,48 @@ function renderSessions(snapshot) {
   els.activeCount.textContent = `${active.length} running`;
   clear(els.active);
   els.active.append(sessionTable(active, { active: true }));
+  // A ticket with a live session belongs to Active sessions only; showing it in
+  // both lists makes the same work look duplicated. Legacy runs without a
+  // ticket id never collide, because ticketKey falls back to the run id.
+  const activeKeys = [...new Set(active.map(ticketKey))].sort();
+  const activeKeySet = new Set(activeKeys);
+  const visible = recent.filter((session) => !activeKeySet.has(ticketKey(session)));
   // Keep history controls mounted during timer ticks and unchanged polls so
-  // keyboard focus and expanded rows survive automatic refreshes.
-  const signature = JSON.stringify(recent);
+  // keyboard focus and expanded rows survive automatic refreshes. Activity
+  // changes also move tickets between the two lists, so re-render for them too.
+  const signature = JSON.stringify([recent, activeKeys]);
   if (signature !== recentSignature) {
     const focusedKey = document.activeElement?.dataset?.ticketKey;
-    const groups = groupRecentSessions(recent);
+    const ticketCount = groupRecentSessions(visible).length;
+    const groups = recentTicketGroups(visible);
     const histories = new Map(groups.map(([latest, ...previous]) => [ticketKey(latest), previous]));
     for (const key of expandedTickets) {
       if (!histories.get(key)?.length) expandedTickets.delete(key);
     }
-    els.recentCount.textContent = `${groups.length} tickets · ${recent.length} sessions in snapshot`;
+    const shownSessions = groups.reduce((total, group) => total + group.length, 0);
+    const activeTickets = [...activeKeySet].filter((key) =>
+      recent.some((session) => ticketKey(session) === key)
+    ).length;
+    els.recentCount.title = activeTickets
+      ? `${activeTickets} ticket(s) are running now and listed only under Active sessions. Newest ${RECENT_TICKET_LIMIT} finished tickets are shown; older ones are outside the window — increase --limit to include them.`
+      : `Newest ${RECENT_TICKET_LIMIT} tickets in the snapshot. Older tickets are outside the window; increase --limit to include them.`;
+    const sessionLabel = activeTickets ? "sessions shown" : "sessions in snapshot";
+    if (ticketCount > groups.length) {
+      els.recentCount.textContent = `${groups.length} of ${ticketCount} tickets · ${shownSessions} sessions shown`;
+    } else {
+      els.recentCount.textContent = `${ticketCount} tickets · ${visible.length} ${sessionLabel}`;
+    }
     recentTimes = [];
     clear(els.recent);
-    els.recent.append(sessionTable(groups.map(([latest]) => latest), { histories }));
+    if (!groups.length) {
+      els.recent.append(make(
+        "div",
+        "empty",
+        activeTickets ? "No finished sessions outside the currently active tickets." : "No finished sessions yet."
+      ));
+    } else {
+      els.recent.append(sessionTable(groups.map(([latest]) => latest), { histories }));
+    }
     recentSignature = signature;
     if (focusedKey) {
       for (const button of els.recent.querySelectorAll(".history-toggle")) {

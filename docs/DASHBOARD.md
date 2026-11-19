@@ -14,11 +14,19 @@ glance:
   than one ticket at once) and last session.
 - **What is running, and what ran before?** Active sessions plus the most
   recent finished sessions grouped into one row per OpenProject ticket, with
-  ticket id, agent, kind, duration, outcome and PR link. Each row shows the
-  newest started session (run ID breaks ties). The ↶ history button reveals
+  ticket id, agent, kind, duration, outcome and PR link. The section lists
+  only the **newest 8 tickets** in the snapshot (not the newest 8 sessions),
+  so a ticket with many CI checkpoints cannot crowd newer tickets out; each
+  listed ticket keeps every session the snapshot holds for it. Each row shows
+  the newest started session (run ID breaks ties). The ↶ history button reveals
   earlier sessions for that ticket, newest first, and works with keyboard
   navigation. Expanded history stays open across automatic refreshes.
-  Active sessions and all-run totals are unchanged.
+  A ticket with a live session is listed **only under Active sessions**; its
+  finished runs are not repeated in Recent sessions. When the snapshot holds
+  more than 8 finished tickets, the count reads
+  `8 of N tickets · M sessions shown` and the tooltip explains the window and
+  any tickets hidden because they are running. Active sessions and all-run
+  totals are otherwise unchanged.
 - **How are the totals trending?** Historical total, running, completed,
   declined and failed session counts, plus a breakdown of recorded outcomes (excluding
   aborted claim attempts and work-package transition races).
@@ -225,11 +233,17 @@ variables or prompts.
   `reconciled_pid_reused` or `reconciled_finished_meta`. These are also included
   in `counts.outcomes`. No snapshot fields or endpoints have changed.
 - Recent ticket rows and their history use only the finished sessions in the
-  current snapshot, not the complete stored ticket history. `--limit` still
-  limits sessions, not distinct tickets; repeated CI checkpoints can therefore
-  reduce the number of tickets shown. The displayed counts distinguish tickets
-  from sessions, and expanded history labels this limit explicitly. Increase
-  `--limit` (up to 500) to include more sessions. Grouping is browser-only;
-  the JSON API and stored run history are unchanged.
+  current snapshot, not the complete stored ticket history. The section is
+  windowed to the newest 8 distinct tickets, each keeping all of its snapshot
+  sessions; tickets older than that window are hidden until `--limit` grows
+  the snapshot. `--limit` still limits sessions, not distinct tickets, so a
+  ticket with many CI checkpoints consumes snapshot entries without adding a
+  row. The displayed counts distinguish tickets from sessions, and expanded
+  history labels the snapshot limit explicitly. Increase `--limit` (up to 500)
+  to include more tickets and sessions. Tickets with a live session in
+  `active_sessions` are filtered out of the finished list, so a ticket never
+  appears in both panels; when that empties the list, an explicit empty state
+  says so instead of showing stale rows. Window size, filtering and grouping
+  are browser-only; the JSON API and stored run history are unchanged.
 - The JSON API is `GET /api/status?limit=N`; `GET /healthz` returns
   `{"ok": true}` for uptime checks.
