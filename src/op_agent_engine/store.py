@@ -507,6 +507,31 @@ class Store:
             ).fetchall()
         return [_row_to_run(row) for row in rows]
 
+    def recent_ticket_runs(self, *, active: list[Run], ticket_limit: int,
+                           history_limit: int) -> list[Run]:
+        """Finished histories for the newest tickets not in the active snapshot."""
+        active_ids = [run.work_package_id for run in active]
+        placeholders = ",".join("?" for _ in active_ids)
+        with self._lock:
+            rows = self._conn.execute(
+                f"""WITH ranked AS (
+                    SELECT id, work_package_id, started_at,
+                           ROW_NUMBER() OVER (PARTITION BY work_package_id
+                                              ORDER BY started_at DESC, id DESC) AS position
+                    FROM runs WHERE state != ? AND work_package_id NOT IN ({placeholders})
+                ), tickets AS (
+                    SELECT * FROM ranked WHERE position = 1
+                    ORDER BY started_at DESC, id DESC LIMIT ?
+                )
+                SELECT runs.* FROM tickets
+                JOIN ranked USING (work_package_id)
+                JOIN runs ON runs.id = ranked.id
+                WHERE ranked.position <= ?
+                ORDER BY tickets.started_at DESC, tickets.id DESC, ranked.position""",
+                (RUNNING, *active_ids, ticket_limit, history_limit),
+            ).fetchall()
+        return [_row_to_run(row) for row in rows]
+
     def last_review_run(self, work_package_id: int) -> Run | None:
         """The most recent finished review run for *work_package_id*.
 
