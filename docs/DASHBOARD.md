@@ -122,6 +122,18 @@ below. It never writes to the store, OpenProject or a
 workspace, so it is safe to start, stop or refresh while a run is in flight.
 If the database does not exist yet it renders an empty state.
 
+## Recent tickets API
+
+`GET /api/status` returns `recent_tickets`, an array of up to ten distinct
+work packages not listed in `active_sessions`. Each entry has `work_package_id`
+(the numeric OpenProject ID) and `sessions` (the newest ten finished runs for
+that ticket, using the same fields as `recent_sessions`). Tickets are ranked
+by their newest session's start time, with higher run ID breaking ties; each
+history uses that same newest-first order. `sessions[0]` represents the ticket.
+With no eligible history the array is empty. The `limit` parameter still bounds
+`recent_sessions` only; it does not truncate ticket selection or ticket histories.
+The current browser panel still reads `recent_sessions`.
+
 ## Current work-package counts API (backend prerequisite for OP#502)
 
 `GET /api/status?limit=N` additionally returns `current_work_packages`, separate

@@ -277,6 +277,32 @@ def test_snapshot_limit(snapshot: tuple[dict[str, Any], Path]) -> None:
     assert len(payload["recent_sessions"]) == 2
 
 
+def test_recent_tickets_selects_distinct_inactive_history_before_limiting(tmp_path: Path) -> None:
+    store = Store(tmp_path / "engine.db")
+    try:
+        # The newest finished sessions are dominated by ticket 11. Ticket 12
+        # has finished history too, but is now active again.
+        finished = [*range(1, 12), *([11] * 12), 12]
+        for index, wp in enumerate([*finished, 12]):
+            run_id = store.begin_run(
+                work_package_id=wp, project_id=4, agent="IMPL", kind="implement",
+                attempt=1, branch=f"op-4-{wp}", run_dir_template=str(store.runs_dir / "{id}"),
+            )
+            if index < len(finished):
+                store.finish_run(run_id, state=SUCCEEDED, outcome="approved")
+    finally:
+        store.close()
+
+    payload = DashboardData(_config(), _settings(tmp_path)).snapshot(limit=1)
+    assert [s["work_package_id"] for s in payload["recent_sessions"]] == [12]
+    tickets = payload["recent_tickets"]
+    assert [t["work_package_id"] for t in tickets] == list(range(11, 1, -1))
+    assert [s["id"] for s in tickets[0]["sessions"]] == list(range(23, 13, -1))
+    for ticket in tickets:
+        assert all(s["work_package_id"] == ticket["work_package_id"] for s in ticket["sessions"])
+        assert ticket["sessions"][0].keys() == payload["recent_sessions"][0].keys()
+
+
 def test_engine_status_stale(tmp_path: Path) -> None:
     settings = _settings(tmp_path)
     settings.data_dir.mkdir(parents=True, exist_ok=True)
@@ -304,6 +330,7 @@ def test_engine_status_offline_without_store(tmp_path: Path) -> None:
     assert payload["agents"]
     assert payload["active_sessions"] == []
     assert payload["recent_sessions"] == []
+    assert payload["recent_tickets"] == []
 
 
 def test_assets_are_packaged() -> None:

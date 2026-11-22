@@ -52,6 +52,8 @@ logger = get_logger(__name__)
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 DEFAULT_LIMIT = 25
+RECENT_TICKET_LIMIT = 10
+TICKET_HISTORY_LIMIT = 10
 MAX_LIMIT = 500
 DEFAULT_REFRESH_SECONDS = 3
 
@@ -393,6 +395,14 @@ class DashboardData:
                 }
             )
 
+        ticket_sessions: dict[int, list[dict[str, Any]]] = {}
+        for run in store.recent_ticket_runs(
+            active=active, ticket_limit=RECENT_TICKET_LIMIT, history_limit=TICKET_HISTORY_LIMIT
+        ):
+            ticket_sessions.setdefault(run.work_package_id, []).append(
+                _session_payload(run, now=now, settings=self.settings, agent_names=agent_names)
+            )
+
         heartbeat_raw, heartbeat_age = read_heartbeat(self.settings)
         status, stale_after = _engine_status(
             self.settings, heartbeat_age=heartbeat_age
@@ -436,6 +446,10 @@ class DashboardData:
                     agent_names=agent_names,
                 )
                 for run in active
+            ],
+            "recent_tickets": [
+                {"work_package_id": wp_id, "sessions": sessions}
+                for wp_id, sessions in ticket_sessions.items()
             ],
             "recent_sessions": [
                 _session_payload(
