@@ -12,21 +12,12 @@ glance:
 - **Which agents are available?** Every agent in the fixed team, its
   runner/model, project scope, every current session (an agent can run more
   than one ticket at once) and last session.
-- **What is running, and what ran before?** Active sessions plus the most
-  recent finished sessions grouped into one row per OpenProject ticket, with
-  ticket id, agent, kind, duration, outcome and PR link. The section lists
-  only the **newest 8 tickets** in the snapshot (not the newest 8 sessions),
-  so a ticket with many CI checkpoints cannot crowd newer tickets out; each
-  listed ticket keeps every session the snapshot holds for it. Each row shows
-  the newest started session (run ID breaks ties). The ↶ history button reveals
-  earlier sessions for that ticket, newest first, and works with keyboard
-  navigation. Expanded history stays open across automatic refreshes.
-  A ticket with a live session is listed **only under Active sessions**; its
-  finished runs are not repeated in Recent sessions. When the snapshot holds
-  more than 8 finished tickets, the count reads
-  `8 of N tickets · M sessions shown` and the tooltip explains the window and
-  any tickets hidden because they are running. Active sessions and all-run
-  totals are otherwise unchanged.
+- **What is running, and what ran before?** **Recent Tickets** shows the last 10
+  distinct tickets worked on, excluding tickets listed under **Active sessions**.
+  Each row shows the ticket's newest finished session, ranked by start time
+  (run ID breaks ties), with agent, kind, duration, outcome and PR link. The
+  history button reveals up to nine earlier sessions for that ticket, newest
+  first. It works with keyboard navigation and stays expanded across refreshes.
 - **How are the totals trending?** Historical total, running, completed,
   declined and failed session counts, plus a breakdown of recorded outcomes (excluding
   aborted claim attempts and work-package transition races).
@@ -132,7 +123,7 @@ by their newest session's start time, with higher run ID breaking ties; each
 history uses that same newest-first order. `sessions[0]` represents the ticket.
 With no eligible history the array is empty. The `limit` parameter still bounds
 `recent_sessions` only; it does not truncate ticket selection or ticket histories.
-The current browser panel still reads `recent_sessions`.
+The Recent Tickets panel uses `recent_tickets`, independently of `--limit`.
 
 ## Current work-package counts API (backend prerequisite for OP#502)
 
