@@ -32,6 +32,8 @@ agent, verifies the outcome against GitHub and OpenProject, and performs
 - GitHub or GitLab repository for each project and a token that can push to it
   and merge pull/merge requests. GitLab.com and HTTPS self-managed GitLab are supported.
 
+An optional [verified CI retry coordinator](docs/verified-ci-retry.md) can reconcile trusted infrastructure recovery receipts without creating a work package or granting role agents workflow-dispatch permissions. It is not enabled by the normal engine startup.
+
 ## Quick start
 
 1. Complete the one-time instance setup — statuses, the `GIT_REPO` project

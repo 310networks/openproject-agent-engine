@@ -28,6 +28,7 @@ dev = [
 
 [project.scripts]
 op-agent-engine = "op_agent_engine.cli:main"
+op-agent-engine-ci-retry = "op_agent_engine.ci_retry:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/op_agent_engine"]
