@@ -392,7 +392,7 @@ function sessionTable(sessions, { active = false, histories = null } = {}) {
       historyRow.id = `history-${key}`;
       const historyCell = make("td");
       historyCell.colSpan = 9;
-      historyCell.append(make("p", "history-note", "Earlier sessions in this snapshot (newest first). Older sessions may be outside the snapshot limit."));
+      historyCell.append(make("p", "history-note", "Up to nine earlier sessions, newest first."));
       historyCell.append(sessionTable(previous));
       historyRow.append(historyCell);
       const setExpanded = (expanded) => {

@@ -111,7 +111,7 @@ test("history is collapsed initially, toggles accessibly, and preserves session 
   assert.equal(button.attributes["aria-expanded"], "true");
   assert.match(text(history), /Nonzero Exit/);
   assert.match(text(history), /<script>not markup<\/script>/);
-  assert.match(text(history), /outside the snapshot limit/);
+  assert.match(text(history), /Up to nine earlier sessions, newest first/);
   button.listeners.click();
   assert.equal(history.hidden, true);
 });

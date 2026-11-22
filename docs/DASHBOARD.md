@@ -235,18 +235,10 @@ variables or prompts.
   is `interrupted`; `outcome` records `reconciled_dead_pid`,
   `reconciled_pid_reused` or `reconciled_finished_meta`. These are also included
   in `counts.outcomes`. No snapshot fields or endpoints have changed.
-- Recent ticket rows and their history use only the finished sessions in the
-  current snapshot, not the complete stored ticket history. The section is
-  windowed to the newest 8 distinct tickets, each keeping all of its snapshot
-  sessions; tickets older than that window are hidden until `--limit` grows
-  the snapshot. `--limit` still limits sessions, not distinct tickets, so a
-  ticket with many CI checkpoints consumes snapshot entries without adding a
-  row. The displayed counts distinguish tickets from sessions, and expanded
-  history labels the snapshot limit explicitly. Increase `--limit` (up to 500)
-  to include more tickets and sessions. Tickets with a live session in
-  `active_sessions` are filtered out of the finished list, so a ticket never
-  appears in both panels; when that empties the list, an explicit empty state
-  says so instead of showing stale rows. Window size, filtering and grouping
-  are browser-only; the JSON API and stored run history are unchanged.
+- Recent Tickets uses `recent_tickets` from the [status API](#recent-tickets-api).
+  It shows up to ten distinct tickets with no active session. Each ticket includes
+  at most ten finished sessions: the row shows the latest, and expanding it shows
+  up to nine earlier sessions. `--limit` affects only `recent_sessions`, not the
+  tickets or history shown here.
 - The JSON API is `GET /api/status?limit=N`; `GET /healthz` returns
   `{"ok": true}` for uptime checks.
