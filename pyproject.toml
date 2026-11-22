@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "op-agent-engine"
-version = "0.11.0"
+version = "0.12.0"
 description = "Polls OpenProject work packages and dispatches coding agents to work on them"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -28,6 +28,7 @@ dev = [
 
 [project.scripts]
 op-agent-engine = "op_agent_engine.cli:main"
+op-agent-engine-ci-retry = "op_agent_engine.ci_retry:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/op_agent_engine"]
