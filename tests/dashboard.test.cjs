@@ -75,36 +75,27 @@ function session(id, ticket, outcome = "waiting_ci", extra = {}) {
     ...extra,
   };
 }
-function renderSessions(recent, active = []) {
-  context.snapshot = { recent_sessions: recent, active_sessions: active };
+function ticket(...sessions) { return { work_package_id: sessions[0].work_package_id, sessions }; }
+function renderSessions(recent, active = [], legacy = []) {
+  context.snapshot = { recent_tickets: recent, active_sessions: active, recent_sessions: legacy };
   evaluate("renderSessions(snapshot)");
   return elements.get("recent-sessions").children[0];
 }
 function rows(table) { return table.children[1].children; }
 function text(node) { return [node.textContent, ...node.children.map(text)].join(" "); }
 
-test("groups checkpoints across agents by ticket, with newest run and deterministic ties", () => {
-  context.sessions = [session(1, 501), session(3, 501, "approved", { agent: "reviewer" }),
-    session(2, 502), session(4, 503, "blocked", { started_at: null }),
-    session(5, 503, "nonzero_exit", { started_at: null })];
-  const result = JSON.parse(evaluate("JSON.stringify(groupRecentSessions(sessions))"));
-  assert.deepEqual(result.map((group) => group.map((run) => run.id)), [[3, 1], [2], [5, 4]]);
-  assert.deepEqual(context.sessions.map((run) => run.id), [1, 3, 2, 4, 5]);
-});
-
-test("empty, single-session and legacy missing-ticket entries remain distinct", () => {
-  assert.match(text(renderSessions([])), /No finished sessions yet/);
-  const single = renderSessions([session(1, 501)]);
+test("empty and single-session recent ticket snapshots", () => {
+  assert.match(text(renderSessions([])), /No recent tickets/);
+  const single = renderSessions([ticket(session(1, 501))]);
   assert.equal(rows(single).length, 1);
   assert.equal(single.querySelectorAll(".history-toggle").length, 0);
-  context.sessions = [session(1, null), session(2, null)];
-  assert.equal(evaluate("groupRecentSessions(sessions).length"), 2);
+  assert.equal(elements.get("recent-count").textContent, "1 ticket · 1 session");
 });
 
 test("history is collapsed initially, toggles accessibly, and preserves session details as text", () => {
-  const table = renderSessions([session(1, 501, "nonzero_exit", {
+  const table = renderSessions([ticket(session(2, 501, "ready_for_review"), session(1, 501, "nonzero_exit", {
     subject: "<script>not markup</script>", pr_url: "https://github.com/example/repo/pull/1",
-  }), session(2, 501, "ready_for_review")]);
+  }))]);
   const [latest, history] = rows(table);
   assert.match(text(latest), /Ready For Review/);
   assert.doesNotMatch(text(latest), /Nonzero Exit/);
@@ -120,25 +111,26 @@ test("history is collapsed initially, toggles accessibly, and preserves session 
   assert.equal(button.attributes["aria-expanded"], "true");
   assert.match(text(history), /Nonzero Exit/);
   assert.match(text(history), /<script>not markup<\/script>/);
-  assert.match(text(history), /outside the snapshot limit/);
+  assert.match(text(history), /Up to nine earlier sessions, newest first/);
   button.listeners.click();
   assert.equal(history.hidden, true);
 });
 
 test("timer ticks, updated snapshots and stale-data renders preserve expansion and focus", () => {
-  const first = [session(1, 601), session(2, 601)];
+  const first = [ticket(session(2, 601), session(1, 601))];
+  const next = [ticket(session(3, 601, "approved"), ...first[0].sessions)];
   const table = renderSessions(first);
   const button = table.querySelectorAll(".history-toggle")[0];
   button.listeners.click();
   button.focus();
   assert.equal(renderSessions(first), table);
   assert.equal(document.activeElement, button);
-  const updated = renderSessions([...first, session(3, 601, "approved")]);
+  const updated = renderSessions(next);
   const replacement = updated.querySelectorAll(".history-toggle")[0];
   assert.equal(rows(updated)[1].hidden, false);
   assert.equal(document.activeElement, replacement);
   // poll's failure path renders the same last snapshot; it must not close history.
-  assert.equal(renderSessions([...first, session(3, 601, "approved")]), updated);
+  assert.equal(renderSessions(next), updated);
   replacement.listeners.click();
   assert.equal(rows(updated)[1].hidden, true);
   renderSessions([]);
@@ -146,102 +138,29 @@ test("timer ticks, updated snapshots and stale-data renders preserve expansion a
   assert.equal(rows(returned)[1].hidden, true);
 });
 
-function ticketWindowSessions(tickets) {
-  // Two sessions per ticket: an older run and a newer run, interleaved so run
-  // ids and start times both increase with the ticket number.
-  return tickets.flatMap((ticket, index) => [
-    session(index + 1, ticket, "waiting_ci"),
-    session(tickets.length + index + 1, ticket, "approved"),
-  ]);
-}
-
-test("recent sessions are windowed to the newest eight tickets, not the newest sessions", () => {
-  context.sessions = ticketWindowSessions([900, 901, 902, 903, 904, 905, 906, 907, 908, 909]);
-  const groups = JSON.parse(evaluate("JSON.stringify(recentTicketGroups(sessions))"));
-  assert.deepEqual(groups.map((group) => group[0].work_package_id), [909, 908, 907, 906, 905, 904, 903, 902]);
-  // Every shown ticket keeps all of its snapshot sessions for history.
-  assert.deepEqual(groups.map((group) => group.length), [2, 2, 2, 2, 2, 2, 2, 2]);
-  assert.equal(evaluate("recentTicketGroups(sessions, 3).length"), 3);
-  assert.equal(evaluate("recentTicketGroups(sessions, 0).length"), 1);
+test("renders all ten API-ranked tickets even when recent_sessions covers only one", () => {
+  const busy = ticket(...Array.from({ length: 10 }, (_, i) => session(30 - i, 904)));
+  const rest = Array.from({ length: 9 }, (_, i) => ticket(session(20 - i, 800 + i)));
+  const table = renderSessions([busy, ...rest], [], busy.sessions);
+  const [latest, history, ...others] = rows(table);
+  assert.match(text(latest), /OP#904/);
+  assert.equal(history.hidden, true);
+  assert.equal(rows(history.children[0].children[1]).length, 9);
+  assert.deepEqual(others.map(row => text(row).match(/OP#\d+/)[0]),
+    rest.map(entry => `OP#${entry.work_package_id}`));
+  assert.equal(elements.get("recent-count").textContent, "10 tickets · 19 sessions");
 });
 
-test("recent session table stops at eight tickets and reports the hidden ones", () => {
-  const recent = ticketWindowSessions([900, 901, 902, 903, 904, 905, 906, 907, 908, 909]);
-  const table = renderSessions(recent);
-  assert.equal(rows(table).length, 16); // eight ticket rows plus eight history rows
-  const body = rows(table).map(text).join(" | ");
-  assert.match(body, /OP#909/);
-  assert.match(body, /OP#902/);
-  assert.doesNotMatch(body, /OP#901/);
-  assert.doesNotMatch(body, /OP#900/);
-  assert.equal(table.querySelectorAll(".history-toggle").length, 8);
-  const count = elements.get("recent-count");
-  assert.equal(count.textContent, "8 of 10 tickets · 16 sessions shown");
-  assert.match(count.title, /Newest 8 tickets/);
-});
-
-test("eight or fewer tickets keep the existing count and are never truncated", () => {
-  const recent = ticketWindowSessions([900, 901, 902, 903, 904, 905, 906, 907]);
-  const table = renderSessions(recent);
-  assert.equal(rows(table).length, 16);
-  assert.equal(elements.get("recent-count").textContent, "8 tickets · 16 sessions in snapshot");
-  const single = renderSessions([session(1, 950)]);
-  assert.equal(rows(single).length, 1);
-  assert.equal(elements.get("recent-count").textContent, "1 tickets · 1 sessions in snapshot");
-});
-
-test("a busy ticket does not crowd newer tickets out of the window", () => {
-  const busy = Array.from({ length: 30 }, (_, index) => session(index + 1, 800, "waiting_ci", {
-    started_at: `2025-12-31T00:00:${String(index + 1).padStart(2, "0")}Z`,
-  }));
-  const newer = ticketWindowSessions([901, 902, 903, 904, 905, 906, 907, 908]);
-  const table = renderSessions([...busy, ...newer]);
-  const body = rows(table).map(text).join(" | ");
-  assert.match(body, /OP#908/);
-  assert.match(body, /OP#901/);
-  assert.doesNotMatch(body, /OP#800/);
-  assert.equal(elements.get("recent-count").textContent, "8 of 9 tickets · 16 sessions shown");
-});
-
-test("active sessions stay ungrouped and snapshot counts distinguish tickets from runs", () => {
-  const active = [session(3, 701), session(4, 701)];
-  const recent = renderSessions([session(1, 702), session(2, 702)], active);
-  assert.equal(rows(recent).length, 2); // one ticket plus its hidden history row
-  assert.equal(rows(elements.get("active-sessions").children[0]).length, 2);
-  assert.equal(elements.get("active-count").textContent, "2 running");
-  assert.equal(elements.get("recent-count").textContent, "1 tickets · 2 sessions in snapshot");
-});
-
-test("a ticket being worked on is listed only under active sessions", () => {
-  const finished = [session(1, 701, "waiting_ci"), session(2, 701, "approved"), session(4, 702)];
-  const idle = renderSessions(finished, []);
-  assert.equal(rows(idle).length, 3); // two ticket rows plus one history row
-  const busy = renderSessions(finished, [session(5, 701)]);
-  assert.equal(rows(busy).length, 1); // only OP#702
-  assert.doesNotMatch(rows(busy).map(text).join(" | "), /OP#701/);
-  assert.match(rows(elements.get("active-sessions").children[0]).map(text).join(" | "), /OP#701/);
-  const count = elements.get("recent-count");
-  assert.equal(count.textContent, "1 tickets · 1 sessions shown");
-  assert.match(count.title, /running now/);
-  // The still-finished ticket keeps its collapsed history after the move.
-  const back = renderSessions(finished, []);
-  assert.equal(rows(back).length, 3);
-  assert.equal(elements.get("recent-count").textContent, "2 tickets · 3 sessions in snapshot");
-});
-
-test("active sessions never hide finished work for tickets without an id", () => {
-  const recent = [session(1, null), session(2, null)];
-  const table = renderSessions(recent, [session(3, null)]);
-  assert.equal(rows(table).length, 2);
-  assert.equal(elements.get("recent-count").textContent, "2 tickets · 2 sessions in snapshot");
-});
-
-test("an active-only ticket leaves an explicit empty state instead of a stale row", () => {
-  const only = renderSessions([session(1, 710)], [session(2, 710)]);
-  assert.match(text(only), /No finished sessions outside the currently active tickets/);
+test("when a ticket becomes active its finished sessions do not leave a stale recent row", () => {
+  const finished = session(1, 710);
+  assert.match(text(renderSessions([ticket(finished)])), /OP#710/);
+  const only = renderSessions([], [session(2, 710), session(3, 710)], [finished]);
+  assert.match(text(only), /No recent tickets/);
   assert.doesNotMatch(text(only), /OP#710/);
-  assert.equal(elements.get("recent-count").textContent, "0 tickets · 0 sessions shown");
-  assert.match(text(renderSessions([], [])), /No finished sessions yet/);
+  assert.equal(elements.get("recent-count").textContent, "0 tickets · 0 sessions");
+  const active = elements.get("active-sessions").children[0];
+  assert.equal(rows(active).length, 2);
+  assert.match(text(active), /OP#710/);
 });
 
 function renderOutcomes(outcomes) {
