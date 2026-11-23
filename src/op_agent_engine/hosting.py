@@ -15,7 +15,7 @@ from op_agent_engine.gitlab import GitLab
 def build_hosting_client(settings: EngineSettings) -> GitHub | GitLab:
     """The hosting client for the configured ``GIT_HOST``."""
     if settings.git_host == "github.com":
-        return GitHub()
+        return GitHub(actionable_checks=settings.ci_actionable_checks)
     token = (
         settings.gitlab_token.get_secret_value()
         if settings.gitlab_token is not None

@@ -247,7 +247,9 @@ class GitHub:
         executable: str = "gh",
         env: dict[str, str] | None = None,
         timeout: float = GH_TIMEOUT_SECONDS,
+        actionable_checks: Mapping[str, tuple[str, ...]] | None = None,
     ) -> None:
+        self._actionable = actionable_checks or {}
         self._executable = executable
         self._env = env
         self._timeout = timeout
@@ -281,6 +283,50 @@ class GitHub:
             return json.loads(stdout.decode("utf-8") or "null")
         except json.JSONDecodeError as error:
             raise GitHubError(f"gh returned invalid JSON: {error}") from error
+
+    async def _pending_job_failures(
+        self, repo: str, sha: str, payload: Mapping[str, Any], required: tuple[str, ...],
+    ) -> tuple[CheckResult, ...]:
+        """Optional Actions-only diagnostics; never infer success/completion from jobs."""
+        runs = payload.get("workflow_runs")
+        if not isinstance(runs, list) or len(runs) != payload.get("total_count"):
+            return ()
+        pending = [r for r in runs if isinstance(r, dict) and r.get("head_sha") == sha
+                   and r.get("event") == "pull_request" and r.get("status") == "in_progress"]
+        # Bound work per poll and ignore ambiguous same-workflow reruns at this SHA.
+        failures: list[CheckResult] = []
+        for run in pending[:4]:
+            rid, attempt, wid = (run.get(k) for k in ("id", "run_attempt", "workflow_id"))
+            if not all(type(n) is int and n > 0 for n in (rid, attempt, wid)) or any(
+                other is not run and isinstance(other, dict) and other.get("workflow_id") == wid
+                and other.get("event") == "pull_request" for other in runs
+            ):
+                continue
+            path = f"repos/{repo}/actions/runs/{rid}"
+            try:
+                page = await self._run_json(
+                    [self._executable, "api", f"{path}/attempts/{attempt}/jobs?per_page=100"],
+                    what="api pending jobs",
+                )
+                jobs = page.get("jobs") if isinstance(page, dict) else None
+                if not isinstance(jobs, list) or len(jobs) != page.get("total_count"):
+                    continue
+                found = [CheckResult(j["name"], "failure", str(j.get("html_url") or ""))
+                         for j in jobs if isinstance(j, dict) and j.get("name") in required
+                         and j.get("run_id") == rid and j.get("run_attempt") == attempt
+                         and j.get("head_sha") == sha and j.get("status") == "completed"
+                         and j.get("conclusion") in ("failure", "timed_out", "startup_failure")]
+                if found:
+                    current = await self._run_json(
+                        [self._executable, "api", path], what="api current run",
+                    )
+                    if isinstance(current, dict) and all(current.get(k) == run[k] for k in (
+                        "id", "head_sha", "run_attempt", "event", "status", "workflow_id",
+                    )):
+                        failures.extend(found)
+            except GitHubError:
+                continue  # Keep the readable workflow's pending verdict.
+        return tuple(failures)
 
     async def commit_checks(self, repo: str, sha: str) -> ChecksSummary:
         """The CI state of commit *sha* from the best source the token can read.
@@ -343,7 +389,14 @@ class GitHub:
                     raise GitHubError(
                         "gh api actions runs returned an unexpected payload"
                     )
-                summary = merge_checks(summary, summarise_workflow_runs(runs))
+                aggregate = summarise_workflow_runs(runs)
+                required = self._actionable.get(repo, ())
+                if required and aggregate.is_pending:
+                    failures = await self._pending_job_failures(repo, sha, runs, required)
+                    aggregate = ChecksSummary(aggregate.state, aggregate.total + len(failures),
+                                              aggregate.pending, aggregate.failed + len(failures),
+                                              aggregate.checks + failures)
+                summary = merge_checks(summary, aggregate)
             except GitHubError as error:
                 problems.append(str(error))
 
